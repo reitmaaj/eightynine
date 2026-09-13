@@ -112,4 +112,4 @@ CR10 on-disk parsing never trusts unchecked lengths, offsets, or counts
 ```
 
 Each property maps to tests under `test/crash/` and to rows in
-`.agent/testing/0005-crash-fixtures.md`.
+`.agent/testing/0006-crash-fixtures.md`.

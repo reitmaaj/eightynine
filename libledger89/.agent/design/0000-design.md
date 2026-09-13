@@ -37,13 +37,14 @@ Segments form a contiguous range chain:
 | --- | --- |
 | `ledger89_crc.c` | CRC-32C incremental computation |
 | `ledger89_format.c` | little-endian field codecs and structure encode/decode |
-| `ledger89_io.h` | internal I/O vtable used by tests for fault injection |
+| `ledger89_internal.h` | internal types, I/O vtable, and handle state for fault injection |
 | `ledger89_file.c` | POSIX implementation of the I/O vtable |
 | `ledger89_segment.c` | segment table, append path, rotation, sealing |
 | `ledger89_recover.c` | directory scan, topology validation, torn-tail recovery |
 | `ledger89_truncate.c` | suffix truncation and prefix discard orderings |
 | `ledger89_iter.c` | random read and ordered iteration |
 | `ledger89.c` | public API glue, configuration, sync, observer, strerror |
+| `ledger89_util.c` | pure helpers: bounds, index math, segment naming |
 
 No module knows about Raft, queries, or application semantics. The public
 header exposes only the section-3 surface of the specification.

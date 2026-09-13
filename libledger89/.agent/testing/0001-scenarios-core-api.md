@@ -1,8 +1,9 @@
 # BDD scenarios: core API (L1)
 
 Scenarios in this file drive `test/smoke.c`, `test/api/test_open.c`,
-`test/api/test_append.c`, `test/api/test_read_iter.c`,
-`test/api/test_observer.c`, and `test/api/test_misuse.c`. IDs cross-reference
+`test/api/test_append.c`, `test/api/test_read_iter.c`, and
+`test/api/test_observer.c`. Misuse cases (null arguments, invalid indices,
+rejected batches) are folded into those programs. IDs cross-reference
 `.agent/acceptance/0001-core-api.md`.
 
 ## Open, create, close

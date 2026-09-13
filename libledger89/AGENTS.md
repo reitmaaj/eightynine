@@ -51,18 +51,19 @@ cover must-exhibit and must-reject behavior. Coverage order: one end-to-end
 smoke test first, then unit tests for every pure function and non-trivial
 branch, then crash, fault, corruption, and model-based testing.
 
-The crash fixture table `.agent/testing/0005-crash-fixtures.md` is normative
+The crash fixture table `.agent/testing/0006-crash-fixtures.md` is normative
 for the crash suites: every injection point states the pre-state, the durable
 filesystem state after the crash, the allowed recovered states, and the
 required assertion.
 
 ## `just` and `make`
 
-Use `just` for all actions: `just build`, `just smoke`, `just unit`,
-`just api`, `just crash`, `just fault`, `just corrupt`, `just model`,
-`just adapters`, `just golden`, `just test`, `just long`, `just sanitize`,
-`just valgrind`, `just green`, `just check`, `just lint`, `just format`,
-`just doctor`, `just bench`, `just clean`.
+Use `just` for all actions: `just build`, `just build32`, `just smoke`,
+`just unit`, `just api`, `just crash`, `just fault`, `just fault-nomem`,
+`just fault-eintr`, `just corrupt`, `just model`, `just stress`,
+`just adapters`, `just golden`, `just golden-gen`, `just test`, `just long`,
+`just bench`, `just sanitize`, `just valgrind`, `just green`, `just check`,
+`just lint`, `just format`, `just doctor`, `just clean`.
 
 ## Git
 
