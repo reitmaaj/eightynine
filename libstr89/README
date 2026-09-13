@@ -1,0 +1,59 @@
+# libstr89
+
+Owning, validated UTF-8 strings for strict ISO C89. `libstr89` supplies the
+string/storage layer: validated views, owning finalized strings, mutable
+builders, byte-offset editing, and exact byte comparison/search. Every
+Unicode fact comes from the sibling `libu89`.
+
+```text
+              libu89
+             ^      ^
+            /        \
+      libstr89        \
+            ^          \
+             \          \
+              libj89 ----+   (JSON strings, keys, \uXXXX syntax)
+```
+
+A `str89` string is an exact sequence of Unicode scalar values encoded as
+well-formed UTF-8, preserving the original byte representation:
+
+- explicit byte length, embedded U+0000 allowed;
+- no `strlen()` semantics, no trailing-NUL requirement;
+- no normalization, case folding, locale, or collation;
+- byte-exact equality; UTF-8 byte offsets;
+- editing only at Unicode scalar boundaries.
+
+## Types
+
+| Type | Meaning |
+|---|---|
+| `str89_view` | borrowed validated UTF-8 bytes |
+| `str89` | owning finalized UTF-8 bytes |
+| `str89_buf` | owning mutable UTF-8 builder |
+
+Allocation is external: `str89_alloc` callbacks are supplied by the owner and
+are never stored inside a value; a NULL allocator means libc.
+
+## Build and test
+
+- `just build` — build `build/libstr89.a` (builds `../libu89` first).
+- `just smoke` — one end-to-end path.
+- `just unit` — unit programs, one per concern.
+- `just fault` — allocation-failure and checked-arithmetic tests.
+- `just model` — deterministic reference-model sequences.
+- `just corpus` — UTF-8 validity corpus differential against `libu89`.
+- `just guard` — guard-page tests (POSIX; not part of the green gate).
+- `just cpp-check` — C++23 header compile checks.
+- `just test` — smoke, unit, fault, model, corpus.
+- `just matrix` — gcc/clang x C89/C23 behavioral matrix.
+- `just sanitize` — ASan + UBSan run of the fast suite.
+- `just check` — green gate plus the no-Unicode-codec audit.
+
+## Non-goals
+
+`strlen`-style and NUL-terminated-string APIs, locale, ASCII classification,
+Unicode properties, normalization, case folding, collation, grapheme/word
+segmentation, display width, formatting, numeric conversion, regex,
+tokenization, split/join, JSON escaping, UTF-16/UTF-32 storage, and general
+byte buffers. Those belong to companion libraries or to callers.

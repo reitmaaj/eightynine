@@ -1,0 +1,144 @@
+set shell := ["sh", "-eu", "-c"]
+
+CC := env_var_or_default("CC", "cc")
+GREEN := env_var_or_default("GREEN", "../../green/.agent/tmp/build/green")
+U89 := env_var_or_default("U89", "../libu89")
+U89INC := U89 + "/include"
+U89LIB := U89 + "/build/libu89.a"
+
+STRICT := "-std=c89 -pedantic-errors -Wall -Wextra -Werror -Wconversion -Wsign-conversion -Wstrict-prototypes -Wmissing-prototypes -Wold-style-definition -Wundef -Wshadow -Wformat=2"
+TESTFLAGS := "-Wno-unused-function"
+TESTINC := "-Iinclude -I" + U89INC + " -Isrc -Itest/support"
+
+SRC := "src/alloc.c src/view.c src/string.c src/buf.c"
+LIB := "build/libstr89.a"
+
+default: build
+
+# Build the sibling libu89 dependency (Unicode facts).
+deps:
+	cd {{U89}} && just build
+
+# Compile every library translation unit and archive libstr89.a.
+build: deps
+	mkdir -p build
+	@for f in {{SRC}}; do \
+	    name=$(basename "$f" .c); \
+	    {{CC}} {{STRICT}} -Iinclude -I{{U89INC}} -c "$f" -o "build/$name.o" || exit 1; \
+	done
+	@objs=""; \
+	for f in build/*.o; do \
+	    objs="$objs $f"; \
+	done; \
+	rm -f {{LIB}}; \
+	ar rcs {{LIB}} $objs
+
+# Smoke test first: one end-to-end path through the library.
+smoke: build
+	{{CC}} {{STRICT}} {{TESTFLAGS}} {{TESTINC}} \
+	    -o build/smoke test/smoke.c test/support/str89_test.c {{LIB}} {{U89LIB}}
+	./build/smoke
+
+# Unit tests, one small program per concern.
+unit: build
+	@for t in test/unit/test_*.c; do \
+	    [ -e "$t" ] || continue; \
+	    name=$(basename "$t" .c); \
+	    {{CC}} {{STRICT}} {{TESTFLAGS}} {{TESTINC}} \
+	        -o "build/$name" "$t" test/support/str89_test.c {{LIB}} {{U89LIB}} || exit 1; \
+	    ./build/$name || exit 1; \
+	done
+
+# Fault-injection and checked-arithmetic tests.
+fault: build
+	@for t in test/fault/test_*.c; do \
+	    [ -e "$t" ] || continue; \
+	    name=$(basename "$t" .c); \
+	    {{CC}} {{STRICT}} {{TESTFLAGS}} {{TESTINC}} \
+	        -o "build/$name" "$t" test/support/str89_test.c {{LIB}} {{U89LIB}} || exit 1; \
+	    ./build/$name || exit 1; \
+	done
+
+# Deterministic reference-model tests.
+model: build
+	@for t in test/model/test_*.c; do \
+	    [ -e "$t" ] || continue; \
+	    name=$(basename "$t" .c); \
+	    {{CC}} {{STRICT}} {{TESTFLAGS}} {{TESTINC}} \
+	        -o "build/$name" "$t" test/support/str89_test.c {{LIB}} {{U89LIB}} || exit 1; \
+	    ./build/$name || exit 1; \
+	done
+
+# UTF-8 validity corpus differential against libu89.
+corpus: build
+	@for t in test/corpus/test_*.c; do \
+	    [ -e "$t" ] || continue; \
+	    name=$(basename "$t" .c); \
+	    {{CC}} {{STRICT}} {{TESTFLAGS}} {{TESTINC}} \
+	        -o "build/$name" "$t" test/support/str89_test.c {{LIB}} {{U89LIB}} || exit 1; \
+	    ./build/$name || exit 1; \
+	done
+
+# Guard-page tests (POSIX mmap; excluded from the green source gate).
+guard: build
+	{{CC}} -std=c99 -pedantic-errors -Wall -Wextra -Werror {{TESTINC}} \
+	    -o build/guard test/guard/test_guard_pages.c test/support/str89_test.c \
+	    {{LIB}} {{U89LIB}}
+	./build/guard
+
+# C++23 header compile checks (g++ and clang++).
+cpp-check:
+	mkdir -p build
+	g++ -std=c++23 -pedantic-errors -Wall -Wextra -Werror -Iinclude -I{{U89INC}} \
+	    -c test/cpp/header_check.cpp -o build/header_check_gpp.o
+	clang++ -std=c++23 -pedantic-errors -Wall -Wextra -Werror -Iinclude -I{{U89INC}} \
+	    -c test/cpp/header_check.cpp -o build/header_check_clangpp.o
+
+# Run every fast suite (smoke first, then the rest).
+test: smoke unit fault model corpus
+
+# Behavioral matrix: gcc/clang x C89/C23, run every unit, fault, and model test.
+matrix:
+	sh scripts/matrix.sh
+
+# ASan + UBSan build of the library and the full fast suite.
+sanitize:
+	sh scripts/sanitize.sh
+
+# Valgrind memcheck over the smoke, unit, fault, and model tests.
+valgrind:
+	sh scripts/valgrind.sh
+
+# Generate the GCC and Clang compilation databases, then run the seven-cell
+# green matrix from this project root.
+green:
+	sh scripts/gen_compile_db gcc build/gcc/compile_commands.json
+	sh scripts/gen_compile_db clang build/clang/compile_commands.json
+	{{GREEN}} check
+
+# green-compliance gate plus the no-Unicode-codec audit.
+check: green
+	sh scripts/str89-audit.sh
+
+# Lint shell scripts and check C/header formatting.
+lint:
+	@for f in scripts/*; do \
+	    [ -e "$f" ] || continue; \
+	    shellcheck -s sh "$f" || exit 1; \
+	    shellcheck -s bash "$f" || exit 1; \
+	done
+	@for f in src/*.c src/*.h include/*.h test/*.c test/support/*.c test/support/*.h test/unit/*.c test/fault/*.c test/model/*.c test/corpus/*.c test/guard/*.c; do \
+	    [ -e "$f" ] || continue; \
+	    clang-format --dry-run --Werror "$f" || { echo "needs formatting: $f"; exit 1; }; \
+	done
+	sh scripts/str89-audit.sh
+
+# Rewrite sources to canonical formatting.
+format:
+	@for f in src/*.c src/*.h include/*.h test/*.c test/support/*.c test/support/*.h test/unit/*.c test/fault/*.c test/model/*.c test/corpus/*.c test/guard/*.c; do \
+	    [ -e "$f" ] || continue; \
+	    clang-format -i "$f"; \
+	done
+
+clean:
+	rm -rf build
