@@ -4,6 +4,9 @@ CC := env_var_or_default("CC", "cc")
 LIBJ89 := env_var_or_default("LIBJ89", "../libj89")
 U89 := env_var_or_default("U89", LIBJ89 + "/../libu89")
 U89LIB := U89 + "/build/libu89.a"
+STR89 := env_var_or_default("STR89", LIBJ89 + "/../libstr89")
+STR89INC := STR89 + "/include"
+STR89LIB := STR89 + "/build/libstr89.a"
 GREEN := env_var_or_default("GREEN", "../../green/.agent/tmp/build/green")
 
 STRICT := "-std=c89 -pedantic-errors -Wall -Wextra -Werror -Wconversion -Wsign-conversion -Wstrict-prototypes -Wmissing-prototypes -Wold-style-definition -Wundef -Wshadow -Wformat=2"
@@ -14,21 +17,22 @@ LIBJ89_SRC := LIBJ89 + "/src/parse.c " + LIBJ89 + "/src/value.c " + LIBJ89 + "/s
 
 default: build
 
-# Build the sibling libu89 dependency (Unicode facts for libj89).
+# Build the sibling libstr89 dependency (owned UTF-8 storage for libj89).
+# libstr89 builds libu89 (Unicode facts) first.
 deps:
-	cd {{U89}} && just build
+	cd {{STR89}} && just build
 
 # Compile the CLI demo (library + libj89).
 build: deps
 	mkdir -p build
-	{{CC}} {{STRICT}} -Iinclude -I{{LIBJ89}}/include -I{{U89}}/include -o build/jrpc89 {{SRC}} {{LIBJ89_SRC}} {{U89LIB}} -lm
+	{{CC}} {{STRICT}} -Iinclude -I{{LIBJ89}}/include -I{{U89}}/include -I{{STR89INC}} -o build/jrpc89 {{SRC}} {{LIBJ89_SRC}} {{STR89LIB}} {{U89LIB}} -lm
 
 # Unit tests, each linked with the non-main library sources.
 unit: build
 	@for t in test/unit/test_*.c; do \
 	    [ -e "$t" ] || continue; \
 	    name=$(basename "$t" .c); \
-	    {{CC}} {{STRICT}} -Iinclude -I{{LIBJ89}}/include -I{{U89}}/include -Itest/unit -o build/$name "$t" {{LIB}} {{LIBJ89_SRC}} {{U89LIB}} || exit 1; \
+	    {{CC}} {{STRICT}} -Iinclude -I{{LIBJ89}}/include -I{{U89}}/include -I{{STR89INC}} -Itest/unit -o build/$name "$t" {{LIB}} {{LIBJ89_SRC}} {{STR89LIB}} {{U89LIB}} || exit 1; \
 	    ./build/$name || exit 1; \
 	done
 

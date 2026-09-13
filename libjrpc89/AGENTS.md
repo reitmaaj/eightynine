@@ -2,8 +2,10 @@
 
 A green-compliant JSON-RPC 2.0 client library and CLI demo written in strict
 ISO C89, using the sibling `libj89` project for all JSON processing. `libj89`
-delegates Unicode scalar/UTF-8/UTF-16 facts to the sibling `libu89`, so builds
-link both (`just deps` builds `libu89`). It is a sibling git repository.
+delegates Unicode scalar/UTF-8/UTF-16 facts to the sibling `libu89` and owns
+strings and keys through the sibling `libstr89`, so builds link all three
+(`just deps` builds `libstr89`, which builds `libu89`). It is a sibling git
+repository.
 
 ## Hard constraints
 
