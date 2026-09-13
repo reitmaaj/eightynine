@@ -52,9 +52,48 @@ void cksum89_test_u64(cksum89_u64 got, cksum89_u32 hi, cksum89_u32 lo,
     }
 }
 
+void cksum89_test_u16_at(cksum89_u16 got, cksum89_u16 want, const char *what,
+                         unsigned long where)
+{
+    ++cksum89_test_checks;
+    if (got != want)
+    {
+        ++cksum89_test_failures;
+        fprintf(stderr, "FAIL: %s at %lu: got 0x%04x want 0x%04x\n", what,
+                where, (unsigned int)got, (unsigned int)want);
+    }
+}
+
+void cksum89_test_u32_at(cksum89_u32 got, cksum89_u32 want, const char *what,
+                         unsigned long where)
+{
+    ++cksum89_test_checks;
+    if (got != want)
+    {
+        ++cksum89_test_failures;
+        fprintf(stderr, "FAIL: %s at %lu: got 0x%08lx want 0x%08lx\n", what,
+                where, (unsigned long)got, (unsigned long)want);
+    }
+}
+
+void cksum89_test_u64_at(cksum89_u64 got, cksum89_u32 hi, cksum89_u32 lo,
+                         const char *what, unsigned long where)
+{
+    ++cksum89_test_checks;
+    if ((got.hi != hi) || (got.lo != lo))
+    {
+        ++cksum89_test_failures;
+        fprintf(stderr, "FAIL: %s at %lu: got 0x%08lx%08lx want 0x%08lx%08lx\n",
+                what, where, (unsigned long)got.hi, (unsigned long)got.lo,
+                (unsigned long)hi, (unsigned long)lo);
+    }
+}
+
 int main(void)
 {
     test_vectors();
+    test_crc32_iso_hdlc();
+    test_stream();
     test_tables();
     if (cksum89_test_failures != 0)
     {

@@ -24,4 +24,9 @@ void test_vectors(void)
     cksum89_test_u16(ref_inet16(NULL, 0), 0xffffu, "reference inet16 empty");
     cksum89_test_u16(ref_inet16(check, 9), 0xf62au, "reference inet16 check");
     cksum89_test_u16(ref_inet16(rfc, 8), 0x220du, "reference inet16 rfc1071");
+
+    cksum89_test_u32(cksum89_crc32_iso_hdlc(NULL, 0), 0x00000000UL,
+                     "crc32 iso empty");
+    cksum89_test_u32(cksum89_crc32_iso_hdlc(check, 9), 0xcbf43926UL,
+                     "crc32 iso check");
 }
