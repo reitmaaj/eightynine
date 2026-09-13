@@ -27,6 +27,26 @@ build:
 	rm -f {{LIB}}; \
 	ar rcs {{LIB}} $objs
 
+# Best-effort 32-bit build; reports a skip when multilib is absent.
+build32:
+	@mkdir -p build/32/obj; \
+	if ! printf '#include <stdio.h>\nint main(void){return 0;}\n' | {{CC}} -m32 -x c - -o build/32/probe 2>/dev/null; then \
+	    echo "build32: SKIPPED: no 32-bit toolchain (install gcc multilib)"; \
+	    exit 0; \
+	fi; \
+	for f in src/*.c; do \
+	    [ -e "$f" ] || continue; \
+	    name=$(basename "$f" .c); \
+	    {{CC}} {{STRICT}} {{POSIX}} -m32 -Iinclude -Isrc -c "src/$name.c" -o "build/32/obj/$name.o" || exit 1; \
+	done; \
+	objs=""; \
+	for f in build/32/obj/*.o; do \
+	    objs="$objs $f"; \
+	done; \
+	rm -f build/32/libledger89.a; \
+	ar rcs build/32/libledger89.a $objs; \
+	echo "build32: ok"
+
 # Compile and run every test program in one suite directory.
 _run dir:
 	@for t in test/{{dir}}/test_*.c; do \
@@ -85,15 +105,16 @@ long: build
 	./build/test_random_model 424242 2000000
 
 # Run every fast suite (smoke first, then unit, api, crash, fault, corrupt,
-# model, and adapter fixtures).
-test: smoke unit api crash fault fault-nomem fault-eintr corrupt model adapters
+# model, adapter fixtures, and golden fixtures).
+test: smoke unit api crash fault fault-nomem fault-eintr corrupt model adapters golden
 
-# Regenerate frozen golden fixtures, then verify them.
+# Regenerate the committed golden fixtures (review the diff before commit).
 golden-gen: build
 	{{CC}} {{STRICT}} {{POSIX}} {{TESTFLAGS}} {{INC}} -o build/gen_golden test/tools/gen_golden.c test/support/*.c {{LIB}}
 	./build/gen_golden
 
-golden: golden-gen
+# Verify the committed golden fixtures byte for byte.
+golden: build
 	just _run golden
 
 # Rebuild the library and run the whole fast suite under ASan + UBSan.
@@ -115,6 +136,15 @@ sanitize:
 	    {{CC}} -std=c99 -g -fsanitize=address,undefined -fno-omit-frame-pointer {{POSIX}} {{TESTFLAGS}} {{INC}} \
 	        -o "build/asan/$name" "$t" test/support/*.c build/asan/libledger89.a || exit 1; \
 	    ./build/asan/$name || exit 1; \
+	done
+
+# Run every fast suite under valgrind memcheck.
+valgrind: build
+	@for t in {{TESTGLOB}}; do \
+	    [ -e "$t" ] || continue; \
+	    name=$(basename "$t" .c); \
+	    {{CC}} {{STRICT}} {{POSIX}} {{TESTFLAGS}} {{INC}} -o "build/vg_$name" "$t" test/support/*.c {{LIB}} || exit 1; \
+	    valgrind --error-exitcode=1 --leak-check=full --quiet "./build/vg_$name" || exit 1; \
 	done
 
 # Generate the GCC and Clang compilation databases, then run the seven-cell

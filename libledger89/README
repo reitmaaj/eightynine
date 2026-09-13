@@ -49,14 +49,22 @@ record payloads.
 - `just smoke` — one end-to-end open/append/sync/reopen/read path.
 - `just unit` — pure unit programs (format, checksums, index math).
 - `just api` — black-box public API behavior.
+- `just adapters` — consumer-boundary fixtures (replication-style usage).
 - `just crash` — crash points over the deterministic model filesystem and
   real-filesystem process kills.
 - `just fault` — I/O errors, ENOSPC, allocation failure, torn writes.
 - `just corrupt` — structural corruption classification.
 - `just model` — randomized reference-model stress.
+- `just golden` — verify the committed on-disk byte fixtures; regenerate with
+  `just golden-gen` and review the diff.
 - `just test` — all fast suites.
 - `just long` — multi-million-operation model runs.
+- `just sanitize` — fast suites under ASan + UBSan.
+- `just valgrind` — fast suites under valgrind memcheck.
 - `just check` — green profile, lint, and all fast suites.
+- `just build32` — best-effort 32-bit library build. This host has no 32-bit
+  multilib (`gnu/stubs-32.h`, `crt1.o` are absent), so the recipe reports
+  `SKIPPED`; 32-bit portability is exercised on hosts that provide multilib.
 
 ## Conventions
 
