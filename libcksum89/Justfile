@@ -1,0 +1,117 @@
+set shell := ["sh", "-eu", "-c"]
+
+CC := env_var_or_default("CC", "cc")
+GREEN := env_var_or_default("GREEN", "../../green/.agent/tmp/build/green")
+
+STRICT := "-std=c89 -pedantic-errors -Wall -Wextra -Werror -Wconversion -Wsign-conversion -Wstrict-prototypes -Wmissing-prototypes -Wold-style-definition -Wundef -Wshadow -Wformat=2"
+TESTFLAGS := "-Wno-unused-function"
+INC := "-Iinclude -Isrc -Itest"
+LIB := "build/libcksum89.a"
+UNIT_SRCS := "test/test_main.c test/test_vectors.c test/test_tables.c test/ref_crc.c"
+
+default: build
+
+# Compile every library translation unit and archive libcksum89.a.
+build:
+	mkdir -p build/obj
+	@for f in src/*.c; do \
+	    [ -e "$f" ] || continue; \
+	    name=$(basename "$f" .c); \
+	    {{CC}} {{STRICT}} -Iinclude -Isrc -c "src/$name.c" -o "build/obj/$name.o" || exit 1; \
+	done
+	@objs=""; \
+	for f in build/obj/*.o; do \
+	    [ -e "$f" ] || continue; \
+	    objs="$objs $f"; \
+	done; \
+	rm -f {{LIB}}; \
+	ar rcs {{LIB}} $objs
+
+# Unit, vector, and table suite as one binary.
+unit: build
+	{{CC}} {{STRICT}} {{TESTFLAGS}} {{INC}} -o build/test_cksum89 {{UNIT_SRCS}} {{LIB}}
+	./build/test_cksum89
+
+# Compile-failure probe: the CHAR_BIT guard must reject a non-8-bit model.
+guard:
+	@if {{CC}} -std=c89 -pedantic-errors -Iinclude -fsyntax-only test/compile/char_bit_guard.c >/dev/null 2>&1; then \
+	    echo "guard: char_bit_guard.c compiled but must not"; \
+	    exit 1; \
+	fi
+	@echo "guard: CHAR_BIT guard fired"
+
+# C++23 header compile checks (g++ and clang++).
+cpp-check:
+	mkdir -p build
+	g++ -std=c++23 -pedantic-errors -Wall -Wextra -Werror -Iinclude -c test/cpp/header_check.cpp -o build/header_check_gpp.o
+	clang++ -std=c++23 -pedantic-errors -Wall -Wextra -Werror -Iinclude -c test/cpp/header_check.cpp -o build/header_check_clangpp.o
+
+# Run every fast suite.
+test: unit guard cpp-check
+
+# ASan + UBSan rebuild and full suite.
+sanitize:
+	sh scripts/sanitize.sh
+
+# gcc/clang x C89/C23 build-and-run matrix.
+matrix:
+	sh scripts/matrix.sh
+
+# Regenerate the checked-in lookup tables from the frozen parameters.
+tables:
+	python3 tools/gen_tables.py > src/cksum89_tables.c
+
+# Configure and build the CMake targets, then run CTest.
+cmake:
+	cmake -S . -B build/cmake -DCMAKE_BUILD_TYPE=Debug
+	cmake --build build/cmake
+	ctest --test-dir build/cmake --output-on-failure
+
+# Generate the GCC and Clang compilation databases, then run the seven-cell
+# green gate from this project root.
+green:
+	sh scripts/gen_compile_db gcc build/gcc/compile_commands.json
+	sh scripts/gen_compile_db clang build/clang/compile_commands.json
+	cd . && {{GREEN}} check
+
+# Full local gate: green profile, lint, and the fast suite.
+check: green lint test
+
+# Lint shell scripts and check C/header formatting.
+lint:
+	@for f in scripts/*; do \
+	    [ -e "$f" ] || continue; \
+	    shellcheck -s sh "$f" || exit 1; \
+	    shellcheck -s bash "$f" || exit 1; \
+	done
+	@for f in src/*.c src/*.h include/*.h test/*.c test/*.h test/*/*.c test/*/*.cpp; do \
+	    [ -e "$f" ] || continue; \
+	    clang-format --dry-run --Werror "$f" || { echo "needs formatting: $f"; exit 1; }; \
+	done
+
+# Rewrite sources to canonical formatting.
+format:
+	@for f in src/*.c src/*.h include/*.h test/*.c test/*.h test/*/*.c test/*/*.cpp; do \
+	    [ -e "$f" ] || continue; \
+	    clang-format -i "$f"; \
+	done
+
+# Verify required external tools are available.
+doctor:
+	@command -v gcc >/dev/null 2>&1 || { echo "missing: gcc"; exit 1; }
+	@command -v clang >/dev/null 2>&1 || { echo "missing: clang"; exit 1; }
+	@command -v clang-tidy >/dev/null 2>&1 || { echo "missing: clang-tidy"; exit 1; }
+	@command -v clang-format >/dev/null 2>&1 || { echo "missing: clang-format"; exit 1; }
+	@command -v g++ >/dev/null 2>&1 || { echo "missing: g++"; exit 1; }
+	@command -v clang++ >/dev/null 2>&1 || { echo "missing: clang++"; exit 1; }
+	@command -v cmake >/dev/null 2>&1 || { echo "missing: cmake"; exit 1; }
+	@command -v ctest >/dev/null 2>&1 || { echo "missing: ctest"; exit 1; }
+	@command -v just >/dev/null 2>&1 || { echo "missing: just"; exit 1; }
+	@command -v ar >/dev/null 2>&1 || { echo "missing: ar"; exit 1; }
+	@command -v nm >/dev/null 2>&1 || { echo "missing: nm"; exit 1; }
+	@command -v python3 >/dev/null 2>&1 || { echo "missing: python3"; exit 1; }
+	@command -v shellcheck >/dev/null 2>&1 || { echo "missing: shellcheck"; exit 1; }
+	@echo "doctor: all prerequisites present"
+
+clean:
+	rm -rf build

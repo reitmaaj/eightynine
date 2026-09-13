@@ -1,0 +1,45 @@
+# libcksum89
+
+Four fixed checksum algorithms with streaming and one-shot interfaces, in
+strict ISO C89.
+
+```text
+CRC-32/ISO-HDLC   CRC-32C   CRC-64/NVME   INET16 (RFC 1071)
+```
+
+## Boundaries
+
+| Concern | Owner |
+| --- | --- |
+| checksum mathematics | `libcksum89` |
+| streaming state | caller (public context value) |
+| allocation, I/O, dispatch | nobody; the library has none |
+| wire byte order, framing, checksum field placement | protocol or format layer |
+| error reporting | nobody; operations are total under pointer preconditions |
+
+`libcksum89` calculates values. Callers encode them.
+
+## Build and test
+
+- `just build` - build `build/libcksum89.a`.
+- `just smoke` - one end-to-end path through all four algorithms.
+- `just unit` - vectors, differential corpora, streaming algebra, context
+  laws, alignment, and lookup-table integrity.
+- `just guard` - the `CHAR_BIT == 8` compile-time rejection probe.
+- `just cpp-check` - C++23 header inclusion with g++ and clang++.
+- `just test` - all fast suites.
+- `just sanitize` - ASan + UBSan rebuild and full suite.
+- `just matrix` - gcc/clang x C89/C23 build-and-run matrix.
+- `just tables` - regenerate the checked-in lookup tables.
+- `just check` - green profile, lint, and all fast suites.
+
+## Conventions
+
+- Public API namespaced `cksum89_*`, declared in `include/cksum89.h`.
+- Contexts are caller-owned value types; `final` does not mutate.
+- Test-driven: scenario -> acceptance -> failing test -> minimal code ->
+  refactor.
+- `main` stays green; no pushes without permission.
+
+See `spec/cksum89-spec.md` for the normative contract and `.agent/` for the
+concept, design, scenarios, and acceptance criteria.
