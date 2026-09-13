@@ -7,7 +7,8 @@ set(CMAKE_C_EXTENSIONS OFF)
 
 set(CKSUM89_SRCS
     src/cksum89_tables.c
-    src/cksum89_crc32_iso_hdlc.c)
+    src/cksum89_crc32_iso_hdlc.c
+    src/cksum89_crc32c.c)
 
 add_library(cksum89 STATIC ${CKSUM89_SRCS})
 add_library(cksum89::cksum89 ALIAS cksum89)
@@ -30,6 +31,7 @@ if(CKSUM89_BUILD_TESTS)
         test/ref_crc.c
         test/test_vectors.c
         test/test_crc32_iso_hdlc.c
+        test/test_crc32c.c
         test/test_stream.c
         test/test_tables.c)
     target_include_directories(test_cksum89 PRIVATE include src test)

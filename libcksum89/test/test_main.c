@@ -93,6 +93,7 @@ int main(void)
 {
     test_vectors();
     test_crc32_iso_hdlc();
+    test_crc32c();
     test_stream();
     test_tables();
     if (cksum89_test_failures != 0)
