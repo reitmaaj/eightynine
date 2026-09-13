@@ -51,6 +51,12 @@ static j89_len j89_next_cap(j89_len cur, j89_len need)
     return nc;
 }
 
+/* Initialize the string-registry head. */
+static void j89_init_head(j89_arena *a)
+{
+    a->strhead = J89_BAD;
+}
+
 static int j89_grow(j89_arena *a, j89_len need)
 {
     j89_len cur;
@@ -82,18 +88,21 @@ void j89_arena_init(j89_arena *a)
     a->off = 0;
     a->err[0] = '\0';
     a->failed = 0;
+    j89_init_head(a);
 }
 
 void j89_arena_destroy(j89_arena *a)
 {
     void *m;
     void *z;
+    j89_str_release_all(a);
     m = a->mem;
     free(m);
     z = NULL;
     a->mem = z;
     a->cap = 0;
     a->off = 0;
+    j89_init_head(a);
 }
 
 const char *j89_error(j89_arena *a)
@@ -153,6 +162,82 @@ void *j89_ptr(j89_arena *a, j89_len off)
     q = (char *)m;
     r = q + off;
     return (void *)r;
+}
+
+/* Registry node: an owned str89 linked into the arena block. */
+struct j89_strnode
+{
+    j89_len next;
+    str89 s;
+};
+
+j89_len j89_str_register(j89_arena *a, const str89 *s)
+{
+    j89_len off;
+    j89_len head;
+    void *vp;
+    struct j89_strnode *node;
+    int bad;
+    off = j89_alloc(a, sizeof(struct j89_strnode));
+    bad = j89_is_bad(off);
+    if (bad)
+    {
+        return J89_BAD;
+    }
+    head = a->strhead;
+    vp = j89_ptr(a, off);
+    node = (struct j89_strnode *)vp;
+    node->next = head;
+    node->s = *s;
+    a->strhead = off;
+    return off;
+}
+
+const str89 *j89_str_at(j89_arena *a, j89_len off)
+{
+    void *vp;
+    struct j89_strnode *node;
+    vp = j89_ptr(a, off);
+    node = (struct j89_strnode *)vp;
+    return &node->s;
+}
+
+const char *j89_str_bytes(j89_arena *a, j89_len off)
+{
+    const str89 *s;
+    s = j89_str_at(a, off);
+    return (const char *)s->data;
+}
+
+j89_len j89_str_len(j89_arena *a, j89_len off)
+{
+    const str89 *s;
+    s = j89_str_at(a, off);
+    return s->len;
+}
+
+/* Release the str89 held by one registry node and return the next node. */
+static j89_len j89_release_one(j89_arena *a, j89_len cur)
+{
+    void *vp;
+    struct j89_strnode *node;
+    j89_len next;
+    vp = j89_ptr(a, cur);
+    node = (struct j89_strnode *)vp;
+    next = node->next;
+    str89_free(&node->s, NULL);
+    return next;
+}
+
+void j89_str_release_all(j89_arena *a)
+{
+    j89_len cur;
+    cur = a->strhead;
+    while (cur != J89_BAD)
+    {
+        cur = j89_release_one(a, cur);
+    }
+    a->strhead = J89_BAD;
 }
 
 static struct j89_node *j89_node_ptr(j89_arena *a, j89_len node)
@@ -257,43 +342,95 @@ j89_len j89_new_node(j89_arena *a)
     return off;
 }
 
-static void j89_copy_byte(char *dst, const char *src, j89_len i)
+/* Build an owned, NUL-terminated str89 from already validated bytes. */
+static int j89_build_owned(const char *s, j89_len len, str89 *owned)
 {
-    dst[i] = src[i];
+    str89_buf b;
+    str89_view v;
+    int r;
+    str89_buf_init(&b);
+    if (len == J89_BAD)
+    {
+        return STR89_ERANGE;
+    }
+    r = str89_buf_reserve(&b, NULL, len + 1);
+    if (r != STR89_OK)
+    {
+        str89_buf_free(&b, NULL);
+        return r;
+    }
+    v.data = (const unsigned char *)s;
+    v.len = len;
+    r = str89_buf_append(&b, NULL, v);
+    if (r != STR89_OK)
+    {
+        str89_buf_free(&b, NULL);
+        return r;
+    }
+    b.data[b.len] = '\0';
+    str89_init(owned);
+    r = str89_take(owned, &b);
+    if (r != STR89_OK)
+    {
+        str89_buf_free(&b, NULL);
+        return r;
+    }
+    return STR89_OK;
 }
 
-j89_len j89_add_string(j89_arena *a, const char *s, j89_len len)
+/* Create a string node whose base is the registry offset of owned. On failure
+ * the caller still owns *owned; on success the arena owns it. */
+j89_len j89_string_node(j89_arena *a, const str89 *owned)
 {
-    j89_len off;
     j89_len node;
-    void *vp;
-    char *dst;
-    const char *src;
-    j89_len i;
+    j89_len off;
     int bad;
-    off = j89_alloc(a, len + 1);
-    bad = j89_is_bad(off);
-    if (bad)
-    {
-        return J89_BAD;
-    }
-    vp = j89_ptr(a, off);
-    dst = (char *)vp;
-    src = s;
-    for (i = 0; i < len; i = i + 1)
-    {
-        j89_copy_byte(dst, src, i);
-    }
-    dst[len] = '\0';
     node = j89_new_node(a);
     bad = j89_is_bad(node);
     if (bad)
     {
         return J89_BAD;
     }
+    off = j89_str_register(a, owned);
+    bad = j89_is_bad(off);
+    if (bad)
+    {
+        return J89_BAD;
+    }
     j89_node_set_kind(a, node, J89_STRING);
     j89_node_set_base(a, node, off);
-    j89_node_set_n(a, node, len);
+    j89_node_set_n(a, node, owned->len);
+    return node;
+}
+
+/* Free a string the arena did not adopt, mark the arena failed, and return
+ * the bad node sentinel. */
+static j89_len j89_string_fail(j89_arena *a, str89 *owned)
+{
+    str89_free(owned, NULL);
+    a->failed = 1;
+    return J89_BAD;
+}
+
+j89_len j89_add_string(j89_arena *a, const char *s, j89_len len)
+{
+    str89 owned;
+    j89_len node;
+    int bad;
+    int r;
+    r = j89_build_owned(s, len, &owned);
+    if (r != STR89_OK)
+    {
+        a->failed = 1;
+        return J89_BAD;
+    }
+    node = j89_string_node(a, &owned);
+    bad = j89_is_bad(node);
+    if (bad)
+    {
+        node = j89_string_fail(a, &owned);
+        return node;
+    }
     return node;
 }
 
@@ -493,18 +630,18 @@ double j89_double_value(j89_arena *a, j89_len node)
 const char *j89_string_value(j89_arena *a, j89_len node)
 {
     j89_len base;
-    void *p;
     const char *s;
     base = j89_node_base(a, node);
-    p = j89_ptr(a, base);
-    s = (const char *)p;
+    s = j89_str_bytes(a, base);
     return s;
 }
 
 j89_len j89_string_length(j89_arena *a, j89_len node)
 {
+    j89_len base;
     j89_len v;
-    v = j89_node_n(a, node);
+    base = j89_node_base(a, node);
+    v = j89_str_len(a, base);
     return v;
 }
 
@@ -535,21 +672,21 @@ const char *j89_object_key(j89_arena *a, j89_len node, j89_len i)
 {
     j89_len base;
     j89_len ko;
-    void *p;
     const char *s;
     base = j89_node_base(a, node);
     ko = j89_member_ko(a, base, i);
-    p = j89_ptr(a, ko);
-    s = (const char *)p;
+    s = j89_str_bytes(a, ko);
     return s;
 }
 
 j89_len j89_object_key_length(j89_arena *a, j89_len node, j89_len i)
 {
     j89_len base;
+    j89_len ko;
     j89_len v;
     base = j89_node_base(a, node);
-    v = j89_member_kl(a, base, i);
+    ko = j89_member_ko(a, base, i);
+    v = j89_str_len(a, ko);
     return v;
 }
 
@@ -562,19 +699,27 @@ j89_len j89_object_value(j89_arena *a, j89_len node, j89_len i)
     return v;
 }
 
-static int j89_str_eq(const char *a, j89_len alen, const char *b)
+static int j89_str_eq(j89_arena *a, j89_len ko, j89_len kl, const char *b)
 {
-    j89_len i;
-    int end;
-    for (i = 0; i < alen; i = i + 1)
+    const char *ks;
+    size_t blen;
+    int eq;
+    ks = j89_str_bytes(a, ko);
+    blen = strlen(b);
+    if (blen != kl)
     {
-        if (a[i] != b[i])
-        {
-            return 0;
-        }
+        return 0;
     }
-    end = (b[alen] == '\0');
-    return end;
+    if (kl == 0)
+    {
+        return 1;
+    }
+    eq = memcmp(ks, b, kl);
+    if (eq == 0)
+    {
+        return 1;
+    }
+    return 0;
 }
 
 static j89_len j89_match_value(j89_arena *a, j89_len base, j89_len i,
@@ -582,16 +727,12 @@ static j89_len j89_match_value(j89_arena *a, j89_len base, j89_len i,
 {
     j89_len ko;
     j89_len kl;
-    void *p;
-    const char *ks;
     int eq;
     j89_len val;
     val = J89_BAD;
     ko = j89_member_ko(a, base, i);
     kl = j89_member_kl(a, base, i);
-    p = j89_ptr(a, ko);
-    ks = (const char *)p;
-    eq = j89_str_eq(ks, kl, key);
+    eq = j89_str_eq(a, ko, kl, key);
     *ismatch = eq;
     if (eq)
     {
@@ -639,9 +780,10 @@ j89_len j89_array_new(j89_arena *a, j89_len count)
 j89_len j89_string_new(j89_arena *a, const char *bytes, j89_len len)
 {
     j89_len node;
+    str89_view v;
     int ok;
-    ok = u89_utf8_valid((const unsigned char *)bytes, len);
-    if (ok == 0)
+    ok = str89_view_init(&v, (const unsigned char *)bytes, len);
+    if (ok != STR89_OK)
     {
         node = j89_bad_utf8(a, "invalid UTF-8 in string");
         return node;
@@ -705,6 +847,7 @@ void j89_object_set(j89_arena *a, j89_len object, j89_len index,
 {
     j89_len ko;
     j89_len keynode;
+    str89_view kv;
     int ok;
     int badobj;
     int badval;
@@ -721,8 +864,8 @@ void j89_object_set(j89_arena *a, j89_len object, j89_len index,
         a->failed = 1;
         return;
     }
-    ok = u89_utf8_valid((const unsigned char *)key, keylen);
-    if (ok == 0)
+    ok = str89_view_init(&kv, (const unsigned char *)key, keylen);
+    if (ok != STR89_OK)
     {
         j89_bad_utf8(a, "invalid UTF-8 in object key");
         return;

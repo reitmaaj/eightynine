@@ -2,10 +2,17 @@
 #define J89_INTERNAL_H
 
 #include "../include/j89.h"
+#include "str89.h"
 
 /* Internal node and member layouts. Nodes and member slots are stored as
  * byte offsets into the single arena block, so a node index doubles as a
- * byte offset. */
+ * byte offset.
+ *
+ * String bytes and object keys are owned str89 values. A string node and an
+ * object member store a registry offset; the registry node (allocated in the
+ * arena block) holds the str89. Offset 0 of the block is the registry head;
+ * J89_BAD means the registry is empty. The arena owns every registered str89
+ * and releases them in j89_arena_destroy. */
 
 typedef struct j89_node {
     j89_kind kind;
@@ -50,6 +57,7 @@ void j89_node_set_dv(j89_arena *a, j89_len node, double dv);
 /* construction */
 j89_len j89_new_node(j89_arena *a);
 j89_len j89_add_string(j89_arena *a, const char *s, j89_len len);
+j89_len j89_string_node(j89_arena *a, const str89 *owned);
 j89_len j89_add_int(j89_arena *a, j89_int v);
 j89_len j89_add_double(j89_arena *a, double v);
 j89_len j89_make_array(j89_arena *a, j89_len count);
@@ -57,6 +65,13 @@ j89_len j89_make_object(j89_arena *a, j89_len count);
 void j89_array_set_child(j89_arena *a, j89_len arr, j89_len i, j89_len child);
 void j89_object_set_member(j89_arena *a, j89_len obj, j89_len i,
                            j89_len ko, j89_len kl, j89_len value);
+
+/* owned-string registry */
+j89_len j89_str_register(j89_arena *a, const str89 *s);
+const str89 *j89_str_at(j89_arena *a, j89_len off);
+const char *j89_str_bytes(j89_arena *a, j89_len off);
+j89_len j89_str_len(j89_arena *a, j89_len off);
+void j89_str_release_all(j89_arena *a);
 
 /* array / object member reads */
 j89_len j89_child_id(j89_arena *a, j89_len base, j89_len i);

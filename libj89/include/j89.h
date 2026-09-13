@@ -68,6 +68,7 @@ typedef struct j89_arena
     void *mem;             /* growable block */
     j89_len cap;           /* bytes allocated */
     j89_len off;           /* next free byte */
+    j89_len strhead;       /* owned-string registry head, J89_BAD if empty */
     char err[J89_ERR_LEN]; /* last error message, "" if none */
     int failed;            /* allocation/parse failed */
 } j89_arena;

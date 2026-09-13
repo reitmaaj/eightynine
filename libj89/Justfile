@@ -2,13 +2,17 @@ CC := env_var_or_default("CC", "cc")
 GREEN := env_var_or_default("GREEN", "../../green/.agent/tmp/build/green")
 U89 := env_var_or_default("U89", "../libu89")
 U89LIB := U89 + "/build/libu89.a"
+STR89 := env_var_or_default("STR89", "../libstr89")
+STR89INC := STR89 + "/include"
+STR89LIB := STR89 + "/build/libstr89.a"
 STRICT := "-std=c89 -pedantic-errors -Wall -Wextra -Werror -Wconversion -Wsign-conversion -Wstrict-prototypes -Wmissing-prototypes -Wold-style-definition -Wundef -Wshadow -Wformat=2"
 
 default: build
 
-# Build the sibling libu89 dependency (UTF-8/UTF-16 primitives).
+# Build the sibling libstr89 dependency (validated UTF-8 storage). libstr89
+# builds libu89 (Unicode facts) first.
 deps:
-	cd {{U89}} && just build
+	cd {{STR89}} && just build
 
 # Algebraic-core (j89_alg) translation units.
 ALG := "src/alg/alloc.c src/alg/str.c src/alg/list.c src/alg/object.c src/alg/json.c src/alg/fold.c src/alg/map.c"
@@ -21,14 +25,14 @@ SRC := "src/parse.c src/value.c src/print.c src/main.c src/alg/alloc.c src/alg/s
 # Compile the CLI (library sources + main).
 build: deps
 	mkdir -p build
-	{{CC}} {{STRICT}} -Iinclude -Isrc -I{{U89}}/include -o build/j89 {{SRC}} {{U89LIB}}
+	{{CC}} {{STRICT}} -Iinclude -Isrc -I{{U89}}/include -I{{STR89INC}} -o build/j89 {{SRC}} {{STR89LIB}} {{U89LIB}}
 
 # Unit tests, each linked with the non-main library sources.
 test: build
 	@for t in test/unit/test_*.c; do \
 	    [ -e "$t" ] || continue; \
 	    name=$(basename "$t" .c); \
-	    {{CC}} {{STRICT}} -Iinclude -I{{U89}}/include -Itest/unit -o build/$name "$t" src/parse.c src/value.c src/print.c {{U89LIB}} || exit 1; \
+	    {{CC}} {{STRICT}} -Iinclude -I{{U89}}/include -I{{STR89INC}} -Itest/unit -o build/$name "$t" src/parse.c src/value.c src/print.c {{STR89LIB}} {{U89LIB}} || exit 1; \
 	    ./build/$name || exit 1; \
 	done
 	@for s in test/e2e/*.sh; do \
@@ -56,7 +60,7 @@ test-alg: build
 
 # Bridge (j89.h -> j89_alg) tests.
 test-bridge: build
-	{{CC}} {{STRICT}} -Iinclude -Isrc -I{{U89}}/include -Itest/alg -o build/alg_test_bridge test/alg/test_bridge.c src/value.c src/bridge.c {{ALG}} {{U89LIB}}
+	{{CC}} {{STRICT}} -Iinclude -Isrc -I{{U89}}/include -I{{STR89INC}} -Itest/alg -o build/alg_test_bridge test/alg/test_bridge.c src/value.c src/bridge.c {{ALG}} {{STR89LIB}} {{U89LIB}}
 	./build/alg_test_bridge
 
 # Source/dependency opacity audit: src/alg must stay free of scalar semantics

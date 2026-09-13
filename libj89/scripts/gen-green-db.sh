@@ -26,7 +26,7 @@ write_db() {
         {
             printf '  {\n'
             printf '    "directory": "%s",\n' "$ROOT"
-            printf '    "command": "%s -Iinclude -Isrc -I../libu89/include -c %s",\n' "$compiler" "$f"
+            printf '    "command": "%s -Iinclude -Isrc -I../libu89/include -I../libstr89/include -c %s",\n' "$compiler" "$f"
             printf '    "file": "%s"\n' "$abs"
             printf '  }'
         } >> "$out"

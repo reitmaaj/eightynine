@@ -4,11 +4,12 @@ This project provides a minimal, strict-C89-clean JSON parser used as a
 dependency by the `wid` sibling project. It is a sibling git repository.
 
 Unicode facts (UTF-8 validate/decode/encode, scalar validity, UTF-16
-surrogate classification and pair decode) come from the sibling `libu89`.
-`libj89` owns JSON syntax and representation only; `j89_alg` remains free of
-any Unicode dependency. Builds link `../libu89/build/libu89.a`; `just deps`
-builds it. `just unicode-audit` enforces that no UTF-8 algorithm returns to
-`src/`.
+surrogate classification and pair decode) come from the sibling `libu89`;
+owned string and key storage comes from the sibling `libstr89`. `libj89` owns
+JSON syntax and representation only; `j89_alg` remains free of any Unicode or
+`str89` dependency. Builds link `../libstr89/build/libstr89.a` and
+`../libu89/build/libu89.a`; `just deps` builds them. `just unicode-audit`
+enforces that no UTF-8 algorithm returns to `src/`.
 
 ## Hard constraints
 

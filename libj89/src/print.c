@@ -225,14 +225,10 @@ static int w_render_float(struct j89_writer *w, j89_arena *a, j89_len node)
 
 static int w_render_string(struct j89_writer *w, j89_arena *a, j89_len node)
 {
-    j89_len base;
     j89_len len;
-    void *vp;
     const char *s;
-    base = j89_node_base(a, node);
-    len = j89_node_n(a, node);
-    vp = j89_ptr(a, base);
-    s = (const char *)vp;
+    len = j89_string_length(a, node);
+    s = j89_string_value(a, node);
     w_escape_string(w, s, len);
     return 0;
 }
@@ -259,7 +255,6 @@ static int w_render_member(struct j89_writer *w, j89_arena *a, j89_len base,
     j89_len ko;
     j89_len kl;
     j89_len value;
-    void *vp;
     const char *ks;
     int r;
     if (i != 0)
@@ -268,8 +263,7 @@ static int w_render_member(struct j89_writer *w, j89_arena *a, j89_len base,
     }
     ko = j89_member_ko(a, base, i);
     kl = j89_member_kl(a, base, i);
-    vp = j89_ptr(a, ko);
-    ks = (const char *)vp;
+    ks = j89_str_bytes(a, ko);
     w_escape_string(w, ks, kl);
     w_byte(w, ':');
     value = j89_member_value(a, base, i);

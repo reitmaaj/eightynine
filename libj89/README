@@ -8,10 +8,13 @@ keys are validated as UTF-8 on input; a single leading UTF-8 BOM is ignored;
 duplicate object keys are rejected.
 
 Unicode scalar and UTF-8/UTF-16 facts are delegated to the sibling `libu89`;
-`libj89` owns JSON syntax and representation. Every string value and object
-key in a `j89_arena` is well-formed UTF-8, whether parsed or built through the
-public builder, which validates before allocating. JSON strings are not
-normalized or case-folded. Build and test require `libu89` (see `just deps`).
+string and key storage is owned by the sibling `libstr89`; `libj89` owns JSON
+syntax and representation. Every string value and object key in a `j89_arena`
+is an owned, validated `str89` value (well-formed UTF-8, explicit byte length,
+embedded NUL preserved, NUL-terminated for compatibility), whether parsed or
+built through the public builder, which validates before allocating. JSON
+strings are not normalized or case-folded. Build and test require `libstr89`
+(and `libu89`; see `just deps`).
 
 All numbers are IEEE-754 `double`. Integers are exact for |n| <= 2^53; an
 integer token beyond that range is rejected (never approximated). This

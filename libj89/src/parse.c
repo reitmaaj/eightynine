@@ -37,16 +37,12 @@ static int j89_key_eq(j89_arena *a, j89_len ko1, j89_len kl1, j89_len ko2,
     const char *s1;
     const char *s2;
     j89_len i;
-    void *p1;
-    void *p2;
     if (kl1 != kl2)
     {
         return 0;
     }
-    p1 = j89_ptr(a, ko1);
-    p2 = j89_ptr(a, ko2);
-    s1 = (const char *)p1;
-    s2 = (const char *)p2;
+    s1 = j89_str_bytes(a, ko1);
+    s2 = j89_str_bytes(a, ko2);
     for (i = 0; i < kl1; i = i + 1)
     {
         if (s1[i] != s2[i])
@@ -236,25 +232,36 @@ static int j89_parse_hex4(struct j89_parser *p, unsigned int *out)
     return 1;
 }
 
-static void j89_put_byte(char *dst, j89_len i, unsigned int v)
+/* Append raw bytes to the string builder, recording an out-of-memory error.
+ * Returns 0 on success, -1 on failure. */
+static int j89_append_bytes(struct j89_parser *p, str89_buf *b,
+                            const unsigned char *src, size_t n)
 {
-    unsigned char uc;
-    char c;
-    uc = (unsigned char)v;
-    c = (char)uc;
-    dst[i] = c;
+    str89_view v;
+    int r;
+    v.data = src;
+    v.len = n;
+    r = str89_buf_append(b, NULL, v);
+    if (r != STR89_OK)
+    {
+        j89_fail(p, "out of memory");
+        return -1;
+    }
+    return 0;
 }
 
 /* Validate and copy one UTF-8 sequence beginning at the current position.
- * Returns the number of bytes consumed/copied, or 0 on invalid UTF-8.
- * Scalar validity (overlong, surrogate, range, truncation) is owned by
- * libu89; the original bytes are copied, not re-encoded. */
-static j89_len j89_utf8_seq(struct j89_parser *p, char *dst, j89_len di)
+ * Returns 1 when a sequence was copied, 0 on invalid UTF-8, -1 on allocation
+ * failure (already recorded). Scalar validity (overlong, surrogate, range,
+ * truncation) is owned by libu89; the original bytes are copied, not
+ * re-encoded. */
+static int j89_utf8_seq(struct j89_parser *p, str89_buf *b)
 {
     const unsigned char *s;
     size_t next;
     size_t n;
     u89_status st;
+    int r;
     s = (const unsigned char *)p->buf;
     next = 0;
     st = u89_utf8_decode(s, p->len, p->pos, NULL, &next);
@@ -263,30 +270,36 @@ static j89_len j89_utf8_seq(struct j89_parser *p, char *dst, j89_len di)
         return 0;
     }
     n = next - p->pos;
-    memcpy(dst + di, p->buf + p->pos, n);
-    p->pos = next;
-    return n;
-}
-
-/* Append one decoded byte value to the string destination. */
-static int j89_str_emit_char(char *dst, j89_len *di, unsigned int val)
-{
-    j89_put_byte(dst, *di, val);
-    *di = *di + 1;
-    return 0;
-}
-
-/* UTF-8-encode cp into the string destination. Returns 0 on success, -1 when
- * cp is not a Unicode scalar (unreachable for parser-produced scalars). */
-static int j89_str_emit_cp(char *dst, j89_len *di, u89_cp cp)
-{
-    int w;
-    w = u89_utf8_encode(cp, (unsigned char *)(dst + *di));
-    if (w == 0)
+    r = j89_append_bytes(p, b, s + p->pos, n);
+    if (r != 0)
     {
         return -1;
     }
-    *di = *di + (j89_len)w;
+    p->pos = next;
+    return 1;
+}
+
+/* Append one decoded byte value to the string builder. */
+static int j89_str_emit_char(struct j89_parser *p, str89_buf *b,
+                             unsigned int val)
+{
+    unsigned char uc;
+    int r;
+    uc = (unsigned char)val;
+    r = j89_append_bytes(p, b, &uc, 1);
+    return r;
+}
+
+/* Append one Unicode scalar value to the string builder. */
+static int j89_str_emit_cp(struct j89_parser *p, str89_buf *b, u89_cp cp)
+{
+    int r;
+    r = str89_buf_append_cp(b, NULL, cp);
+    if (r != STR89_OK)
+    {
+        j89_fail(p, "out of memory");
+        return -1;
+    }
     return 0;
 }
 
@@ -361,7 +374,7 @@ static int j89_str_read_cp(struct j89_parser *p, unsigned int *unit)
 }
 
 /* Handle a \u escape (backslash and 'u' already consumed). */
-static int j89_str_unicode(struct j89_parser *p, char *dst, j89_len *di)
+static int j89_str_unicode(struct j89_parser *p, str89_buf *b)
 {
     unsigned int cp;
     int st;
@@ -371,7 +384,7 @@ static int j89_str_unicode(struct j89_parser *p, char *dst, j89_len *di)
     {
         return -1;
     }
-    ok = j89_str_emit_cp(dst, di, cp);
+    ok = j89_str_emit_cp(p, b, cp);
     return ok;
 }
 
@@ -415,14 +428,13 @@ static int j89_str_simple_val(int esc)
 }
 
 /* Dispatch an escape (backslash and escape char already consumed). */
-static int j89_str_dispatch(struct j89_parser *p, char *dst, j89_len *di,
-                            int esc)
+static int j89_str_dispatch(struct j89_parser *p, str89_buf *b, int esc)
 {
     int val;
     int st;
     if (esc == 'u')
     {
-        st = j89_str_unicode(p, dst, di);
+        st = j89_str_unicode(p, b);
         return st;
     }
     val = j89_str_simple_val(esc);
@@ -431,38 +443,41 @@ static int j89_str_dispatch(struct j89_parser *p, char *dst, j89_len *di,
         j89_fail(p, "invalid escape");
         return -1;
     }
-    st = j89_str_emit_char(dst, di, (unsigned int)val);
+    st = j89_str_emit_char(p, b, (unsigned int)val);
     return st;
 }
 
 /* Handle a backslash escape beginning at the current position. */
-static int j89_str_escape(struct j89_parser *p, char *dst, j89_len *di)
+static int j89_str_escape(struct j89_parser *p, str89_buf *b)
 {
     int esc;
     int st;
     j89_bump(p); /* consume the backslash */
     esc = j89_cur(p);
     j89_bump(p); /* consume the escape character */
-    st = j89_str_dispatch(p, dst, di, esc);
+    st = j89_str_dispatch(p, b, esc);
     return st;
 }
 
 /* Consume a multi-byte UTF-8 sequence and append it to the string. */
-static int j89_str_utf8_emit(struct j89_parser *p, char *dst, j89_len *di)
+static int j89_str_utf8_emit(struct j89_parser *p, str89_buf *b)
 {
-    j89_len w;
-    w = j89_utf8_seq(p, dst, *di);
-    if (w == 0)
+    int r;
+    r = j89_utf8_seq(p, b);
+    if (r == 0)
     {
         j89_fail(p, "invalid UTF-8 in string");
         return -1;
     }
-    *di = *di + w;
+    if (r < 0)
+    {
+        return -1;
+    }
     return 0;
 }
 
 /* Append one non-quote, non-backslash character (byte or UTF-8 sequence). */
-static int j89_str_byte(struct j89_parser *p, char *dst, j89_len *di)
+static int j89_str_byte(struct j89_parser *p, str89_buf *b)
 {
     int c;
     unsigned char uc;
@@ -471,17 +486,20 @@ static int j89_str_byte(struct j89_parser *p, char *dst, j89_len *di)
     uc = (unsigned char)c;
     if (uc >= 0x80)
     {
-        st = j89_str_utf8_emit(p, dst, di);
+        st = j89_str_utf8_emit(p, b);
         return st;
     }
-    j89_put_byte(dst, *di, uc);
-    *di = *di + 1;
+    st = j89_append_bytes(p, b, &uc, 1);
+    if (st != 0)
+    {
+        return -1;
+    }
     j89_bump(p);
     return 0;
 }
 
 /* Handle a raw (unquoted, unescaped) character of the string body. */
-static int j89_str_raw(struct j89_parser *p, char *dst, j89_len *di)
+static int j89_str_raw(struct j89_parser *p, str89_buf *b)
 {
     int c;
     int ctl;
@@ -493,14 +511,14 @@ static int j89_str_raw(struct j89_parser *p, char *dst, j89_len *di)
         j89_fail(p, "control character in string");
         return -1;
     }
-    st = j89_str_byte(p, dst, di);
+    st = j89_str_byte(p, b);
     return st;
 }
 
 /* Handle one character of the string body at the current position. Returns
  * 0 to keep scanning, 1 when the closing quote was consumed, -1 on a fatal
  * parse error (already recorded). */
-static int j89_str_step(struct j89_parser *p, char *dst, j89_len *di)
+static int j89_str_step(struct j89_parser *p, str89_buf *b)
 {
     int e;
     int c;
@@ -519,60 +537,77 @@ static int j89_str_step(struct j89_parser *p, char *dst, j89_len *di)
     }
     if (c == '\\')
     {
-        st = j89_str_escape(p, dst, di);
+        st = j89_str_escape(p, b);
         return st;
     }
-    st = j89_str_raw(p, dst, di);
+    st = j89_str_raw(p, b);
     return st;
+}
+
+/* Free the partial builder, record out-of-memory, and return the bad node
+ * sentinel. */
+static j89_len j89_string_buf_fail(struct j89_parser *p, str89_buf *b)
+{
+    str89_buf_free(b, NULL);
+    j89_fail(p, "out of memory");
+    return J89_BAD;
+}
+
+/* Free an owned string the arena did not adopt, record out-of-memory, and
+ * return the bad node sentinel. */
+static j89_len j89_string_owned_fail(struct j89_parser *p, str89 *owned)
+{
+    str89_free(owned, NULL);
+    j89_fail(p, "out of memory");
+    return J89_BAD;
 }
 
 static j89_len j89_parse_string(struct j89_parser *p)
 {
     j89_arena *a;
-    j89_len tmp;
-    j89_len di;
-    j89_len n;
+    str89_buf b;
+    str89 owned;
     j89_len node;
-    void *vp;
-    char *dst;
     int bad;
+    int st;
+    int r;
     a = p->a;
-    n = p->len;
-    tmp = j89_alloc(a, n + 1);
-    bad = j89_is_bad(tmp);
-    if (bad)
-    {
-        j89_fail(p, "out of memory");
-        return J89_BAD;
-    }
-    vp = j89_ptr(a, tmp);
-    dst = (char *)vp;
-    di = 0;
+    str89_buf_init(&b);
     j89_bump(p); /* consume opening quote */
     for (;;)
     {
-        int st;
-        st = j89_str_step(p, dst, &di);
+        st = j89_str_step(p, &b);
         if (st == 1)
         {
             break;
         }
         if (st == -1)
         {
+            str89_buf_free(&b, NULL);
             return J89_BAD;
         }
     }
-    j89_put_byte(dst, di, 0);
-    node = j89_new_node(a);
+    r = str89_buf_reserve(&b, NULL, b.len + 1);
+    if (r != STR89_OK)
+    {
+        node = j89_string_buf_fail(p, &b);
+        return node;
+    }
+    b.data[b.len] = '\0';
+    str89_init(&owned);
+    r = str89_take(&owned, &b);
+    if (r != STR89_OK)
+    {
+        node = j89_string_buf_fail(p, &b);
+        return node;
+    }
+    node = j89_string_node(a, &owned);
     bad = j89_is_bad(node);
     if (bad)
     {
-        j89_fail(p, "out of memory");
-        return J89_BAD;
+        node = j89_string_owned_fail(p, &owned);
+        return node;
     }
-    j89_node_set_kind(a, node, J89_STRING);
-    j89_node_set_base(a, node, tmp);
-    j89_node_set_n(a, node, di);
     return node;
 }
 

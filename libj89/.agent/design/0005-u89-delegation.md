@@ -41,15 +41,17 @@ consume arena storage.
 
     libu89
       ^
-      |
+    libstr89
+      ^
     libj89
       ^
-      |
     libjrpc89 / llm89
 
-`j89.h` does not include `u89.h`; no `u89` type enters the public J89 ABI.
-This is an implementation/link dependency, not API coupling. `j89_alg` has no
-`u89` dependency: `S` remains an uninterpreted byte-string carrier.
+`j89.h` does not include `u89.h` or `str89.h`; no `u89` or `str89` type enters
+the public J89 ABI. This is an implementation/link dependency, not API
+coupling. `j89_alg` has no `u89` dependency: `S` remains an uninterpreted
+byte-string carrier. See `0006-str89-storage.md` for the owned-string storage
+layer added on top of this delegation.
 
 ## J89 ABI compatibility
 
