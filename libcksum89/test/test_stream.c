@@ -72,6 +72,45 @@ static void check_crc32c_byte_at_a_time(void)
                      "crc32c byte-at-a-time");
 }
 
+static void check_inet_partition(unsigned int mask)
+{
+    cksum89_inet16_ctx ctx;
+    cksum89_u16 one_shot;
+    size_t start;
+    size_t i;
+
+    one_shot = cksum89_inet16(stream_data, STREAM_MAX);
+    cksum89_inet16_init(&ctx);
+    start = 0;
+    for (i = 1; i < STREAM_MAX; ++i)
+    {
+        if ((mask & (1u << (i - 1u))) != 0u)
+        {
+            cksum89_inet16_update(&ctx, stream_data + start, i - start);
+            start = i;
+        }
+    }
+    cksum89_inet16_update(&ctx, stream_data + start, STREAM_MAX - start);
+    cksum89_test_u16_at(cksum89_inet16_final(&ctx), one_shot,
+                        "inet16 partition", (unsigned long)mask);
+}
+
+static void check_inet_byte_at_a_time(void)
+{
+    cksum89_inet16_ctx ctx;
+    cksum89_u16 one_shot;
+    size_t i;
+
+    one_shot = cksum89_inet16(stream_data, STREAM_MAX);
+    cksum89_inet16_init(&ctx);
+    for (i = 0; i < STREAM_MAX; ++i)
+    {
+        cksum89_inet16_update(&ctx, stream_data + i, 1);
+    }
+    cksum89_test_u16(cksum89_inet16_final(&ctx), one_shot,
+                     "inet16 byte-at-a-time");
+}
+
 static void check_iso_byte_at_a_time(void)
 {
     cksum89_crc32_iso_hdlc_ctx ctx;
@@ -96,7 +135,9 @@ void test_stream(void)
     {
         check_iso_partition(mask);
         check_crc32c_partition(mask);
+        check_inet_partition(mask);
     }
     check_iso_byte_at_a_time();
     check_crc32c_byte_at_a_time();
+    check_inet_byte_at_a_time();
 }

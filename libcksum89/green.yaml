@@ -17,3 +17,7 @@ pure_functions:
     - cksum89_crc32_step
     - cksum89_crc64_shift8
     - cksum89_crc64_xor
+    - cksum89_inet16_fold
+    - cksum89_inet16_pending_word
+    - cksum89_inet16_sum_pending
+    - cksum89_inet16_total

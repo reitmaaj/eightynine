@@ -48,4 +48,8 @@ void test_vectors(void)
                      "crc32c iscsi ones32");
     cksum89_test_u32(cksum89_crc32c(inc32, 32), 0x46dd794eUL,
                      "crc32c iscsi incrementing32");
+
+    cksum89_test_u16(cksum89_inet16(NULL, 0), 0xffffu, "inet16 empty");
+    cksum89_test_u16(cksum89_inet16(check, 9), 0xf62au, "inet16 check");
+    cksum89_test_u16(cksum89_inet16(rfc, 8), 0x220du, "inet16 rfc1071");
 }

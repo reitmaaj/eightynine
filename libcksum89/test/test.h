@@ -30,6 +30,7 @@ void cksum89_test_u64_at(cksum89_u64 got, cksum89_u32 hi, cksum89_u32 lo,
 void test_vectors(void);
 void test_crc32_iso_hdlc(void);
 void test_crc32c(void);
+void test_inet16(void);
 void test_stream(void);
 void test_tables(void);
 
