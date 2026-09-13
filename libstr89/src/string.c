@@ -43,6 +43,10 @@ int str89_copy(str89 *out, const str89_alloc *alloc, const str89 *src)
     str89_view v;
     int r;
 
+    if (out == src)
+    {
+        return STR89_OK;
+    }
     v = str89_view_of(src);
     r = str89_from_view(out, alloc, v);
     return r;

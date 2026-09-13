@@ -9,7 +9,14 @@ extern int str89_test_failures;
 extern int str89_test_checks;
 
 void str89_test_check(int cond, const char *what);
+void str89_test_check_status(int got, int want, const char *what);
 int str89_test_report(void);
+
+/* View over a NUL-terminated test literal. */
+str89_view str89_test_cview(const char *s);
+
+/* Build a valid buffer from scalar values; returns the new length. */
+size_t str89_test_put_cp(unsigned char *buf, size_t at, u89_cp cp);
 
 /* Invariant oracle: shape plus libu89 validation. */
 void str89_test_valid_view(str89_view v, const char *what);
@@ -34,10 +41,10 @@ typedef struct str89_test_slot
 typedef struct str89_test_fault
 {
     str89_alloc alloc;
-    long fail_at; /* 1-based allocation index to fail; 0 = never */
-    long calls;   /* allocation attempts (malloc + realloc) */
-    long frees;   /* free calls on live blocks */
-    long live;    /* live blocks */
+    long fail_at;  /* 1-based allocation index to fail; 0 = never */
+    long calls;    /* allocation attempts (malloc + realloc) */
+    long frees;    /* free calls on live blocks */
+    long live;     /* live blocks */
     long bad_free; /* unknown, double, or cross-allocator free observed */
     unsigned long tag;
     str89_test_slot slots[STR89_TEST_SLOTS];

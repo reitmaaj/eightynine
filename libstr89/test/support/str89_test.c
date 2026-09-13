@@ -34,6 +34,33 @@ int str89_test_report(void)
     return 0;
 }
 
+void str89_test_check_status(int got, int want, const char *what)
+{
+    str89_test_checks += 1;
+    if (got != want)
+    {
+        str89_test_failures += 1;
+        fprintf(stderr, "FAIL: %s (got %d, want %d)\n", what, got, want);
+    }
+}
+
+str89_view str89_test_cview(const char *s)
+{
+    str89_view v;
+
+    v.data = (const unsigned char *)s;
+    v.len = strlen(s);
+    return v;
+}
+
+size_t str89_test_put_cp(unsigned char *buf, size_t at, u89_cp cp)
+{
+    int w;
+
+    w = u89_utf8_encode(cp, buf + at);
+    return at + (size_t)w;
+}
+
 void str89_test_valid_view(str89_view v, const char *what)
 {
     int ok;
@@ -93,7 +120,8 @@ void str89_test_view_is(str89_view v, const unsigned char *bytes, size_t len,
     str89_test_check(eq == 0, what);
 }
 
-/* ---- Fault allocator ------------------------------------------------------ */
+/* ---- Fault allocator ------------------------------------------------------
+ */
 
 struct str89_test_hdr
 {
@@ -300,7 +328,8 @@ int str89_test_fault_leaked(const str89_test_fault *f)
     return 0;
 }
 
-/* ---- PRNG ----------------------------------------------------------------- */
+/* ---- PRNG -----------------------------------------------------------------
+ */
 
 unsigned long str89_test_rand(unsigned long *state)
 {

@@ -12,7 +12,7 @@ deterministic tests plus the recipes named in `Justfile`.
 | A05 | All mutation primitives get self-alias tests. | `test/unit/test_alias.c` |
 | A06 | Aliasing is tested with and without reallocation. | `test/unit/test_alias.c` (exact-capacity and spare-capacity variants) |
 | A07 | Every allocating API gets exhaustive injected-allocation failure. | `test/fault/test_fault_alloc.c` |
-| A08 | Every size arithmetic path gets overflow tests. | `test/fault/test_overflow.c`, `str89__add`/`str89__mul`/`str89__grow_cap` units |
+| A08 | Every size arithmetic path gets overflow tests. | `test/fault/test_overflow.c`, `str89__add`/`str89__grow_cap` units |
 | A09 | Embedded NUL passes through every relevant API. | `test/unit/test_nul.c` |
 | A10 | No operation relies on NUL termination. | `scripts/str89-audit.sh`, `test/guard/test_guard_pages.c` |
 | A11 | No implicit normalization or case folding occurs. | `test/unit/test_equal_compare.c`, `test/unit/test_nul.c`, audit |

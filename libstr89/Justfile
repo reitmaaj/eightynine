@@ -116,9 +116,10 @@ green:
 	sh scripts/gen_compile_db clang build/clang/compile_commands.json
 	{{GREEN}} check
 
-# green-compliance gate plus the no-Unicode-codec audit.
+# green-compliance gate plus the no-Unicode-codec and API-coverage audits.
 check: green
 	sh scripts/str89-audit.sh
+	sh scripts/api-coverage.sh
 
 # Lint shell scripts and check C/header formatting.
 lint:
@@ -132,6 +133,7 @@ lint:
 	    clang-format --dry-run --Werror "$f" || { echo "needs formatting: $f"; exit 1; }; \
 	done
 	sh scripts/str89-audit.sh
+	sh scripts/api-coverage.sh
 
 # Rewrite sources to canonical formatting.
 format:
