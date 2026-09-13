@@ -1,0 +1,175 @@
+set shell := ["sh", "-eu", "-c"]
+
+CC := env_var_or_default("CC", "cc")
+GREEN := env_var_or_default("GREEN", "../../green/.agent/tmp/build/green")
+
+STRICT := "-std=c89 -pedantic-errors -Wall -Wextra -Werror -Wconversion -Wsign-conversion -Wstrict-prototypes -Wmissing-prototypes -Wold-style-definition -Wundef -Wshadow -Wformat=2"
+
+TESTFLAGS := "-Wno-unused-function"
+
+MODELFLAGS := env_var_or_default("MODELFLAGS", "")
+MODELARGS := env_var_or_default("MODELARGS", "")
+
+default: build
+
+# Compile every library translation unit and archive libraft89.a.
+build:
+	mkdir -p build
+	@for f in src/*.c; do \
+	    name=$(basename "$f" .c); \
+	    {{CC}} {{STRICT}} -Iinclude -c "src/$name.c" -o "build/$name.o"; \
+	done
+	@objs=""; \
+	for f in build/*.o; do \
+	    objs="$objs $f"; \
+	done; \
+	rm -f build/libraft89.a; \
+	ar rcs build/libraft89.a $objs
+
+# Smoke test first: one end-to-end path through the library.
+smoke: build
+	{{CC}} {{STRICT}} {{TESTFLAGS}} -Iinclude -Itest/support -Isrc \
+	    -o build/smoke test/smoke.c test/support/*.c build/libraft89.a
+	./build/smoke
+
+# Unit tests, one small program per concern.
+unit: build
+	@for t in test/unit/test_*.c; do \
+	    [ -e "$t" ] || continue; \
+	    name=$(basename "$t" .c); \
+	    {{CC}} {{STRICT}} {{TESTFLAGS}} -Iinclude -Itest/support -Isrc \
+	        -o "build/$name" "$t" test/support/*.c build/libraft89.a || exit 1; \
+	    ./build/$name || exit 1; \
+	done
+
+# Crash-point tests: durable-effect semantics at every crash boundary.
+crash: build
+	@for t in test/crash/test_*.c; do \
+	    [ -e "$t" ] || continue; \
+	    name=$(basename "$t" .c); \
+	    {{CC}} {{STRICT}} {{TESTFLAGS}} -Iinclude -Itest/support -Isrc \
+	        -o "build/$name" "$t" test/support/*.c build/libraft89.a || exit 1; \
+	    ./build/$name || exit 1; \
+	done
+
+# Deterministic cluster simulation tests.
+sim: build
+	@for t in test/sim/test_*.c; do \
+	    [ -e "$t" ] || continue; \
+	    name=$(basename "$t" .c); \
+	    {{CC}} {{STRICT}} {{TESTFLAGS}} -Iinclude -Itest/support -Isrc \
+	        -o "build/$name" "$t" test/support/*.c build/libraft89.a || exit 1; \
+	    ./build/$name || exit 1; \
+	done
+
+# Bounded exhaustive model exploration (not part of the default suite).
+# Override MODELFLAGS / MODELARGS, e.g.
+#   MODELFLAGS="-DMODEL_MAX_DEPTH=40ul" just exhaustive
+exhaustive: build
+	{{CC}} {{STRICT}} {{TESTFLAGS}} {{MODELFLAGS}} -Iinclude -Itest/support -Isrc \
+	    -o build/test_model3 test/exhaustive/test_model3.c \
+	    test/support/*.c build/libraft89.a
+	./build/test_model3 {{MODELARGS}}
+
+# The bounded model checker under ASan + UBSan.
+exhaustive-sanitize: sanitize
+	{{CC}} -std=c99 -g -fsanitize=address,undefined -fno-omit-frame-pointer -Iinclude -Itest/support -Isrc -Wno-unused-function \
+	    -o build/asan/test_model3 test/exhaustive/test_model3.c \
+	    test/support/*.c build/asan/libraft89.a
+	./build/asan/test_model3 {{MODELARGS}}
+
+# Build and run the reference host loop.
+example: build
+	{{CC}} {{STRICT}} -Iinclude -o build/host_loop examples/host_loop.c build/libraft89.a
+	./build/host_loop
+
+# Longer seeded random sweep (not part of the default suite).
+random: build
+	{{CC}} {{STRICT}} {{TESTFLAGS}} -Iinclude -Itest/support -Isrc \
+	    -o build/test_random_sim test/sim/test_random_sim.c \
+	    test/support/*.c build/libraft89.a
+	./build/test_random_sim --sweep 100 --steps 1000
+
+# Allocation-failure injection with GNU ld --wrap.
+failalloc: build
+	{{CC}} {{STRICT}} {{TESTFLAGS}} -Iinclude -Itest/support -Isrc \
+	    -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free \
+	    -o build/test_alloc_failure test/failalloc/test_alloc_failure.c \
+	    test/failalloc/fail_alloc.c test/support/*.c build/libraft89.a
+	./build/test_alloc_failure
+
+# Run every fast-suite binary under valgrind.
+valgrind: test
+	@command -v valgrind >/dev/null 2>&1 || { echo "missing: valgrind"; exit 1; }
+	@for t in build/smoke build/test_*; do \
+	    [ -e "$t" ] || continue; \
+	    case "$t" in *test_model3) continue;; esac; \
+	    echo "valgrind $t"; \
+	    valgrind --quiet --error-exitcode=1 --leak-check=full \
+	        --errors-for-leak-kinds=definite "$t" || exit 1; \
+	done
+
+# Run every fast suite (smoke first, then unit, crash, and sim).
+test: smoke unit crash sim failalloc
+
+# Rebuild the library and run the whole fast suite under ASan + UBSan.
+sanitize:
+	mkdir -p build/asan
+	@for f in src/*.c; do \
+	    name=$(basename "$f" .c); \
+	    {{CC}} -std=c99 -g -fsanitize=address,undefined -fno-omit-frame-pointer -Iinclude -c "src/$name.c" -o "build/asan/$name.o"; \
+	done
+	@objs=""; \
+	for f in build/asan/*.o; do \
+	    objs="$objs $f"; \
+	done; \
+	ar rcs build/asan/libraft89.a $objs
+	@for t in test/smoke.c test/unit/test_*.c test/crash/test_*.c test/sim/test_*.c; do \
+	    [ -e "$t" ] || continue; \
+	    name=$(basename "$t" .c); \
+	    {{CC}} -std=c99 -g -fsanitize=address,undefined -fno-omit-frame-pointer -Iinclude -Itest/support -Isrc -Wno-unused-function \
+	        -o "build/asan/$name" "$t" test/support/*.c build/asan/libraft89.a || exit 1; \
+	    ./build/asan/$name || exit 1; \
+	done
+
+# Generate the GCC and Clang compilation databases, then run the seven-cell
+# green matrix from this project root.
+green:
+	sh scripts/gen_compile_db gcc build/gcc/compile_commands.json
+	sh scripts/gen_compile_db clang build/clang/compile_commands.json
+	cd . && {{GREEN}} check
+
+# Green-compliance gate (the seven-cell matrix).
+check: green
+
+# Lint shell scripts and check C/header formatting.
+lint:
+	@for f in scripts/*; do \
+	    [ -e "$f" ] || continue; \
+	    shellcheck -s sh "$f" || exit 1; \
+	    shellcheck -s bash "$f" || exit 1; \
+	done
+	@for f in src/*.c src/*.h include/*.h test/*.c test/unit/*.c test/crash/*.c test/sim/*.c test/exhaustive/*.c test/failalloc/*.c test/failalloc/*.h test/support/*.c test/support/*.h examples/*.c; do \
+	    [ -e "$f" ] || continue; \
+	    clang-format --dry-run --Werror "$f" || { echo "needs formatting: $f"; exit 1; }; \
+	done
+
+# Rewrite sources to canonical formatting.
+format:
+	@for f in src/*.c src/*.h include/*.h test/*.c test/unit/*.c test/crash/*.c test/sim/*.c test/exhaustive/*.c test/failalloc/*.c test/failalloc/*.h test/support/*.c test/support/*.h examples/*.c; do \
+	    [ -e "$f" ] || continue; \
+	    clang-format -i "$f"; \
+	done
+
+# Verify required external tools are available.
+doctor:
+	@command -v gcc >/dev/null 2>&1 || { echo "missing: gcc"; exit 1; }
+	@command -v clang >/dev/null 2>&1 || { echo "missing: clang"; exit 1; }
+	@command -v clang-tidy >/dev/null 2>&1 || { echo "missing: clang-tidy"; exit 1; }
+	@command -v clang-format >/dev/null 2>&1 || { echo "missing: clang-format"; exit 1; }
+	@command -v just >/dev/null 2>&1 || { echo "missing: just"; exit 1; }
+	@command -v ar >/dev/null 2>&1 || { echo "missing: ar"; exit 1; }
+	@echo "doctor: all prerequisites present"
+
+clean:
+	rm -rf build

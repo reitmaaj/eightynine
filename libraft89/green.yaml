@@ -1,0 +1,42 @@
+version: 1
+
+compile_commands:
+    gcc: build/gcc/compile_commands.json
+    clang: build/clang/compile_commands.json
+
+project_roots:
+    - src
+    - include
+
+exclude:
+    - build/**
+
+compatibility_paths: []
+
+pure_functions:
+    - raft89__config_validate
+    - raft89__members_valid
+    - raft89__timeouts_valid
+    - raft89__limits_valid
+    - raft89__store_valid
+    - raft89__random_valid
+    - raft89__config_has_zero
+    - raft89__config_has_duplicate
+    - raft89__config_count_id
+    - raft89__node_has_member
+    - raft89__check_restored
+    - raft89__action_result_valid
+    - raft89__sat_add
+    - raft89__quorum
+    - raft89__min_index
+    - raft89__member_index
+    - raft89__log_is_fresh
+    - raft89__msg_envelope_valid
+    - raft89__request_vote_valid
+    - raft89__vote_response_valid
+    - raft89__append_entries_valid
+    - raft89__append_entries_response_valid
+    - entry_shape_valid
+    - entries_shape_valid
+    - peer_replicated
+    - count_replicated

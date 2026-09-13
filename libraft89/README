@@ -1,0 +1,58 @@
+# libraft89
+
+A deterministic Raft consensus core in strict ISO C89. libraft89 owns the
+Raft algorithm — leader election, log replication, commit calculation, and
+ordered application — and nothing around it.
+
+```text
+            application
+        +-----------------+
+        | storage/network |
+        | timers/FSM      |
+        +--------+--------+
+                 | events / actions
+        +--------v--------+
+        |    libraft89    |
+        | deterministic   |
+        | Raft protocol   |
+        +-----------------+
+```
+
+There are no sockets, threads, files, serialization, event loops, or database
+code inside the library. The host supplies messages, commands, logical time,
+randomness, and storage reads; every externally visible effect leaves through
+an acknowledged action.
+
+## Build and test
+
+- `just build` — build `build/libraft89.a`.
+- `just smoke` — one end-to-end lifecycle path.
+- `just unit` — unit programs, one per concern.
+- `just crash` — crash-point semantics for each durable effect.
+- `just sim` — deterministic cluster simulation and seeded random traces.
+- `just failalloc` — allocation-failure injection over create, propose, and
+  receive (`--wrap`).
+- `just test` — smoke, unit, crash, sim, and allocation-failure suites.
+- `just exhaustive` — bounded model checker: seeded depth-first exploration
+  with the global invariants after every transition. Widen it with
+  `MODELFLAGS="-DMODEL_MAX_DEPTH=40ul" just exhaustive`; a state-cap run
+  reports `INCONCLUSIVE`.
+- `just random` — longer seeded random sweep (100 seeds × 1000 events).
+- `just valgrind` — every fast-suite binary under valgrind.
+- `just example` — build and run `examples/host_loop.c`.
+- `just exhaustive-sanitize` — the model checker under ASan and UBSan.
+- `just sanitize` — the fast suite under ASan and UBSan.
+- `just check` — the full green profile gate (C89 ∩ C23, GCC and Clang,
+  green semantic checks, canonical Allman format).
+
+## Conventions
+
+- Public API namespaced `raft89_*`, declared in `include/raft89.h`.
+- The host owns persistent storage; the library reads it through callbacks
+  and mutates it through acknowledged actions.
+- Exactly one action may be outstanding per node.
+- Test-driven: scenario -> acceptance -> failing test -> minimal code ->
+  refactor.
+
+See `spec/raft89-spec.md` for the normative contract and `.agent/` for the
+concept, design, scenarios, and acceptance criteria.
