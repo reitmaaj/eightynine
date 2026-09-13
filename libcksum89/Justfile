@@ -7,7 +7,7 @@ STRICT := "-std=c89 -pedantic-errors -Wall -Wextra -Werror -Wconversion -Wsign-c
 TESTFLAGS := "-Wno-unused-function"
 INC := "-Iinclude -Isrc -Itest"
 LIB := "build/libcksum89.a"
-UNIT_SRCS := "test/test_main.c test/test_vectors.c test/test_crc32_iso_hdlc.c test/test_crc32c.c test/test_crc64_nvme.c test/test_inet16.c test/test_stream.c test/test_tables.c test/ref_crc.c"
+UNIT_SRCS := "test/test_main.c test/test_vectors.c test/test_crc32_iso_hdlc.c test/test_crc32c.c test/test_crc64_nvme.c test/test_inet16.c test/test_stream.c test/test_api.c test/test_tables.c test/ref_crc.c"
 
 default: build
 
@@ -26,6 +26,11 @@ build:
 	done; \
 	rm -f {{LIB}}; \
 	ar rcs {{LIB}} $objs
+
+# Smoke test first: one end-to-end path through all four algorithms.
+smoke: build
+	{{CC}} {{STRICT}} {{TESTFLAGS}} -Iinclude -o build/smoke test/smoke.c {{LIB}}
+	./build/smoke
 
 # Unit, vector, and table suite as one binary.
 unit: build
@@ -46,8 +51,12 @@ cpp-check:
 	g++ -std=c++23 -pedantic-errors -Wall -Wextra -Werror -Iinclude -c test/cpp/header_check.cpp -o build/header_check_gpp.o
 	clang++ -std=c++23 -pedantic-errors -Wall -Wextra -Werror -Iinclude -c test/cpp/header_check.cpp -o build/header_check_clangpp.o
 
-# Run every fast suite.
-test: unit guard cpp-check
+# Run every fast suite (smoke first).
+test: smoke unit guard cpp-check
+
+# Symbol and API audit: no allocation or I/O references, exact export set.
+audit: build
+	sh scripts/audit.sh
 
 # ASan + UBSan rebuild and full suite.
 sanitize:
@@ -60,6 +69,7 @@ matrix:
 # Regenerate the checked-in lookup tables from the frozen parameters.
 tables:
 	python3 tools/gen_tables.py > src/cksum89_tables.c
+	clang-format -i src/cksum89_tables.c
 
 # Configure and build the CMake targets, then run CTest.
 cmake:
@@ -74,8 +84,8 @@ green:
 	sh scripts/gen_compile_db clang build/clang/compile_commands.json
 	cd . && {{GREEN}} check
 
-# Full local gate: green profile, lint, and the fast suite.
-check: green lint test
+# Full local gate: green profile, lint, the fast suite, and the symbol audit.
+check: green lint test audit
 
 # Lint shell scripts and check C/header formatting.
 lint:

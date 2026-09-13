@@ -49,9 +49,9 @@ gates.
 ## `just` and `make`
 
 Use `just` for all actions: `just build`, `just smoke`, `just unit`,
-`just guard`, `just cpp-check`, `just test`, `just sanitize`, `just matrix`,
-`just tables`, `just cmake`, `just green`, `just check`, `just lint`,
-`just format`, `just doctor`, `just clean`.
+`just guard`, `just cpp-check`, `just test`, `just audit`, `just sanitize`,
+`just matrix`, `just tables`, `just cmake`, `just green`, `just check`,
+`just lint`, `just format`, `just doctor`, `just clean`.
 
 ## Git
 

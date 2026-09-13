@@ -37,6 +37,7 @@ if(CKSUM89_BUILD_TESTS)
         test/test_crc64_nvme.c
         test/test_inet16.c
         test/test_stream.c
+        test/test_api.c
         test/test_tables.c)
     target_include_directories(test_cksum89 PRIVATE include src test)
     target_link_libraries(test_cksum89 PRIVATE cksum89)

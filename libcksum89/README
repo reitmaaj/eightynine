@@ -28,6 +28,8 @@ CRC-32/ISO-HDLC   CRC-32C   CRC-64/NVME   INET16 (RFC 1071)
 - `just guard` - the `CHAR_BIT == 8` compile-time rejection probe.
 - `just cpp-check` - C++23 header inclusion with g++ and clang++.
 - `just test` - all fast suites.
+- `just audit` - symbol/API audit: no allocation or I/O references and an
+  exact export set.
 - `just sanitize` - ASan + UBSan rebuild and full suite.
 - `just matrix` - gcc/clang x C89/C23 build-and-run matrix.
 - `just tables` - regenerate the checked-in lookup tables.

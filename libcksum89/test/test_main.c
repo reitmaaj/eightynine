@@ -97,6 +97,7 @@ int main(void)
     test_crc64_nvme();
     test_inet16();
     test_stream();
+    test_api();
     test_tables();
     if (cksum89_test_failures != 0)
     {

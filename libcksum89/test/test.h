@@ -33,6 +33,7 @@ void test_crc32c(void);
 void test_crc64_nvme(void);
 void test_inet16(void);
 void test_stream(void);
+void test_api(void);
 void test_tables(void);
 
 #endif /* CKSUM89_TEST_H */
