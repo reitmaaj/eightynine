@@ -1,0 +1,29 @@
+# llm89
+
+A minimal, strict-C89-clean LLM protocol client library for OpenAI-compatible
+Chat Completions endpoints over libcurl, including SSE streaming.
+
+- ISO C89, warning-clean under the green profile (C89∩C23, GCC and Clang).
+- Transport entirely through libcurl (TLS verification left enabled).
+- JSON parse and build through the sibling `libj89` project (no cJSON).
+  `libj89` delegates Unicode facts to `libu89`, which is linked in turn
+  (`just deps` builds it).
+- No CLI, no agent loop, no retry policy, no provider-specific adapters.
+
+See `spec.md` for the full V0 specification.
+
+## Layout
+
+- `include/` — public header `llm89.h` (no curl/libj89 types exposed)
+- `src/` — `llm89.c` (API + libcurl), `llm89_sse.c/.h`, `llm89_buf.c/.h`
+- `tests/` — SSE/JSON unit tests + protocol tests against a local server
+- `.agent/` — concept, design, stories, scenarios, acceptance
+
+## Recipes
+
+- `just build` — compile library sources under strict C89
+- `just test` — run unit + protocol tests
+- `just test_protocol` — build the protocol test executable
+- `just check` — cbaseline + lint gates
+- `just lint` — shellcheck + clang-format
+- `just asan` — full suite under AddressSanitizer

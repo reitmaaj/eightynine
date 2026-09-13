@@ -1,0 +1,83 @@
+set shell := ["sh", "-eu", "-c"]
+
+CC := env_var_or_default("CC", "cc")
+GREEN := env_var_or_default("GREEN", "../../green/.agent/tmp/build/green")
+
+STRICT := "-std=c89 -pedantic-errors -Wall -Wextra -Werror -Wconversion -Wsign-conversion -Wstrict-prototypes -Wmissing-prototypes -Wold-style-definition -Wundef -Wshadow -Wformat=2"
+
+LIB := "src/hm_ctx.c src/hm_type.c src/hm_unify.c src/hm_scheme.c src/hm_env.c src/hm_ftv.c src/hm_error.c src/hm_print.c"
+
+default: build
+
+# Compile the static library archive.
+build:
+	mkdir -p build
+	{{CC}} {{STRICT}} -Iinclude -c src/hm_ctx.c -o build/hm_ctx.o
+	{{CC}} {{STRICT}} -Iinclude -c src/hm_type.c -o build/hm_type.o
+	{{CC}} {{STRICT}} -Iinclude -c src/hm_unify.c -o build/hm_unify.o
+	{{CC}} {{STRICT}} -Iinclude -c src/hm_scheme.c -o build/hm_scheme.o
+	{{CC}} {{STRICT}} -Iinclude -c src/hm_env.c -o build/hm_env.o
+	{{CC}} {{STRICT}} -Iinclude -c src/hm_ftv.c -o build/hm_ftv.o
+	{{CC}} {{STRICT}} -Iinclude -c src/hm_error.c -o build/hm_error.o
+	{{CC}} {{STRICT}} -Iinclude -c src/hm_print.c -o build/hm_print.o
+	ar rcs build/libhm89.a build/hm_ctx.o build/hm_type.o build/hm_unify.o \
+	    build/hm_scheme.o build/hm_env.o build/hm_ftv.o build/hm_error.o \
+	    build/hm_print.o
+
+# Smoke test first: one end-to-end inference path.
+smoke: build
+	{{CC}} {{STRICT}} -Wno-unused-function -Iinclude -o build/smoke test/smoke.c {{LIB}}
+	./build/smoke
+
+# Unit tests, one small program per concern.
+unit: build
+	@for t in test/unit/test_*.c; do \
+	    [ -e "$t" ] || continue; \
+	    name=$(basename "$t" .c); \
+	    {{CC}} {{STRICT}} -Wno-unused-function -Iinclude -o "build/$name" "$t" {{LIB}} || exit 1; \
+	    ./build/$name || exit 1; \
+	done
+
+# Run every test (smoke runs first, then the unit suite).
+test: smoke unit
+
+# Generate the GCC and Clang compilation databases, then run the seven-cell
+# green matrix from this project root.
+green:
+	sh scripts/gen_compile_db gcc build/gcc/compile_commands.json
+	sh scripts/gen_compile_db clang build/clang/compile_commands.json
+	cd . && {{GREEN}} check
+
+# Green-compliance gate (the seven-cell matrix).
+check: green
+
+# Lint shell scripts and check C/header formatting.
+lint:
+	@for f in scripts/*.sh test/*.sh; do \
+	    [ -e "$f" ] || continue; \
+	    shellcheck -s sh "$f" || exit 1; \
+	    shellcheck -s bash "$f" || exit 1; \
+	done
+	@for f in src/*.c src/*.h include/*.h test/*.c test/unit/*.c test/*.h; do \
+	    [ -e "$f" ] || continue; \
+	    clang-format --dry-run --Werror "$f" || { echo "needs formatting: $f"; exit 1; }; \
+	done
+
+# Rewrite sources to canonical formatting.
+format:
+	@for f in src/*.c src/*.h include/*.h test/*.c test/unit/*.c test/*.h; do \
+	    [ -e "$f" ] || continue; \
+	    clang-format -i "$f"; \
+	done
+
+# Verify required external tools are available.
+doctor:
+	@command -v gcc >/dev/null 2>&1 || { echo "missing: gcc"; exit 1; }
+	@command -v clang >/dev/null 2>&1 || { echo "missing: clang"; exit 1; }
+	@command -v clang-tidy >/dev/null 2>&1 || { echo "missing: clang-tidy"; exit 1; }
+	@command -v clang-format >/dev/null 2>&1 || { echo "missing: clang-format"; exit 1; }
+	@command -v just >/dev/null 2>&1 || { echo "missing: just"; exit 1; }
+	@echo "doctor: all prerequisites present"
+
+clean:
+	rm -rf build

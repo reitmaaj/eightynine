@@ -1,0 +1,109 @@
+set shell := ["sh", "-eu", "-c"]
+
+CC := env_var_or_default("CC", "cc")
+GREEN := env_var_or_default("GREEN", "../../green/.agent/tmp/build/green")
+
+STRICT := "-std=c89 -pedantic-errors -Wall -Wextra -Werror -Wconversion -Wsign-conversion -Wstrict-prototypes -Wmissing-prototypes -Wold-style-definition -Wundef -Wshadow -Wformat=2"
+
+default: build
+
+# Compile every library translation unit and archive libbwt89.a.
+build:
+	mkdir -p build
+	@for f in src/*.c; do \
+	    [ -e "$f" ] || continue; \
+	    name=$(basename "$f" .c); \
+	    {{CC}} {{STRICT}} -Iinclude -Isrc -c "src/$name.c" -o "build/$name.o"; \
+	done
+	@objs=""; \
+	for f in build/*.o; do \
+	    objs="$objs $f"; \
+	done; \
+	rm -f build/libbwt89.a; \
+	ar rcs build/libbwt89.a $objs
+
+# Smoke test first: one end-to-end path through the library.
+smoke: build
+	{{CC}} {{STRICT}} -Iinclude -o build/smoke test/smoke.c build/libbwt89.a
+	./build/smoke
+
+# Unit tests, one small program per concern.
+unit: build
+	@for t in test/unit/test_*.c; do \
+	    [ -e "$t" ] || continue; \
+	    name=$(basename "$t" .c); \
+	    {{CC}} {{STRICT}} -Iinclude -Isrc -o "build/$name" "$t" build/libbwt89.a || exit 1; \
+	    ./build/$name || exit 1; \
+	done
+
+# Run every test (smoke runs first, then the unit suite).
+test: smoke unit
+
+# Byte-exact BBWT differential against the vendored OpenBWT oracle (D, L).
+# Fails loudly if the vendored source is absent; never silently skips.
+oracle: build
+	@if [ ! -f tmp/openbwt-v1.5/src/BWTS.c ]; then \
+	    echo "error: OpenBWT oracle source not found at tmp/openbwt-v1.5"; \
+	    echo "fetch the pinned v1.5 source into tmp/ (see .agent/concept) before running just oracle"; \
+	    exit 1; \
+	fi
+	mkdir -p build/oracle
+	@if [ ! -f build/oracle/openbwt_config.h ]; then \
+	    printf '%%s\n' \
+	    '#ifndef _OPENBWT_CONFIG_H' \
+	    '#define _OPENBWT_CONFIG_H 1' \
+	    '#include <stdlib.h>' \
+	    '#include <stdint.h>' \
+	    '#define HAVE_STDLIB_H 1' \
+	    '#define HAVE_STDINT_H 1' \
+	    '#define HAVE_INT32_T 1' \
+	    '#define HAVE_UINT32_T 1' \
+	    '#define OPENBWT_API' \
+	    '#define INLINE static inline' \
+	    '#endif' > build/oracle/openbwt_config.h; \
+	fi
+	cc -std=c99 -Ibuild/oracle -Itmp/openbwt-v1.5/include -c tmp/openbwt-v1.5/src/BWTS.c -o build/oracle/BWTS.o
+	cc -Iinclude -Itmp/openbwt-v1.5/include -Ibuild/oracle -o build/oracle/diff_bbwt test/oracle/diff_bbwt.c build/libbwt89.a build/oracle/BWTS.o
+	./build/oracle/diff_bbwt
+
+# Generate the GCC and Clang compilation databases, then run the seven-cell
+# green matrix from this project root.
+green:
+	sh scripts/gen_compile_db gcc build/gcc/compile_commands.json
+	sh scripts/gen_compile_db clang build/clang/compile_commands.json
+	cd . && {{GREEN}} check
+
+# Green-compliance gate (the seven-cell matrix).
+check: green
+
+# Lint shell scripts and check C/header formatting.
+lint:
+	@for f in scripts/* test/*.sh; do \
+	    [ -e "$f" ] || continue; \
+	    shellcheck -s sh "$f" || exit 1; \
+	    shellcheck -s bash "$f" || exit 1; \
+	done
+	@for f in src/*.c src/*.h include/*.h test/*.c test/unit/*.c test/unit/*.h; do \
+	    [ -e "$f" ] || continue; \
+	    clang-format --dry-run --Werror "$f" || { echo "needs formatting: $f"; exit 1; }; \
+	done
+
+# Rewrite sources to canonical formatting.
+format:
+	@for f in src/*.c src/*.h include/*.h test/*.c test/unit/*.c test/unit/*.h; do \
+	    [ -e "$f" ] || continue; \
+	    clang-format -i "$f"; \
+	done
+
+# Verify required external tools are available.
+doctor:
+	@command -v gcc >/dev/null 2>&1 || { echo "missing: gcc"; exit 1; }
+	@command -v clang >/dev/null 2>&1 || { echo "missing: clang"; exit 1; }
+	@command -v clang-tidy >/dev/null 2>&1 || { echo "missing: clang-tidy"; exit 1; }
+	@command -v clang-format >/dev/null 2>&1 || { echo "missing: clang-format"; exit 1; }
+	@command -v just >/dev/null 2>&1 || { echo "missing: just"; exit 1; }
+	@command -v ar >/dev/null 2>&1 || { echo "missing: ar"; exit 1; }
+	@echo "doctor: all prerequisites present"
+
+clean:
+	rm -rf build

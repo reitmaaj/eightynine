@@ -1,0 +1,39 @@
+#!/bin/sh -eu
+# gen_compile_db <compiler> <outfile>
+#
+# Emit a compile_commands.json for the given compiler, listing every source
+# translation unit under src/ with the include paths needed to parse it.
+# green overrides the diagnostic/language profile, so the command only needs
+# correct includes and the file list. The GCC and Clang databases are
+# generated from the same source list, so their translation-unit sets match.
+
+cc="$1"
+out="$2"
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+libj89="$(cd "$root/../libj89" && pwd)"
+
+mkdir -p "$(dirname "$out")"
+
+first=1
+for f in "$root"/src/*.c; do
+    [ -e "$f" ] || continue
+    if [ "$first" -eq 1 ]; then
+        first=0
+        printf '[\n' > "$out"
+    else
+        printf ',\n' >> "$out"
+    fi
+    printf '  {\n' >> "$out"
+    printf '    "directory": "%s",\n' "$root" >> "$out"
+    printf '    "command": "%s -c -I%s/include -isystem %s/include -o /dev/null %s",\n' \
+        "$cc" "$root" "$libj89" "$f" >> "$out"
+    printf '    "file": "%s"\n' "$f" >> "$out"
+    printf '  }' >> "$out"
+done
+
+if [ "$first" -eq 1 ]; then
+    printf '[]\n' > "$out"
+else
+    printf '\n]\n' >> "$out"
+fi

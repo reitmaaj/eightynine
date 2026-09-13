@@ -1,0 +1,51 @@
+# libj89
+
+A minimal, strict-C89-clean JSON parser used by the `wid` sibling project.
+
+Subset: object, array, string (escapes, `\uXXXX`, UTF-8), integer,
+fractional/exponent number (FLOAT), `true`/`false`/`null`. Strings and object
+keys are validated as UTF-8 on input; a single leading UTF-8 BOM is ignored;
+duplicate object keys are rejected.
+
+Unicode scalar and UTF-8/UTF-16 facts are delegated to the sibling `libu89`;
+`libj89` owns JSON syntax and representation. Every string value and object
+key in a `j89_arena` is well-formed UTF-8, whether parsed or built through the
+public builder, which validates before allocating. JSON strings are not
+normalized or case-folded. Build and test require `libu89` (see `just deps`).
+
+All numbers are IEEE-754 `double`. Integers are exact for |n| <= 2^53; an
+integer token beyond that range is rejected (never approximated). This
+range/precision limit is permitted by RFC 8259 section 6. A number whose
+magnitude exceeds `double` range is rejected (no infinity/NaN).
+
+Constraints:
+- ISO C89.
+- Green: the sibling `green` toolchain (strict C89∩C23 profile matrix,
+  semantic clang-tidy, canonical format) passes for every source. This is
+  the conformance gate.
+- JSON parsing is intentionally narrow to keep the parser small and
+  trivially auditable.
+
+Build and test via `just`.
+
+## Layout
+
+- `src/` — parser, value tree, printer, CLI
+- `include/` — public header `j89.h`
+- `test/` — unit + e2e tests
+- `scripts/` — build helpers (compile-database generation for green)
+- `.agent/` — concept, design, stories, scenarios, acceptance
+
+## Recipes
+
+- `just deps` — build the sibling `libu89` dependency
+- `just build` — compile the library and `j89` CLI
+- `just test` — run unit + e2e tests
+- `just check` — unicode-audit + green gate (matrix + tidy + format)
+- `just green` — green `check` (matrix + tidy + format; needs `green.yaml`)
+- `just unicode-audit` — tripwire: no UTF-8/UTF-16 algorithm in `src/`
+- `just lint` — shellcheck + clang-format + source audits
+
+`green.yaml` and the compile databases (generated into `build/` by
+`just green-db`) record the gcc and clang compile contexts for the j89
+translation units.

@@ -1,0 +1,91 @@
+set shell := ["sh", "-eu", "-c"]
+
+CC := env_var_or_default("CC", "cc")
+LIBJ89 := env_var_or_default("LIBJ89", "../libj89")
+U89 := env_var_or_default("U89", LIBJ89 + "/../libu89")
+U89LIB := U89 + "/build/libu89.a"
+GREEN := env_var_or_default("GREEN", "../../green/.agent/tmp/build/green")
+
+STRICT := "-std=c89 -pedantic-errors -Wall -Wextra -Werror -Wconversion -Wsign-conversion -Wstrict-prototypes -Wmissing-prototypes -Wold-style-definition -Wundef -Wshadow -Wformat=2"
+
+SRC := "src/jrpc89_internal.c src/id.c src/request.c src/response.c src/error.c src/io.c src/main.c"
+LIB := "src/jrpc89_internal.c src/id.c src/request.c src/response.c src/error.c src/io.c"
+LIBJ89_SRC := LIBJ89 + "/src/parse.c " + LIBJ89 + "/src/value.c " + LIBJ89 + "/src/print.c"
+
+default: build
+
+# Build the sibling libu89 dependency (Unicode facts for libj89).
+deps:
+	cd {{U89}} && just build
+
+# Compile the CLI demo (library + libj89).
+build: deps
+	mkdir -p build
+	{{CC}} {{STRICT}} -Iinclude -I{{LIBJ89}}/include -I{{U89}}/include -o build/jrpc89 {{SRC}} {{LIBJ89_SRC}} {{U89LIB}} -lm
+
+# Unit tests, each linked with the non-main library sources.
+unit: build
+	@for t in test/unit/test_*.c; do \
+	    [ -e "$t" ] || continue; \
+	    name=$(basename "$t" .c); \
+	    {{CC}} {{STRICT}} -Iinclude -I{{LIBJ89}}/include -I{{U89}}/include -Itest/unit -o build/$name "$t" {{LIB}} {{LIBJ89_SRC}} {{U89LIB}} || exit 1; \
+	    ./build/$name || exit 1; \
+	done
+
+# End-to-end tests against a mock Unix-socket server (small scripts).
+e2e: build
+	@for s in test/e2e/smoke.sh test/e2e/error.sh test/e2e/mismatch.sh; do \
+	    sh "$s" ./build/jrpc89 || exit 1; \
+	done
+
+# Parameterized e2e exchange suite: >=100 passing and >=100 failing cases.
+e2e-suite: build
+	sh test/e2e/suite.sh ./build/jrpc89
+
+# Smoke test first: single end-to-end request/response over a Unix socket.
+smoke: build
+	sh test/e2e/smoke.sh ./build/jrpc89
+
+# Run every test (smoke runs first, then unit, then the e2e scripts and suite).
+test: smoke unit e2e e2e-suite
+
+# Generate the GCC and Clang compilation databases, then run the seven-cell
+# green matrix from this project root.
+green:
+	sh scripts/gen_compile_db gcc build/gcc/compile_commands.json
+	sh scripts/gen_compile_db clang build/clang/compile_commands.json
+	cd . && {{GREEN}} check
+
+# green-compliance gate: the seven-cell matrix (C89/C23 x gcc/clang),
+# clang-tidy semantic suite, and canonical format.
+check: green
+
+lint:
+	@for f in test/*.sh test/*/*.sh scripts/*.sh; do \
+	    [ -e "$f" ] || continue; \
+	    shellcheck -s sh "$f" || exit 1; \
+	    shellcheck -s bash "$f" || exit 1; \
+	done
+	@for f in src/*.c src/*.h include/*.h test/*/*.c; do \
+	    [ -e "$f" ] || continue; \
+	    clang-format --dry-run --Werror "$f" || { echo "needs formatting: $f"; exit 1; }; \
+	done
+
+format:
+	@for f in src/*.c src/*.h include/*.h test/*/*.c; do \
+	    [ -e "$f" ] || continue; \
+	    clang-format -i "$f"; \
+	done
+
+# Verify required external tools are available.
+doctor:
+	@command -v gcc >/dev/null 2>&1 || { echo "missing: gcc"; exit 1; }
+	@command -v clang >/dev/null 2>&1 || { echo "missing: clang"; exit 1; }
+	@command -v clang-tidy >/dev/null 2>&1 || { echo "missing: clang-tidy"; exit 1; }
+	@command -v clang-format >/dev/null 2>&1 || { echo "missing: clang-format"; exit 1; }
+	@command -v shellcheck >/dev/null 2>&1 || { echo "missing: shellcheck"; exit 1; }
+	@command -v python3 >/dev/null 2>&1 || { echo "missing: python3"; exit 1; }
+	@echo "doctor: all prerequisites present"
+
+clean:
+	rm -rf build

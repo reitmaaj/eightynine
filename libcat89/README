@@ -1,0 +1,106 @@
+# libcat89
+
+A small, representation-neutral generic category-theory library for strict
+ISO C89. It models a category directly as
+
+    (Ob, Mor, dom, cod, id, compose)
+
+and layers derived categorical structures above that kernel. The category
+core carries no assumption about finiteness, enumerability, decidable equality,
+executable morphisms, canonical forms, or any derived structure. Laws are
+contracts promised by backends; optional checkers verify them when the required
+capabilities exist.
+
+## Design in one line
+
+    minimal category core
+    + strictly layered categorical structures
+    + orthogonal computational capabilities (equality, enumeration)
+
+## Public layout
+
+Nested headers under `include/cat89/`:
+
+- `status.h`, `alloc.h`, `core.h` — the category kernel.
+- `eq.h`, `enum.h` — orthogonal capabilities.
+- `functor.h`, `nat.h` — 1-categorical algebra.
+- `iso.h`, `split.h` — derived structures wrapping ordinary morphisms (CAT-I3).
+- `check.h` — explicit law checking, including the exhaustive library sweeps.
+- `diagram.h`, `cone.h`, `limit.h` — diagrams, cones/cocones, limits/colimits.
+- `shape.h`, `find.h`, `findlim.h` — finite shape categories and the
+  terminal/initial + binary-product/coproduct, equalizer/coequalizer, and
+  pullback/pushout finders.
+- `opposite.h` — generic category construction (reverses arrows).
+- `product.h`, `comma.h`, `arrow.h`, `slice.h`, `coslice.h` — generic wrapper
+  categories (pairs, spans, commutative squares, triangles).
+- `finite.h`, `free.h`, `thin.h` — concrete reference backends.
+- `cat89.h` — umbrella header.
+
+`core.h` never includes a higher-level header (enforced by the architecture
+gate).
+
+## Implemented and green
+
+Each module below passes the workspace `green` matrix (strict C89∩C23 under
+GCC and Clang, clang-tidy, canonical Allman format) and has unit tests:
+
+- category kernel (`status`/`alloc`/`core`)
+- equality + enumeration capabilities
+- finite backend (builder, immutable store, category/eq/enumeration)
+- free (path) and thin (preorder) backends
+- functor, natural transformation (core, vertical/whisker/horizontal), iso,
+  split mono/epi
+- local law checkers and the **exhaustive category-law checker**
+  (`cat89_check_category_exhaustive`, identity + associativity over an
+  enumerated finite ambient)
+- **exhaustive derived law-family sweeps** (W5): iso, split mono/epi, functor
+  (identity + composition), naturality, and cone/cocone commutation cells, each
+  counting into a `cat89_check_result` and refusing with `CAT89_NOT_SUPPORTED`
+  when a required capability is absent
+- opposite-category construction
+- generic wrapper categories: product, comma (over functors), arrow, slice,
+  coslice
+- shape categories (`shape.h`) and terminal/initial object finders (`find.h`)
+- **finite universal-construction finders** (`findlim.h`, W4.2): binary
+  product/coproduct, equalizer/coequalizer, and pullback/pushout, each returning
+  a genuine `cat89_limit`/`cat89_colimit` over the relevant shape diagram whose
+  cone/cocone carries a working universal `factor` (CAT-I9). Decoy apices are
+  never substituted for the genuine apex.
+- hardening (W6): mock-backend observer/context split, an allocator-failure
+  campaign across the finite builder, shape, every wrapper/derived constructor,
+  and the finders (error-atomic under injected single-allocation failure), a
+  mock callback-failure matrix confirming verbatim status propagation, and a
+  clean `just sanitize` (ASan+UBSan+LSan) over the whole suite
+- ABI/architecture audit gates (W7): core-header isolation, header include-graph
+  acyclicity, exported-symbol inventory, and struct-exposure review
+- correctness closure: mandatory `owns_obj`/`owns_mor` provenance enforced by
+  every raw-handle API; representation-independent object identity; one-pass
+  finder enumeration; failure-atomic finite builder with full validation;
+  checked size/refcount arithmetic; unambiguous factor cardinality
+
+## Build and test
+
+    just build        # strict C89, archive build/libcat89.a (src objects only)
+    just smoke        # one end-to-end path first
+    just unit         # per-concern unit programs
+    just test         # smoke then unit
+    just headers      # each public header compiles standalone
+    just green        # sibling green toolchain matrix
+    just arch         # ABI/architecture hygiene gates (also run by lint)
+    just sanitize     # whole suite under ASan+UBSan+LSan (must stay clean)
+    just lint / format / doctor / clean
+
+The green driver lives at ../../green/.agent/tmp/build/green (override GREEN).
+`just baseline` (`c89-baseline.mk`) is NOT maintained; green + lint + the
+Justfile recipes (including `just sanitize`) are the gates of record.
+
+## Status
+
+The v1 scope is implemented and green: the category kernel, orthogonal
+capabilities, the concrete backends (finite/free/thin), the 1-categorical
+algebra, the wrapper categories, universal structure (diagrams, cones,
+limits/colimits, and the finite universal-construction finders), the exhaustive
+law-family checkers, hardening (allocator/callback failure + sanitizer-clean),
+and the ABI/architecture audit. Deferred to v2: adjunctions, monads,
+monoidal/enriched settings, profunctors/presheaves, Kan extensions,
+fibrations, higher categories, toposes, and model categories.

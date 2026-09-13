@@ -1,0 +1,45 @@
+version: 1
+
+compile_commands:
+    gcc: build/gcc/compile_commands.json
+    clang: build/clang/compile_commands.json
+
+project_roots:
+    - src
+
+exclude:
+    - build/**
+
+compatibility_paths: []
+
+# Observational queries and pure arithmetic. The ownership probes must not
+# mutate or retain/release their argument by contract, and object identity /
+# capability category accessors are field reads; treating them as pure lets
+# them appear in condition expressions without an explicit binding.
+pure_functions:
+    - obj_of
+    - obj_id_of
+    - obj_value
+    - base_args_valid
+    - cat89_category_ctx
+    - cat89_eq_category
+    - cat89_enum_category
+    - cat89_functor_source
+    - cat89_functor_target
+    - cat89_cone_diagram
+    - cat89_cocone_diagram
+    - cat89_cone_category
+    - cat89_cocone_category
+    - cat89_limit_cone
+    - cat89_colimit_cocone
+    - cat89_nat_source
+    - cat89_nat_target
+    - cat89_iso_category
+    - cat89_split_mono_category
+    - cat89_split_epi_category
+    - cat89_owns_obj
+    - cat89_owns_mor
+    - cat89_obj_same
+    - cat89_vec_at
+    - cat89_size_add
+    - cat89_size_mul

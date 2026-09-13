@@ -1,0 +1,13 @@
+case,steps_per_run,ns_per_step,mips
+memcpy,1405,73.0,13.7
+arith,75003,45.3,22.1
+jump,45008,35.0,28.6
+mixed,48003,61.8,16.2
+micro:alu64-add,66,47.2,21.2
+micro:alu64-mul,66,44.1,22.7
+micro:alu64-div,66,60.0,16.7
+micro:alu64-mov,66,41.6,24.1
+micro:jump-ja,66,24.7,40.5
+micro:ldx-w,66,71.4,14.0
+micro:stx-w,66,71.7,13.9
+micro:ldx-dw,66,88.4,11.3

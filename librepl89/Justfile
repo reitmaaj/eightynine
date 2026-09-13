@@ -1,0 +1,62 @@
+GREEN := env_var_or_default("GREEN", "../../green/.agent/tmp/build/green")
+GREEN_FORMAT := env_var_or_default("GREEN_FORMAT", "../../green/share/green/clang-format.yaml")
+
+default: build
+
+# Build the libu89 dependency, then this library.
+build:
+	cd ../libu89 && just build
+	make librepl89
+
+test: build
+	make test
+
+# Build the example echo REPL.
+example: build
+	make examples
+
+# Build and run the example echo REPL (interactive; needs a tty).
+echo: example
+	./build/echo
+
+# Build and run the event-driven echo REPL with SIGWINCH handling.
+echo-events: example
+	./build/echo_events
+
+# Generate the GCC and Clang compilation databases the green gate reads.
+setup-green:
+	cmake -S . -B build/gcc -DCMAKE_C_COMPILER=gcc -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+	cmake -S . -B build/clang -DCMAKE_C_COMPILER=clang -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+
+# Full green gate: strict C89 AND C23, GCC and Clang, green-* semantic checks,
+# canonical Allman formatting, and the Unicode-split tripwire.
+check: lint-split setup-green
+	{{GREEN}} check
+
+# Build and run the full test binary under ASan + UBSan.
+sanitize:
+	make clean
+	make test CFLAGS="-std=c89 -pedantic-errors -Wall -Wextra -Werror -Wconversion -Wsign-conversion -Wstrict-prototypes -Wmissing-prototypes -Wold-style-definition -Wundef -Wshadow -Wformat=2 -Iinclude -Isrc -I../libu89/include -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer"
+
+# Run the full test binary under valgrind.
+valgrind:
+	make clean
+	make test
+	valgrind --leak-check=full --error-exitcode=1 ./build/test
+
+# Architectural tripwire for R89-I10: librepl89 must not contain Unicode
+# segmentation algorithms or property data. Deliberately narrow; not a proof.
+lint-split:
+	@if grep -RInE 'Grapheme_Cluster_Break|Word_Break|Regional_Indicator|Extended_Pictographic|EastAsianWidth|0x1F1E6|combining class|variation selector|ZWJ|U\+1F1E6' src include; then \
+	    echo "lint-split: Unicode implementation leaked into librepl89"; \
+	    exit 1; \
+	fi
+	@echo "lint-split: clean"
+
+# Rewrite the handwritten sources to canonical green formatting.
+format:
+	clang-format -i --style=file:{{GREEN_FORMAT}} src/repl89_mem.c src/repl89_buf.c src/repl89_edit.c src/repl89_hist.c src/repl89_render.c src/repl89_key.c src/repl89_paste.c src/repl89_tty.c src/repl89.c examples/echo.c examples/echo_events.c
+
+clean:
+	make clean
+	rm -rf build/gcc build/clang

@@ -1,0 +1,29 @@
+version: 1
+
+compile_commands:
+    gcc: build/gcc/compile_commands.json
+    clang: build/clang/compile_commands.json
+
+project_roots:
+    - src
+
+exclude:
+    - build/**
+
+compatibility_paths: []
+
+pure_functions:
+    - fx__atom_eq
+    - fx__atom_less
+    - fx__var_has_required
+    - fx__var_has_forbidden
+    - fx__var_rep
+    - fx__occurs
+    - fx__occurs_walk
+    - fx__equal_class
+    - fx_atom_kind
+    - fx__atom_local
+    - fx__var_local
+    - fx__row_local
+    - fx__constraint_local
+    - fx__mul_overflow

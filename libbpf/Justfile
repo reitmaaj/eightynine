@@ -1,0 +1,158 @@
+CC := env_var_or_default("CC", "cc")
+GREEN := env_var_or_default("GREEN", "../../green/.agent/tmp/build/green")
+STRICT := "-std=c89 -pedantic-errors -Wall -Wextra -Werror -Wconversion -Wsign-conversion -Wstrict-prototypes -Wmissing-prototypes -Wold-style-definition -Wundef -Wshadow -Wformat=2"
+# Strict C89 plus AddressSanitizer and UndefinedBehaviorSanitizer.
+SAN := "-std=c89 -pedantic-errors -Wall -Wextra -Werror -Wconversion -Wsign-conversion -Wstrict-prototypes -Wmissing-prototypes -Wold-style-definition -Wundef -Wshadow -Wformat=2 -fsanitize=address,undefined -fno-sanitize-recover=all -g"
+
+# Library sources (no main.c); the CLI adds main.c.
+LIB_SRC := "src/bpf.c src/cap.c src/decode.c src/eval.c src/ffi.c src/validate.c src/mem.c src/program.c src/vm.c src/print.c"
+CLI_SRC := "src/bpf.c src/cap.c src/decode.c src/eval.c src/ffi.c src/validate.c src/mem.c src/program.c src/vm.c src/print.c src/main.c"
+
+default: build
+
+# Compile the bpf CLI.
+build:
+	mkdir -p build
+	{{CC}} {{STRICT}} -Isrc -o build/bpf {{CLI_SRC}}
+
+# Unit tests, each linked with the library sources.
+unit: build
+	@for t in test/unit/test_*.c; do \
+	    [ -e "$t" ] || continue; \
+	    name=$(basename "$t" .c); \
+	    {{CC}} {{STRICT}} -Isrc -Itest/unit -o build/$name "$t" {{LIB_SRC}} || exit 1; \
+	    ./build/$name || exit 1; \
+	done
+
+# End-to-end tests against the built binary.
+e2e: build
+	@for s in test/e2e/*.sh; do \
+	    [ -e "$s" ] || continue; \
+	    sh "$s" ./build/bpf || exit 1; \
+	done
+
+# C89 strictness probe: non-C89 source must fail to compile.
+probe: build
+	sh test/c89_probe.sh {{CC}}
+
+test: unit e2e probe
+
+# Report the test:source LOC ratio.
+loc:
+	sh test/check_ratio.sh
+
+# Assert the test:source LOC ratio is at least 3:1.
+ratio:
+	sh test/check_ratio.sh
+
+# Build and run the interpreter benchmark harness (POSIX timers, not C89).
+bench: build
+	mkdir -p build
+	{{CC}} -std=c11 -O2 -Wall -Wextra -Werror -Isrc -Ibench \
+	    -c bench/bench.c -o build/bench.o
+	{{CC}} -std=c11 -O2 -Wall -Wextra -Werror -Isrc -Ibench \
+	    -c bench/progs.c -o build/progs.o
+	{{CC}} {{STRICT}} -Isrc -c src/bpf.c -o build/bench-bpf.o
+	{{CC}} {{STRICT}} -Isrc -c src/decode.c -o build/bench-decode.o
+	{{CC}} {{STRICT}} -Isrc -c src/validate.c -o build/bench-validate.o
+	{{CC}} {{STRICT}} -Isrc -c src/eval.c -o build/bench-eval.o
+	{{CC}} {{STRICT}} -Isrc -c src/print.c -o build/bench-print.o
+	{{CC}} -o build/bench build/bench.o build/progs.o build/bench-bpf.o \
+	    build/bench-decode.o build/bench-validate.o build/bench-eval.o \
+	    build/bench-print.o
+	./build/bench
+
+# Memory-integrity check on the strict-C89 unit binaries under valgrind.
+memcheck: unit
+	@for t in test/unit/test_*.c; do \
+	    [ -e "$t" ] || continue; \
+	    name=$(basename "$t" .c); \
+	    echo "== valgrind memcheck: $name =="; \
+	    valgrind --error-exitcode=99 --leak-check=full \
+	        --errors-for-leak-kinds=definite,possible ./build/$name \
+	        >/dev/null 2>"build/$name.valgrind" || { \
+	        echo "memcheck: $name failed"; cat "build/$name.valgrind"; exit 1; }; \
+	done
+	@echo "memcheck: ok"
+
+# Build the CLI and every unit test with AddressSanitizer + UBSan.
+san-build:
+	mkdir -p build
+	{{CC}} {{SAN}} -Isrc -o build/bpf-san {{CLI_SRC}}
+
+# Run every unit test under ASan+UBSan.
+san-unit: san-build
+	@for t in test/unit/test_*.c; do \
+	    [ -e "$t" ] || continue; \
+	    name=$(basename "$t" .c); \
+	    {{CC}} {{SAN}} -Isrc -Itest/unit -o build/san-$name "$t" {{LIB_SRC}} || exit 1; \
+	    ./build/san-$name || exit 1; \
+	done
+
+# Run the end-to-end CLI tests against the sanitized binary.
+san-e2e: san-build
+	@for s in test/e2e/*.sh; do \
+	    [ -e "$s" ] || continue; \
+	    sh "$s" ./build/bpf-san || exit 1; \
+	done
+
+# Full AddressSanitizer + UBSan pass over unit and e2e tests.
+san: san-build san-unit san-e2e
+	@echo "asan+ubsan: ok"
+
+# Measure line+branch coverage of src/*.c from the unit tests via gcov/lcov.
+COV := "-std=c89 -pedantic-errors -Wall -Wextra -Werror -Wconversion -Wsign-conversion -Wstrict-prototypes -Wmissing-prototypes -Wold-style-definition -Wundef -Wshadow -Wformat=2 --coverage -O0 -g"
+
+cov: cov-unit
+	lcov --capture --directory . --output-file build/coverage.info --rc branch_coverage=1 >/dev/null 2>&1 || true
+	lcov --extract build/coverage.info '*/src/*.c' --output-file build/src.info --rc branch_coverage=1 >/dev/null 2>&1 || true
+	lcov --summary build/src.info --rc branch_coverage=1
+
+cov-unit: clean-cov
+	@for t in test/unit/test_*.c; do \
+	    [ -e "$t" ] || continue; \
+	    name=$(basename "$t" .c); \
+	    {{CC}} {{COV}} -Isrc -Itest/unit -o build/cov-$name "$t" {{LIB_SRC}} || exit 1; \
+	    ./build/cov-$name >/dev/null 2>&1 || exit 1; \
+	done
+
+clean-cov:
+	rm -rf build/*.gcda build/*.gcno build/coverage.info build/src.info
+
+# Generate the GCC and Clang compilation databases green consumes.
+green-db:
+	sh scripts/gen_compile_db gcc build/gcc/compile_commands.json
+	sh scripts/gen_compile_db clang build/clang/compile_commands.json
+
+# Full quality gate on src/: green (C89∩C23 gcc+clang, semantic tidy,
+# canonical format).
+green: green-db
+	{{GREEN}} check
+
+check: green
+
+lint:
+	@for f in test/*.sh test/*/*.sh; do \
+	    [ -e "$f" ] || continue; \
+	    shellcheck -s sh "$f" || exit 1; \
+	    shellcheck -s bash "$f" || exit 1; \
+	done
+	@for f in src/*.c src/*.h test/unit/*.c test/unit/*.h; do \
+	    [ -e "$f" ] || continue; \
+	    clang-format --dry-run --Werror "$f" || { echo "needs formatting: $f"; exit 1; }; \
+	done
+
+format:
+	@for f in src/*.c src/*.h test/unit/*.c test/unit/*.h; do \
+	    [ -e "$f" ] || continue; \
+	    clang-format -i "$f"; \
+	done
+
+doctor:
+	@command -v shellcheck >/dev/null 2>&1 || { echo "missing: shellcheck"; exit 1; }
+	@command -v clang-format >/dev/null 2>&1 || { echo "missing: clang-format"; exit 1; }
+	@command -v valgrind >/dev/null 2>&1 || { echo "missing: valgrind"; exit 1; }
+	@echo "doctor: all prerequisites present"
+
+clean:
+	rm -rf build

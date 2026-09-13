@@ -1,0 +1,30 @@
+{
+  "port": 18989,
+  "routes": [
+    {
+      "path": "/ok",
+      "status": 200,
+      "content_type": "application/json",
+      "body": "{\"choices\":[{\"message\":{\"content\":\"hello\"}}]}"
+    },
+    {
+      "path": "/stream",
+      "status": 200,
+      "content_type": "text/event-stream",
+      "chunked": true,
+      "body": "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\ndata: [DONE]\n\n"
+    },
+    {
+      "path": "/err_msg",
+      "status": 400,
+      "content_type": "application/json",
+      "body": "{\"error\":{\"message\":\"mock server says no\"}}"
+    },
+    {
+      "path": "/slow",
+      "status": 200,
+      "delay_ms": 5000,
+      "body": "{}"
+    }
+  ]
+}

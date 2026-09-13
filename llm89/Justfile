@@ -1,0 +1,93 @@
+CC := env_var_or_default("CC", "cc")
+GREEN := env_var_or_default("GREEN", "../../green/.agent/tmp/build/green")
+STRICT := "-std=c89 -pedantic-errors -Wall -Wextra -Werror -Wconversion -Wsign-conversion -Wstrict-prototypes -Wmissing-prototypes -Wold-style-definition -Wundef -Wshadow -Wformat=2"
+LIBJ89 := "../libj89/src/parse.c ../libj89/src/value.c ../libj89/src/print.c"
+J89INC := "-I../libj89/include"
+U89 := env_var_or_default("U89", "../libu89")
+U89INC := "-I" + U89 + "/include"
+U89LIB := U89 + "/build/libu89.a"
+CURL_CFLAGS := `pkg-config --cflags libcurl`
+CURL_LIBS := `pkg-config --libs libcurl`
+
+SRC := "src/llm89.c src/llm89_sse.c src/llm89_buf.c src/llm89_json.c"
+
+default: build
+
+# Build the sibling libu89 dependency (Unicode facts for libj89).
+deps:
+	cd {{U89}} && just build
+
+# Compile every library source under strict C89 (no link).
+build: deps
+	mkdir -p build
+	for f in {{SRC}}; do \
+	    {{CC}} {{STRICT}} {{CURL_CFLAGS}} {{J89INC}} -Iinclude -c "$f" -o "build/$(basename "$f" .c).o" || exit 1; \
+	done
+	@echo "llm89: objects OK"
+
+# Unit + protocol tests.
+test: build test_protocol
+	@{{CC}} {{STRICT}} -Iinclude -o build/test_sse tests/test_sse.c src/llm89_sse.c src/llm89_buf.c || exit 1; \
+	./build/test_sse || exit 1
+	@{{CC}} {{STRICT}} {{J89INC}} {{U89INC}} -Iinclude -o build/test_json tests/test_json.c src/llm89_json.c {{LIBJ89}} {{U89LIB}} || exit 1; \
+	./build/test_json || exit 1
+	@sh tests/test_protocol.sh ./build/test_protocol || exit 1
+
+# Protocol test executable (links libcurl + libj89 + full library).
+# Small resource limits make the /big and /sse_big overflow tests cheap.
+LIMITS := "-DLLM89_MAX_RESPONSE_BYTES=1024 -DLLM89_MAX_SSE_EVENT_BYTES=256 -DLLM89_MAX_ERROR_BODY_BYTES=512"
+test_protocol:
+	mkdir -p build
+	{{CC}} {{STRICT}} {{CURL_CFLAGS}} {{CURL_LIBS}} {{J89INC}} {{U89INC}} {{LIMITS}} -Iinclude \
+	    -o build/test_protocol tests/test_protocol.c {{SRC}} {{LIBJ89}} {{U89LIB}}
+
+# AddressSanitizer build; runs the full suite.
+# Clang provides a working ASan runtime on this host (GCC's libasan is absent).
+ASAN_CC := env_var_or_default("ASAN_CC", "clang")
+asan:
+	mkdir -p build
+	@{{ASAN_CC}} {{STRICT}} -fsanitize=address,undefined -g -Iinclude -o build/asan_test_sse tests/test_sse.c src/llm89_sse.c src/llm89_buf.c || exit 1; \
+	ASAN_OPTIONS=detect_leaks=1 ./build/asan_test_sse || exit 1
+	@{{ASAN_CC}} {{STRICT}} -fsanitize=address,undefined -g {{J89INC}} {{U89INC}} -Iinclude -o build/asan_test_json tests/test_json.c src/llm89_json.c {{LIBJ89}} {{U89LIB}} || exit 1; \
+	ASAN_OPTIONS=detect_leaks=1 ./build/asan_test_json || exit 1
+	{{ASAN_CC}} {{STRICT}} -fsanitize=address,undefined -g {{CURL_CFLAGS}} {{CURL_LIBS}} {{J89INC}} {{U89INC}} {{LIMITS}} -Iinclude \
+	    -o build/asan_test_protocol tests/test_protocol.c {{SRC}} {{LIBJ89}} {{U89LIB}} || exit 1
+	ASAN_OPTIONS=detect_leaks=1 sh tests/test_protocol.sh ./build/asan_test_protocol || exit 1
+
+# Generate the GCC and Clang compilation databases green consumes.
+green-db:
+	sh scripts/gen_compile_db gcc build/gcc/compile_commands.json
+	sh scripts/gen_compile_db clang build/clang/compile_commands.json
+
+# green: the sole C checker (C89∩C23 gcc+clang, semantic tidy, canonical
+# format) on the owned sources.
+green: green-db
+	{{GREEN}} check
+
+# Strict-C89 gate (green) plus the C++ extern "C" header check.
+check: cppcheck green
+
+# Run the scriptable mock server for manual testing.
+mock CONFIG="scripts/mock_example.json":
+	python3 scripts/mock_server.py {{CONFIG}}
+
+# Verify the public header links as C++ through extern "C".
+CXX := env_var_or_default("CXX", "c++")
+cppcheck:
+	{{CXX}} -std=c++11 -Wall -Wextra -Werror -Iinclude -c tests/test_cpp.cpp -o build/test_cpp.o
+
+lint:
+	@for f in tests/*.sh scripts/*.sh; do \
+	    [ -e "$f" ] || continue; \
+	    shellcheck -s sh "$f" || exit 1; \
+	    shellcheck -s bash "$f" || exit 1; \
+	done
+	@for f in src/*.c include/*.h tests/*.c; do \
+	    clang-format --dry-run --Werror "$f" || { echo "needs formatting: $f"; exit 1; }; \
+	done
+
+format:
+	@for f in src/*.c include/*.h tests/*.c; do clang-format -i "$f"; done
+
+clean:
+	rm -rf build

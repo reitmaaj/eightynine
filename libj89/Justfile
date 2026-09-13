@@ -1,0 +1,113 @@
+CC := env_var_or_default("CC", "cc")
+GREEN := env_var_or_default("GREEN", "../../green/.agent/tmp/build/green")
+U89 := env_var_or_default("U89", "../libu89")
+U89LIB := U89 + "/build/libu89.a"
+STRICT := "-std=c89 -pedantic-errors -Wall -Wextra -Werror -Wconversion -Wsign-conversion -Wstrict-prototypes -Wmissing-prototypes -Wold-style-definition -Wundef -Wshadow -Wformat=2"
+
+default: build
+
+# Build the sibling libu89 dependency (UTF-8/UTF-16 primitives).
+deps:
+	cd {{U89}} && just build
+
+# Algebraic-core (j89_alg) translation units.
+ALG := "src/alg/alloc.c src/alg/str.c src/alg/list.c src/alg/object.c src/alg/json.c src/alg/fold.c src/alg/map.c"
+
+# j89.h -> j89_alg import bridge (non-core).
+BRIDGE := "src/bridge.c"
+
+SRC := "src/parse.c src/value.c src/print.c src/main.c src/alg/alloc.c src/alg/str.c src/alg/list.c src/alg/object.c src/alg/json.c src/alg/fold.c src/alg/map.c src/bridge.c"
+
+# Compile the CLI (library sources + main).
+build: deps
+	mkdir -p build
+	{{CC}} {{STRICT}} -Iinclude -Isrc -I{{U89}}/include -o build/j89 {{SRC}} {{U89LIB}}
+
+# Unit tests, each linked with the non-main library sources.
+test: build
+	@for t in test/unit/test_*.c; do \
+	    [ -e "$t" ] || continue; \
+	    name=$(basename "$t" .c); \
+	    {{CC}} {{STRICT}} -Iinclude -I{{U89}}/include -Itest/unit -o build/$name "$t" src/parse.c src/value.c src/print.c {{U89LIB}} || exit 1; \
+	    ./build/$name || exit 1; \
+	done
+	@for s in test/e2e/*.sh; do \
+	    [ -e "$s" ] || continue; \
+	    sh "$s" ./build/j89 || exit 1; \
+	done
+	@for t in test/alg/test_*.c test/alg/smoke.c; do \
+	    [ -e "$t" ] || continue; \
+	    [ "$(basename "$t" .c)" = "test_bridge" ] && continue; \
+	    name=alg_$(basename "$t" .c); \
+	    {{CC}} {{STRICT}} -Iinclude -Isrc -Itest/alg -o build/$name "$t" {{ALG}} || exit 1; \
+	    ./build/$name || exit 1; \
+	done
+	@just test-bridge
+
+# Algebraic-core tests only.
+test-alg: build
+	@for t in test/alg/test_*.c test/alg/smoke.c; do \
+	    [ -e "$t" ] || continue; \
+	    [ "$(basename "$t" .c)" = "test_bridge" ] && continue; \
+	    name=alg_$(basename "$t" .c); \
+	    {{CC}} {{STRICT}} -Iinclude -Isrc -Itest/alg -o build/$name "$t" {{ALG}} || exit 1; \
+	    ./build/$name || exit 1; \
+	done
+
+# Bridge (j89.h -> j89_alg) tests.
+test-bridge: build
+	{{CC}} {{STRICT}} -Iinclude -Isrc -I{{U89}}/include -Itest/alg -o build/alg_test_bridge test/alg/test_bridge.c src/value.c src/bridge.c {{ALG}} {{U89LIB}}
+	./build/alg_test_bridge
+
+# Source/dependency opacity audit: src/alg must stay free of scalar semantics
+# and of parser/renderer/lookup dependencies.
+check-forbidden:
+	sh scripts/alg-audit.sh forbidden
+
+# Export audit: only j89a_ symbols, none named like a derived operation.
+api-audit:
+	sh scripts/alg-audit.sh exports
+
+# Stress suite: JSONTestSuite corpus, adversarial inputs, RFC conformance.
+corpus: build
+	sh test/e2e/corpus.sh ./build/j89
+
+fuzz: build
+	sh test/e2e/fuzz.sh ./build/j89
+
+rfc8259: build
+	sh test/e2e/rfc8259.sh ./build/j89
+
+# Unicode delegation tripwire: no UTF-8/UTF-16 algorithm may return to src/.
+unicode-audit:
+	sh scripts/unicode-audit.sh
+
+# green-compliance gate: the seven-cell matrix (C89/C23 x gcc/clang),
+# clang-tidy semantic suite, canonical format, and the Unicode tripwire.
+check: unicode-audit green
+
+# Generate gcc + clang compile databases for the green toolchain.
+green-db:
+	sh scripts/gen-green-db.sh {{SRC}}
+
+# green: strict C89∩C23 profile matrix, semantic tidy, and canonical format.
+green: green-db
+	{{GREEN}} check
+
+lint:
+	@for f in test/*.sh test/*/*.sh scripts/*.sh; do \
+	    [ -e "$f" ] || continue; \
+	    shellcheck -s sh "$f" || exit 1; \
+	    shellcheck -s bash "$f" || exit 1; \
+	done
+	@for f in src/*.c src/alg/*.c include/*.h test/*/*.c test/alg/*.c; do \
+	    clang-format --dry-run --Werror "$f" || { echo "needs formatting: $f"; exit 1; }; \
+	done
+	@sh scripts/alg-audit.sh forbidden
+	@sh scripts/unicode-audit.sh
+
+format:
+	@for f in src/*.c src/alg/*.c include/*.h test/*/*.c test/alg/*.c; do clang-format -i "$f"; done
+
+clean:
+	rm -rf build

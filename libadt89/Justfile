@@ -1,0 +1,87 @@
+set shell := ["sh", "-eu", "-c"]
+
+CC := env_var_or_default("CC", "cc")
+GREEN := env_var_or_default("GREEN", "../../green/.agent/tmp/build/green")
+HM := "../libhm89"
+
+STRICT := "-std=c89 -pedantic-errors -Wall -Wextra -Werror -Wconversion -Wsign-conversion -Wstrict-prototypes -Wmissing-prototypes -Wold-style-definition -Wundef -Wshadow -Wformat=2"
+
+default: build
+
+# Build the libhm89 archive this library links against.
+hm:
+	cd ../libhm89 && just build
+
+# Compile every library translation unit and archive libadt89.a.
+build: hm
+	mkdir -p build
+	@for f in src/*.c; do \
+	    name=$(basename "$f" .c); \
+	    {{CC}} {{STRICT}} -Iinclude -I{{HM}}/include -c "src/$name.c" -o "build/$name.o"; \
+	done
+	@objs=""; \
+	for f in build/*.o; do \
+	    objs="$objs $f"; \
+	done; \
+	rm -f build/libadt89.a; \
+	ar rcs build/libadt89.a $objs
+
+# Smoke test first: one end-to-end path through the library.
+smoke: build
+	{{CC}} {{STRICT}} -Wno-unused-function -Iinclude -I{{HM}}/include \
+	    -o build/smoke test/smoke.c build/libadt89.a {{HM}}/build/libhm89.a
+	./build/smoke
+
+# Unit tests, one small program per concern.
+unit: build
+	@for t in test/unit/test_*.c; do \
+	    [ -e "$t" ] || continue; \
+	    name=$(basename "$t" .c); \
+	    {{CC}} {{STRICT}} -Wno-unused-function -Iinclude -I{{HM}}/include \
+	        -o "build/$name" "$t" build/libadt89.a {{HM}}/build/libhm89.a || exit 1; \
+	    ./build/$name || exit 1; \
+	done
+
+# Run every test (smoke runs first, then the unit suite).
+test: smoke unit
+
+# Generate the GCC and Clang compilation databases, then run the seven-cell
+# green matrix from this project root.
+green:
+	sh scripts/gen_compile_db gcc build/gcc/compile_commands.json
+	sh scripts/gen_compile_db clang build/clang/compile_commands.json
+	cd . && {{GREEN}} check
+
+# Green-compliance gate (the seven-cell matrix).
+check: green
+
+# Lint shell scripts and check C/header formatting.
+lint:
+	@for f in scripts/*.sh test/*.sh; do \
+	    [ -e "$f" ] || continue; \
+	    shellcheck -s sh "$f" || exit 1; \
+	    shellcheck -s bash "$f" || exit 1; \
+	done
+	@for f in src/*.c src/*.h include/*.h test/*.c test/unit/*.c test/*.h; do \
+	    [ -e "$f" ] || continue; \
+	    clang-format --dry-run --Werror "$f" || { echo "needs formatting: $f"; exit 1; }; \
+	done
+
+# Rewrite sources to canonical formatting.
+format:
+	@for f in src/*.c src/*.h include/*.h test/*.c test/unit/*.c test/*.h; do \
+	    [ -e "$f" ] || continue; \
+	    clang-format -i "$f"; \
+	done
+
+# Verify required external tools are available.
+doctor:
+	@command -v gcc >/dev/null 2>&1 || { echo "missing: gcc"; exit 1; }
+	@command -v clang >/dev/null 2>&1 || { echo "missing: clang"; exit 1; }
+	@command -v clang-tidy >/dev/null 2>&1 || { echo "missing: clang-tidy"; exit 1; }
+	@command -v clang-format >/dev/null 2>&1 || { echo "missing: clang-format"; exit 1; }
+	@command -v just >/dev/null 2>&1 || { echo "missing: just"; exit 1; }
+	@echo "doctor: all prerequisites present"
+
+clean:
+	rm -rf build

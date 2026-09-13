@@ -1,0 +1,123 @@
+# libbwt89
+
+A strict-ISO-C89, green-compliant, dependency-free library of Burrows-Wheeler
+transform (BWT) variants over arbitrary bytes.
+
+## Variants
+
+| Variant | Forward | Inverse | Notes |
+|---------|---------|---------|-------|
+| Regular | `bwt89_bwt` | `bwt89_ibwt` | Classic transform + LF inverse. Reports a 0-based row `index`; no sentinel byte is emitted, so output length equals input. |
+| Bijective | `bwt89_bbwt` | `bwt89_ibbwt` | The transform is a permutation of the input (same multiset, no index). Byte-for-byte validated against the OpenBWT `BWTS` / `UnBWTS` oracle. |
+| Dynamic | *(planned)* | *(planned)* | Incremental insert/delete/substitute edits of a maintained transform without full recompute. |
+
+## API
+
+`include/bwt89.h` declares the public surface in the `bwt89_` namespace.
+
+```c
+enum bwt89_status
+{
+    BWT89_OK = 0,
+    BWT89_NULL_ARG,   /* a required pointer is NULL */
+    BWT89_NOMEM,      /* internal allocation failed */
+    BWT89_BAD_INDEX,  /* regular-ibwt index out of range */
+    BWT89_BAD_EDIT    /* reserved for the future dynamic module */
+};
+
+enum bwt89_status bwt89_bwt (const unsigned char *s, size_t n,
+                             size_t *index, unsigned char *out);
+enum bwt89_status bwt89_ibwt(const unsigned char *b, size_t n,
+                             size_t index, unsigned char *out);
+enum bwt89_status bwt89_bbwt(const unsigned char *s, size_t n,
+                             unsigned char *out);
+enum bwt89_status bwt89_ibbwt(const unsigned char *b, size_t n,
+                              unsigned char *out);
+```
+
+- Inputs/outputs are **caller-owned, length-prefixed byte buffers**
+  (`const unsigned char *` + `size_t`). Binary data and embedded NUL bytes are
+  valid input.
+- Every transform writes exactly `n` bytes (a permutation of the input).
+  `bwt89_bbwt` needs no index; `bwt89_ibbwt` inverts it. `bwt89_bwt` stores the
+  0-based row of the original text in `*index` (range `0..n`); `bwt89_ibwt`
+  takes that `index` back.
+- The library may allocate O(n) internal scratch and report `BWT89_NOMEM`; it
+  never requires the caller to allocate workspace.
+- Errors: a `NULL` required pointer -> `BWT89_NULL_ARG`; an `index` outside
+  `[0, n]` -> `BWT89_BAD_INDEX`; allocation failure -> `BWT89_NOMEM`. Caller
+  buffers are not left partially overwritten on these paths.
+
+## Example
+
+```c
+#include <bwt89.h>
+
+unsigned char in[]  = "the quick brown fox";
+unsigned char b[18];
+unsigned char out[18];
+size_t index;
+
+bwt89_bwt(in, 18, &index, b);     /* forward  */
+bwt89_ibwt(b, 18, index, out);    /* inverse  */
+/* out now equals in */
+```
+
+## Building, testing, and the green gate
+
+The repository uses [`just`](https://github.com/casey/just). Run recipes from
+the project root:
+
+- `just build` — compile every `src/*.c` under strict flags and archive
+  `build/libbwt89.a`.
+- `just smoke` — build and run the end-to-end smoke test.
+- `just unit` — build and run each unit test in `test/unit/`.
+- `just test` — `smoke` first, then `unit`.
+- `just green` (alias `just check`) — generate GCC/Clang compilation databases
+  and run the sibling `green` driver's seven-cell matrix (strict C89/C23 for
+  GCC and Clang, clang-tidy semantic checks, canonical Allman format).
+- `just lint` — `shellcheck` on scripts and `clang-format --dry-run` on C.
+- `just format` — rewrite sources to canonical formatting.
+- `just doctor` — verify all required external tools are present.
+- `just clean` — remove `build/`.
+
+Strict compile flags: `-std=c89 -pedantic-errors -Wall -Wextra -Werror
+-Wconversion -Wsign-conversion -Wstrict-prototypes -Wmissing-prototypes
+-Wold-style-definition -Wundef -Wshadow -Wformat=2`.
+
+The `green` driver defaults to `../../green/.agent/tmp/build/green`; override with
+`GREEN=...`. See `green.yaml` for the pure-function and toolchain profile.
+
+## Source layout
+
+| Path | Purpose |
+|------|---------|
+| `include/bwt89.h` | Public API and status codes. |
+| `src/bwt89_sa.c` | Linear-time SA-IS suffix array over an integer alphabet. |
+| `src/bwt89_bwt.c` | Regular `bwt` / `ibwt`. |
+| `src/bwt89_bwts.c` | Bijective `bbwt` / `ibbwt` (Duval Lyndon factorization + conjugate sort). |
+| `src/bwt89_internal.h` | Shared internal prototypes. |
+| `test/` | Smoke test plus unit suite per concern. |
+| `.agent/` | Concept, stories, design, BDD testing scenarios, and acceptance documents. |
+
+## Conventions
+
+- Strict ISO C89, four-space indent, Allman braces, 80-column limit
+  (`.clang-format`).
+- Same source is warning-clean as strict C89 and C23 under both GCC and Clang,
+  plus the green semantic checks (the "green source profile").
+- Functional style, most functions short (2-7 lines); no function-like macros;
+  no owned type names ending in `_t`.
+- No dependency beyond the C89 standard library.
+
+## Verified against an independent oracle
+
+The bijective transform is byte-for-byte equal to Yuta Mori's canonical
+OpenBWT `BWTS`, and its inverse to `UnBWTS`, over thousands of randomized and
+structured inputs. The reference vector `bwt89_bbwt("banana")` is
+`"annbaa"`. Sanity vectors `abc -> cab`, `aab -> baa`, `aaab -> baaa`, and
+`^BANANA$ -> $ANNBAA^`.
+
+## License
+
+See `LICENSE`.

@@ -1,0 +1,40 @@
+# libbpf
+
+A BPF Instruction Set Architecture (ISA) interpreter/VM in pedantic C89,
+implemented from RFC 9669 (`tmp/rfc9669.txt`).
+
+The deliverable is a strict, portable C89 register-machine interpreter that
+decodes, validates, and executes eBPF programs: 11 registers (r0-r10, r10 the
+read-only frame pointer), the basic (64-bit) and wide (128-bit) instruction
+encodings, ALU/ALU64 arithmetic including signed divide/modulo and byte-swap,
+JMP/JMP32 control flow with CALL/EXIT, bounds-checked memory access
+(load/store/sign-extension), and 32/64-bit atomic operations.
+
+Conformance groups per RFC 9669 section 7.1: `base32` (mandatory) plus
+`base64`, `divmul32`, `divmul64`, `atomic32`, `atomic64` are supported.
+The deprecated `packet` group and host-specific 64-bit-immediate subtypes
+(`map_fd`/`map_val`/`var_addr`/`code_addr`/`map_idx`/`map_val_idx`) are
+rejected as unsupported.
+
+Constraints:
+- green profile: strict C89 AND strict C23 under GCC and Clang, green
+  semantic checks, canonical Allman format. The gate is currently RED pending
+  green compliance work.
+- Four-space indentation; Allman braces; 80-column.
+
+Build and test via `just`. The CLI binary is `build/bpf`.
+
+## Recipes
+
+- `just build` — compile the library and `bpf` CLI
+- `just test` — run unit + e2e + smoke + C89-probe tests
+- `just check` — green gate (currently red)
+- `just lint` — shellcheck + clang-format
+- `just memcheck` — valgrind memcheck on unit binaries
+
+## Layout
+
+- `src/` — public API (`bpf.h`), decoder, validator, evaluator, CLI
+- `test/` — unit + e2e + smoke tests
+- `.agent/` — concept, design, stories, scenarios, acceptance
+- `tmp/` — reference material (RFC 9669)

@@ -1,0 +1,97 @@
+CC := "cc"
+FLAGS := "-std=c89 -pedantic-errors -Wall -Wextra -Werror -ffp-contract=off"
+LIBS := "-lm"
+GREEN := env_var_or_default("GREEN", "../../green/.agent/tmp/build/green")
+
+default: lint green build test
+
+# ci: the full local gate (lint, C89-obligations, unit/smoke, and the
+# fixed-seed differential sweep). Requires engines on PATH for diff-sweep.
+ci: lint green test diff-sweep
+
+build:
+    mkdir -p build
+    {{CC}} {{FLAGS}} -Isrc -o build/wasm89 src/wasm89.c src/leb.c src/numeric.c src/decoder.c src/validate.c src/eval.c src/instantiate.c src/host.c src/repl.c src/main.c {{LIBS}}
+
+# spec <file.wast>: run one testsuite file through the conformance driver
+spec FILE:
+    python3 test/spec_driver.py ./build/wasm89 {{FILE}}
+
+# spec-all: aggregate the driver across every top-level testsuite .wast
+spec-all:
+    python3 test/spec_sweep.py ./build/wasm89
+
+# spec-phasec: the Phase C memory/table/bulk/ref conformance set
+spec-phasec:
+    python3 test/spec_sweep.py ./build/wasm89 ./vendor/testsuite-main --filter address address0 address1 align align0 align1 br_on_non_null br_on_null bulk bulk64 call_ref data data0 data1 data_drop0 elem endianness endianness64 exports exports0 float_memory float_memory0 float_memory64 linking linking0 linking1 linking2 linking3 load0 load1 load2 load64 memory memory-multi memory_copy memory_copy0 memory_copy1 memory_copy64 memory_fill memory_fill0 memory_fill64 memory_grow memory_grow64 memory_init memory_init0 memory_init64 memory_redundancy memory_redundancy64 memory_size0 memory_size1 memory_size2 memory_size3 memory_size_import memory_trap0 memory_trap1 memory_trap64 memory64 memory64-imports ref ref_as_non_null ref_func ref_is_null ref_null return_call_ref store0 store1 store2 store64 table table_copy table_copy64 table_copy_mixed table_fill table_fill64 table_get table_get64 table_grow table_grow64 table_init table_init64 table_set table_set64 table_size table_size64 table64
+
+# spec-phased: the Phase D exceptions conformance set
+spec-phased:
+    python3 test/spec_sweep.py ./build/wasm89 ./vendor/testsuite-main --filter throw throw_ref try_table
+
+# spec-sweep: full observable, time-bounded sweep across every top-level
+# testsuite .wast (per-file progress; per-file and per-command timeouts)
+spec-sweep:
+    python3 test/spec_sweep.py ./build/wasm89
+
+# diff: bounded differential smoke (self-test then a small sweep).
+# Requires wasmtime, wasm-interp and wat2wasm on PATH (engines optional to
+# `main`: never part of `just test`).
+diff: build
+    python3 test/diff/self_test.py
+    python3 test/diff/sweep.py --seed 0 --modules 8 --funcs 6 --args 8 --template-args 6
+
+# diff-sweep: full seeded differential sweep (opt-in). Deterministic by
+# default seed; override any count/seed via the sweep.py flags.
+diff-sweep: build
+    python3 test/diff/self_test.py
+    python3 test/diff/sweep.py --seed 0 --modules 40 --funcs 6 --args 12 --template-args 8
+
+# diff-fixtures: regenerate committed test/diff/fixtures/*.wasm from .wat
+diff-fixtures:
+    wat2wasm test/diff/fixtures/f.wat -o test/diff/fixtures/f.wasm
+    wat2wasm test/diff/fixtures/tpl.wat -o test/diff/fixtures/tpl.wasm
+    wat2wasm test/diff/fixtures/m.wat -o test/diff/fixtures/m.wasm
+    wat2wasm test/diff/fixtures/g.wat -o test/diff/fixtures/g.wasm
+    wat2wasm test/diff/fixtures/buf.wat -o test/diff/fixtures/buf.wasm
+    wat2wasm --enable-exceptions test/diff/fixtures/ex.wat -o test/diff/fixtures/ex.wasm
+    wat2wasm --enable-exceptions test/diff/fixtures/ct.wat -o test/diff/fixtures/ct.wasm
+    wat2wasm --enable-memory64 test/diff/fixtures/mem64.wat -o test/diff/fixtures/mem64.wasm
+    wat2wasm --enable-multi-memory test/diff/fixtures/mm.wat -o test/diff/fixtures/mm.wasm
+    @echo "rebuilt test/diff/fixtures/*.wasm"
+
+# diff-fuzz: bounded multi-seed differential fuzzing (opt-in). Each seed is
+# an independent randomized corpus; DIFF_SEEDS / DIFF_MODULES tune the run.
+diff-fuzz: build
+    python3 test/diff/self_test.py
+    ./test/diff/fuzz.sh
+
+lint:
+    shellcheck -s sh test/run_tests.sh test/smoke_test.sh test/c89_probe.sh test/repl_smoke.sh test/diff/fuzz.sh test/perf_on2.sh
+    shellcheck -s bash test/run_tests.sh test/smoke_test.sh test/c89_probe.sh test/repl_smoke.sh test/diff/fuzz.sh test/perf_on2.sh
+    python3 -m py_compile test/spec_sweep.py test/spec_driver.py test/test_sweep.py test/diff/compare.py test/diff/common.py test/diff/oracle_wasm89.py test/diff/oracle_engines.py test/diff/gen_modules.py test/diff/self_test.py test/diff/sweep.py
+
+# Generate the GCC and Clang compilation databases green consumes.
+green-db:
+    sh scripts/gen_compile_db gcc build/gcc/compile_commands.json
+    sh scripts/gen_compile_db clang build/clang/compile_commands.json
+
+# Lint all sources with the green toolchain: C89 AND C23 under GCC and Clang,
+# green-* semantic checks, and the canonical format profile.
+green: green-db
+    {{GREEN}} check
+
+test: build
+    mkdir -p build
+    {{CC}} {{FLAGS}} -Isrc -o build/test_version test/test_version.c src/wasm89.c {{LIBS}}
+    {{CC}} {{FLAGS}} -Isrc -o build/test_leb test/test_leb.c src/leb.c {{LIBS}}
+    {{CC}} {{FLAGS}} -Isrc -o build/test_numeric test/test_numeric.c src/numeric.c {{LIBS}}
+    {{CC}} {{FLAGS}} -Isrc -o build/test_float test/test_float.c src/numeric.c {{LIBS}}
+    {{CC}} {{FLAGS}} -Isrc -o build/test_conv test/test_conv.c src/numeric.c {{LIBS}}
+    {{CC}} {{FLAGS}} -Isrc -o build/test_decode test/test_decode.c src/decoder.c src/leb.c src/numeric.c {{LIBS}}
+    {{CC}} {{FLAGS}} -Isrc -o build/test_validate test/test_validate.c src/validate.c src/decoder.c src/leb.c src/numeric.c {{LIBS}}
+    {{CC}} {{FLAGS}} -Isrc -o build/test_eval test/test_eval.c src/eval.c src/leb.c src/numeric.c src/validate.c {{LIBS}}
+    {{CC}} {{FLAGS}} -Isrc -o build/test_calls test/test_calls.c src/eval.c src/leb.c src/numeric.c src/validate.c {{LIBS}}
+    {{CC}} {{FLAGS}} -Isrc -o build/test_exn test/test_exn.c src/eval.c src/leb.c src/numeric.c src/validate.c src/decoder.c src/instantiate.c src/host.c {{LIBS}}
+    {{CC}} {{FLAGS}} -Isrc -o build/test_instantiate test/test_instantiate.c src/instantiate.c src/host.c src/eval.c src/decoder.c src/leb.c src/numeric.c src/validate.c {{LIBS}}
+    ./test/run_tests.sh "{{CC}}" "{{FLAGS}}"

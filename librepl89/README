@@ -1,0 +1,60 @@
+# librepl89
+
+A small C89 interactive editor for one arbitrary multiline UTF-8 submission on
+a modern POSIX terminal.
+
+## Scope
+
+- POSIX tty raw-mode handling, `TIOCGWINSZ`, bracketed paste.
+- UTF-8 multiline input with LF as the logical line boundary and HT as
+  content.
+- Cursor editing by extended grapheme cluster (via `libu89`).
+- Visual wrapping, continuation prompts, complete redisplay.
+- In-memory history of whole submissions.
+- Blocking (`repl89_read`) and event (`repl89_feed`) interfaces.
+- Resize and temporary hide/show for interleaved application output.
+
+Not provided: parsing, completeness detection, syntax highlighting,
+completion, persistent history, configurable key maps, vi mode, mouse support,
+terminfo/termcap, legacy terminals, or word segmentation.
+
+## Boundary
+
+```text
+libu89       what Unicode text means
+librepl89    how an editable Unicode submission behaves on a terminal
+application  what the submission means to the language or REPL
+```
+
+## Build and test
+
+    just build      # build libu89 and librepl89.a
+    just test       # smoke + unit suite
+    just check      # green gate: C89∩C23, GCC+Clang, tidy checks, format
+
+## Examples
+
+    just echo           # blocking echo REPL
+    just echo-events    # event-driven echo REPL with SIGWINCH handling
+
+`examples/echo.c` is a complete blocking client: it reads one submission at a
+time with `repl89_read`, echoes it byte-for-byte, keeps whole submissions in
+history, and exits on EOF (Ctrl-D on an empty line). A blocking client reacts
+to a terminal resize on its next interaction.
+
+`examples/echo_events.c` is the event-driven counterpart: it owns a trivial
+`SIGWINCH` handler that sets a flag, observes the flag around `repl89_feed`,
+and calls `repl89_resize`, so a resize redraws immediately even while feed is
+blocked. The library never installs signal handlers itself.
+
+## Dependencies
+
+`librepl89` links the sibling `libu89` (`../libu89`), which must be built
+first (`just build` does this).
+
+## Conventions
+
+- Strict ISO C89, four-space indent, functional style, Allman format.
+- Green-clean: C89 AND C23 under GCC and Clang, green semantic checks.
+- Test-driven: scenario -> acceptance -> failing test -> code -> refactor.
+  Scenarios, stories, design, and acceptance live under `.agent/`.
