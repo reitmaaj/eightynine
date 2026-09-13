@@ -76,6 +76,19 @@ api-audit:
 corpus: build
 	sh test/e2e/corpus.sh ./build/j89
 
+# ASan + UBSan build of the practical library and unit tests (clang runtime).
+sanitize: deps
+	mkdir -p build/asan
+	@for t in test/unit/test_*.c; do \
+	    [ -e "$t" ] || continue; \
+	    name=$(basename "$t" .c); \
+	    clang -std=c99 -fsanitize=address,undefined -fno-omit-frame-pointer -g \
+	        -Iinclude -I{{U89}}/include -I{{STR89INC}} -Itest/unit \
+	        -o "build/asan/$name" "$t" src/parse.c src/value.c src/print.c \
+	        {{STR89LIB}} {{U89LIB}} || exit 1; \
+	    ASAN_OPTIONS=detect_leaks=1 "build/asan/$name" || exit 1; \
+	done
+
 fuzz: build
 	sh test/e2e/fuzz.sh ./build/j89
 
