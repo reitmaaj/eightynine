@@ -8,7 +8,7 @@ STRICT := "-std=c89 -pedantic-errors -Wall -Wextra -Werror -Wconversion -Wsign-c
 TESTFLAGS := "-Wno-unused-function"
 INC := "-Iinclude -Isrc -Itest/support"
 LIB := "build/libledger89.a"
-TESTGLOB := "test/smoke.c test/unit/test_*.c test/api/test_*.c test/crash/test_*.c test/fault/test_*.c test/corrupt/test_*.c test/model/test_*.c test/adapters/test_*.c test/golden/test_*.c"
+TESTGLOB := "test/smoke.c test/unit/test_*.c test/api/test_*.c test/crash/test_*.c test/fault/test_*.c test/corrupt/test_*.c test/model/test_*.c test/adapters/test_*.c test/golden/test_*.c test/stress/test_*.c"
 
 default: build
 
@@ -95,18 +95,31 @@ corrupt: build
 model: build
 	just _run model
 
+stress: build
+	just _run stress
+
 adapters: build
 	just _run adapters
 
-# Multi-million-operation randomized model run (not part of the fast suite).
+# Multi-million-operation model run plus a heavy many-segment sweep (not part
+# of the fast suite).
 long: build
 	{{CC}} {{STRICT}} {{POSIX}} {{TESTFLAGS}} {{INC}} -o build/test_random_model \
 	    test/model/test_random_model.c test/support/*.c {{LIB}}
 	./build/test_random_model 424242 2000000
+	{{CC}} {{STRICT}} {{POSIX}} {{TESTFLAGS}} {{INC}} -DMANY_RECORDS=2000ul \
+	    -o build/test_stress_many test/stress/test_stress_many_segments.c \
+	    test/support/*.c {{LIB}}
+	./build/test_stress_many
 
 # Run every fast suite (smoke first, then unit, api, crash, fault, corrupt,
-# model, adapter fixtures, and golden fixtures).
-test: smoke unit api crash fault fault-nomem fault-eintr corrupt model adapters golden
+# model, adapter fixtures, golden fixtures, and stress).
+test: smoke unit api crash fault fault-nomem fault-eintr corrupt model adapters golden stress
+
+# Reproducible throughput baseline (not part of `just test`).
+bench: build
+	{{CC}} -O2 {{STRICT}} {{POSIX}} {{TESTFLAGS}} {{INC}} -o build/bench test/bench/bench_main.c test/support/*.c {{LIB}}
+	./build/bench
 
 # Regenerate the committed golden fixtures (review the diff before commit).
 golden-gen: build
@@ -166,8 +179,8 @@ lint:
 	done
 	@for f in src/*.c src/*.h include/*.h test/*.c test/unit/*.c test/api/*.c \
 	    test/crash/*.c test/fault/*.c test/corrupt/*.c test/model/*.c \
-	    test/adapters/*.c test/golden/*.c test/support/*.c test/support/*.h \
-	    test/tools/*.c; do \
+	    test/adapters/*.c test/golden/*.c test/stress/*.c test/bench/*.c \
+	    test/support/*.c test/support/*.h test/tools/*.c; do \
 	    [ -e "$f" ] || continue; \
 	    clang-format --dry-run --Werror "$f" || { echo "needs formatting: $f"; exit 1; }; \
 	done
@@ -176,8 +189,8 @@ lint:
 format:
 	@for f in src/*.c src/*.h include/*.h test/*.c test/unit/*.c test/api/*.c \
 	    test/crash/*.c test/fault/*.c test/corrupt/*.c test/model/*.c \
-	    test/adapters/*.c test/golden/*.c test/support/*.c test/support/*.h \
-	    test/tools/*.c; do \
+	    test/adapters/*.c test/golden/*.c test/stress/*.c test/bench/*.c \
+	    test/support/*.c test/support/*.h test/tools/*.c; do \
 	    [ -e "$f" ] || continue; \
 	    clang-format -i "$f"; \
 	done

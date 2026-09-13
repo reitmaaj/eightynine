@@ -55,10 +55,13 @@ record payloads.
 - `just fault` — I/O errors, ENOSPC, allocation failure, torn writes.
 - `just corrupt` — structural corruption classification.
 - `just model` — randomized reference-model stress.
+- `just stress` — many-segment, huge-payload, and recovery stress.
+- `just bench` — reproducible throughput baseline (not part of `just test`).
 - `just golden` — verify the committed on-disk byte fixtures; regenerate with
   `just golden-gen` and review the diff.
 - `just test` — all fast suites.
-- `just long` — multi-million-operation model runs.
+- `just long` — multi-million-operation model runs plus a heavy many-segment
+  sweep.
 - `just sanitize` — fast suites under ASan + UBSan.
 - `just valgrind` — fast suites under valgrind memcheck.
 - `just check` — green profile, lint, and all fast suites.
