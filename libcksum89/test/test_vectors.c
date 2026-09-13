@@ -11,6 +11,7 @@ void test_vectors(void)
     unsigned char zeros32[32];
     unsigned char ones32[32];
     unsigned char inc32[32];
+    unsigned char big[4096];
     size_t i;
 
     cksum89_test_u32(ref_crc32_iso_hdlc(NULL, 0), 0x00000000UL,
@@ -52,4 +53,34 @@ void test_vectors(void)
     cksum89_test_u16(cksum89_inet16(NULL, 0), 0xffffu, "inet16 empty");
     cksum89_test_u16(cksum89_inet16(check, 9), 0xf62au, "inet16 check");
     cksum89_test_u16(cksum89_inet16(rfc, 8), 0x220du, "inet16 rfc1071");
+
+    cksum89_test_u64(cksum89_crc64_nvme(NULL, 0), 0x00000000UL, 0x00000000UL,
+                     "crc64 nvme empty");
+    cksum89_test_u64(cksum89_crc64_nvme(check, 9), 0xae8b1486UL, 0x0a799888UL,
+                     "crc64 nvme check");
+
+    for (i = 0; i < 4096; ++i)
+    {
+        big[i] = 0;
+    }
+    cksum89_test_u64(cksum89_crc64_nvme(big, 4096), 0x6482d367UL, 0xeb22b64eUL,
+                     "crc64 nvme zero4096");
+    for (i = 0; i < 4096; ++i)
+    {
+        big[i] = 0xff;
+    }
+    cksum89_test_u64(cksum89_crc64_nvme(big, 4096), 0xc0ddba73UL, 0x02eca3acUL,
+                     "crc64 nvme ones4096");
+    for (i = 0; i < 4096; ++i)
+    {
+        big[i] = (unsigned char)(i & 0xffu);
+    }
+    cksum89_test_u64(cksum89_crc64_nvme(big, 4096), 0x3e729f5fUL, 0x6750449cUL,
+                     "crc64 nvme incrementing4096");
+    for (i = 0; i < 4096; ++i)
+    {
+        big[i] = (unsigned char)((4095UL - (unsigned long)i) & 0xffUL);
+    }
+    cksum89_test_u64(cksum89_crc64_nvme(big, 4096), 0x9a2df64bUL, 0x8e9e517eUL,
+                     "crc64 nvme decrementing4096");
 }

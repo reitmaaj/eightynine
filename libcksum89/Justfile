@@ -7,7 +7,7 @@ STRICT := "-std=c89 -pedantic-errors -Wall -Wextra -Werror -Wconversion -Wsign-c
 TESTFLAGS := "-Wno-unused-function"
 INC := "-Iinclude -Isrc -Itest"
 LIB := "build/libcksum89.a"
-UNIT_SRCS := "test/test_main.c test/test_vectors.c test/test_crc32_iso_hdlc.c test/test_crc32c.c test/test_inet16.c test/test_stream.c test/test_tables.c test/ref_crc.c"
+UNIT_SRCS := "test/test_main.c test/test_vectors.c test/test_crc32_iso_hdlc.c test/test_crc32c.c test/test_crc64_nvme.c test/test_inet16.c test/test_stream.c test/test_tables.c test/ref_crc.c"
 
 default: build
 

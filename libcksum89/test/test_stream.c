@@ -95,6 +95,46 @@ static void check_inet_partition(unsigned int mask)
                         "inet16 partition", (unsigned long)mask);
 }
 
+static void check_crc64_partition(unsigned int mask)
+{
+    cksum89_crc64_nvme_ctx ctx;
+    cksum89_u64 one_shot;
+    size_t start;
+    size_t i;
+
+    one_shot = cksum89_crc64_nvme(stream_data, STREAM_MAX);
+    cksum89_crc64_nvme_init(&ctx);
+    start = 0;
+    for (i = 1; i < STREAM_MAX; ++i)
+    {
+        if ((mask & (1u << (i - 1u))) != 0u)
+        {
+            cksum89_crc64_nvme_update(&ctx, stream_data + start, i - start);
+            start = i;
+        }
+    }
+    cksum89_crc64_nvme_update(&ctx, stream_data + start, STREAM_MAX - start);
+    cksum89_test_u64_at(cksum89_crc64_nvme_final(&ctx), one_shot.hi,
+                        one_shot.lo, "crc64 nvme partition",
+                        (unsigned long)mask);
+}
+
+static void check_crc64_byte_at_a_time(void)
+{
+    cksum89_crc64_nvme_ctx ctx;
+    cksum89_u64 one_shot;
+    size_t i;
+
+    one_shot = cksum89_crc64_nvme(stream_data, STREAM_MAX);
+    cksum89_crc64_nvme_init(&ctx);
+    for (i = 0; i < STREAM_MAX; ++i)
+    {
+        cksum89_crc64_nvme_update(&ctx, stream_data + i, 1);
+    }
+    cksum89_test_u64(cksum89_crc64_nvme_final(&ctx), one_shot.hi, one_shot.lo,
+                     "crc64 nvme byte-at-a-time");
+}
+
 static void check_inet_byte_at_a_time(void)
 {
     cksum89_inet16_ctx ctx;
@@ -135,9 +175,11 @@ void test_stream(void)
     {
         check_iso_partition(mask);
         check_crc32c_partition(mask);
+        check_crc64_partition(mask);
         check_inet_partition(mask);
     }
     check_iso_byte_at_a_time();
     check_crc32c_byte_at_a_time();
+    check_crc64_byte_at_a_time();
     check_inet_byte_at_a_time();
 }

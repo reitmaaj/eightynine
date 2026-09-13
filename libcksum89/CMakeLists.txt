@@ -9,6 +9,7 @@ set(CKSUM89_SRCS
     src/cksum89_tables.c
     src/cksum89_crc32_iso_hdlc.c
     src/cksum89_crc32c.c
+    src/cksum89_crc64_nvme.c
     src/cksum89_inet16.c)
 
 add_library(cksum89 STATIC ${CKSUM89_SRCS})
@@ -33,6 +34,7 @@ if(CKSUM89_BUILD_TESTS)
         test/test_vectors.c
         test/test_crc32_iso_hdlc.c
         test/test_crc32c.c
+        test/test_crc64_nvme.c
         test/test_inet16.c
         test/test_stream.c
         test/test_tables.c)

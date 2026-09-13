@@ -94,6 +94,7 @@ int main(void)
     test_vectors();
     test_crc32_iso_hdlc();
     test_crc32c();
+    test_crc64_nvme();
     test_inet16();
     test_stream();
     test_tables();
