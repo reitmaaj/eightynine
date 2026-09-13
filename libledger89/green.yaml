@@ -1,0 +1,47 @@
+version: 1
+
+compile_commands:
+    gcc: build/gcc/compile_commands.json
+    clang: build/clang/compile_commands.json
+
+project_roots:
+    - src
+    - include
+
+exclude:
+    - build/**
+
+compatibility_paths: []
+
+pure_functions:
+    - strlen
+    - strcmp
+    - led89_io_posix
+    - led89_lo_bound
+    - led89_hi_bound
+    - led89_next_slot
+    - led89_add_record_bytes
+    - led89_batch_bytes
+    - led89_should_rotate
+    - led89_last_plus_one
+    - led89_body_size
+    - led89_add_footer
+    - led89_or_one
+    - led89_bytes_equal
+    - led89_is_batch_header
+    - led89_crc32c
+    - led89_crc_byte
+    - led89_crc_nibble
+    - led89_get_u16
+    - led89_get_u32
+    - led89_get_u64
+    - led89_off_ok
+    - led89_dot_name
+    - led89_add_flag
+    - led89_open_oflags
+    - led89_chunk_size
+    - led89_double
+    - led89_grow_cap
+    - led89_segment_next
+    - led89_base_of
+    - led89_is_empty

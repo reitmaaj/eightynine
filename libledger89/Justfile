@@ -1,0 +1,206 @@
+set shell := ["sh", "-eu", "-c"]
+
+CC := env_var_or_default("CC", "cc")
+GREEN := env_var_or_default("GREEN", "../../green/.agent/tmp/build/green")
+
+POSIX := "-D_POSIX_C_SOURCE=200809L"
+STRICT := "-std=c89 -pedantic-errors -Wall -Wextra -Werror -Wconversion -Wsign-conversion -Wstrict-prototypes -Wmissing-prototypes -Wold-style-definition -Wundef -Wshadow -Wformat=2"
+TESTFLAGS := "-Wno-unused-function"
+INC := "-Iinclude -Isrc -Itest/support"
+LIB := "build/libledger89.a"
+TESTGLOB := "test/smoke.c test/unit/test_*.c test/api/test_*.c test/crash/test_*.c test/fault/test_*.c test/corrupt/test_*.c test/model/test_*.c test/adapters/test_*.c test/golden/test_*.c test/stress/test_*.c"
+
+default: build
+
+# Compile every library translation unit and archive libledger89.a.
+build:
+	mkdir -p build/obj
+	@for f in src/*.c; do \
+	    [ -e "$f" ] || continue; \
+	    name=$(basename "$f" .c); \
+	    {{CC}} {{STRICT}} {{POSIX}} -Iinclude -Isrc -c "src/$name.c" -o "build/obj/$name.o" || exit 1; \
+	done
+	@objs=""; \
+	for f in build/obj/*.o; do \
+	    objs="$objs $f"; \
+	done; \
+	rm -f {{LIB}}; \
+	ar rcs {{LIB}} $objs
+
+# Best-effort 32-bit build; reports a skip when multilib is absent.
+build32:
+	@mkdir -p build/32/obj; \
+	if ! printf '#include <stdio.h>\nint main(void){return 0;}\n' | {{CC}} -m32 -x c - -o build/32/probe 2>/dev/null; then \
+	    echo "build32: SKIPPED: no 32-bit toolchain (install gcc multilib)"; \
+	    exit 0; \
+	fi; \
+	for f in src/*.c; do \
+	    [ -e "$f" ] || continue; \
+	    name=$(basename "$f" .c); \
+	    {{CC}} {{STRICT}} {{POSIX}} -m32 -Iinclude -Isrc -c "src/$name.c" -o "build/32/obj/$name.o" || exit 1; \
+	done; \
+	objs=""; \
+	for f in build/32/obj/*.o; do \
+	    objs="$objs $f"; \
+	done; \
+	rm -f build/32/libledger89.a; \
+	ar rcs build/32/libledger89.a $objs; \
+	echo "build32: ok"
+
+# Compile and run every test program in one suite directory.
+_run dir:
+	@for t in test/{{dir}}/test_*.c; do \
+	    [ -e "$t" ] || continue; \
+	    name=$(basename "$t" .c); \
+	    {{CC}} {{STRICT}} {{POSIX}} {{TESTFLAGS}} {{INC}} \
+	        -o "build/$name" "$t" test/support/*.c {{LIB}} || exit 1; \
+	    ./build/$name || exit 1; \
+	done
+
+# Smoke test first: one end-to-end path through the library.
+smoke: build
+	{{CC}} {{STRICT}} {{POSIX}} {{TESTFLAGS}} {{INC}} -o build/smoke test/smoke.c test/support/*.c {{LIB}}
+	./build/smoke
+
+unit: build
+	just _run unit
+
+api: build
+	just _run api
+
+crash: build
+	just _run crash
+
+fault: build
+	just _run fault
+
+# Allocation failure sweep (GNU ld allocator wrapping).
+fault-nomem: build
+	{{CC}} {{STRICT}} {{POSIX}} {{TESTFLAGS}} {{INC}} -o build/test_nomem \
+	    test/fault/nomem_main.c test/fault/nomem_shim.c test/support/*.c {{LIB}} \
+	    -Wl,--wrap=malloc -Wl,--wrap=calloc -Wl,--wrap=realloc
+	./build/test_nomem
+
+# EINTR retry suite (GNU ld syscall wrapping).
+fault-eintr: build
+	{{CC}} {{STRICT}} {{POSIX}} {{TESTFLAGS}} {{INC}} -o build/test_eintr \
+	    test/fault/eintr_main.c test/fault/eintr_shim.c test/support/*.c {{LIB}} \
+	    -Wl,--wrap=pread -Wl,--wrap=pwrite -Wl,--wrap=fsync -Wl,--wrap=fdatasync \
+	    -Wl,--wrap=ftruncate -Wl,--wrap=rename -Wl,--wrap=unlink
+	./build/test_eintr
+
+corrupt: build
+	just _run corrupt
+
+model: build
+	just _run model
+
+stress: build
+	just _run stress
+
+adapters: build
+	just _run adapters
+
+# Multi-million-operation model run plus a heavy many-segment sweep.
+long: build
+	{{CC}} {{STRICT}} {{POSIX}} {{TESTFLAGS}} {{INC}} -o build/test_random_model \
+	    test/model/test_random_model.c test/support/*.c {{LIB}}
+	./build/test_random_model 424242 2000000
+	{{CC}} {{STRICT}} {{POSIX}} {{TESTFLAGS}} {{INC}} -DMANY_RECORDS=2000ul \
+	    -o build/test_stress_many test/stress/test_stress_many_segments.c \
+	    test/support/*.c {{LIB}}
+	./build/test_stress_many
+
+# Run every fast suite (smoke first).
+test: smoke unit api crash fault fault-nomem fault-eintr corrupt model adapters golden stress
+
+# Reproducible throughput baseline (not part of `just test`).
+bench: build
+	{{CC}} -O2 {{STRICT}} {{POSIX}} {{TESTFLAGS}} {{INC}} -o build/bench test/bench/bench_main.c test/support/*.c {{LIB}}
+	./build/bench
+
+# Regenerate the committed golden fixtures (review the diff before commit).
+golden-gen: build
+	{{CC}} {{STRICT}} {{POSIX}} {{TESTFLAGS}} {{INC}} -o build/gen_golden test/tools/gen_golden.c test/support/*.c {{LIB}}
+	./build/gen_golden
+
+# Verify the committed golden fixtures byte for byte.
+golden: build
+	just _run golden
+
+# Rebuild the library and run the whole fast suite under ASan + UBSan.
+sanitize:
+	mkdir -p build/asan/obj
+	@for f in src/*.c; do \
+	    [ -e "$f" ] || continue; \
+	    name=$(basename "$f" .c); \
+	    {{CC}} -std=c99 -g -fsanitize=address,undefined -fno-omit-frame-pointer {{POSIX}} -Iinclude -Isrc -c "src/$name.c" -o "build/asan/obj/$name.o" || exit 1; \
+	done
+	@objs=""; \
+	for f in build/asan/obj/*.o; do \
+	    objs="$objs $f"; \
+	done; \
+	ar rcs build/asan/libledger89.a $objs
+	@for t in {{TESTGLOB}}; do \
+	    [ -e "$t" ] || continue; \
+	    name=$(basename "$t" .c); \
+	    {{CC}} -std=c99 -g -fsanitize=address,undefined -fno-omit-frame-pointer {{POSIX}} {{TESTFLAGS}} {{INC}} \
+	        -o "build/asan/$name" "$t" test/support/*.c build/asan/libledger89.a || exit 1; \
+	    ./build/asan/$name || exit 1; \
+	done
+
+# Run every fast suite under valgrind memcheck.
+valgrind: build
+	@for t in {{TESTGLOB}}; do \
+	    [ -e "$t" ] || continue; \
+	    name=$(basename "$t" .c); \
+	    {{CC}} {{STRICT}} {{POSIX}} {{TESTFLAGS}} {{INC}} -o "build/vg_$name" "$t" test/support/*.c {{LIB}} || exit 1; \
+	    valgrind --error-exitcode=1 --leak-check=full --quiet "./build/vg_$name" || exit 1; \
+	done
+
+# Generate compile databases and run the green matrix.
+green:
+	sh scripts/gen_compile_db gcc build/gcc/compile_commands.json
+	sh scripts/gen_compile_db clang build/clang/compile_commands.json
+	cd . && {{GREEN}} check
+
+# Full local gate: green profile, lint, and the fast suite.
+check: green lint test
+
+# Lint shell scripts and check C/header formatting.
+lint:
+	@for f in scripts/*; do \
+	    [ -e "$f" ] || continue; \
+	    shellcheck -s sh "$f" || exit 1; \
+	    shellcheck -s bash "$f" || exit 1; \
+	done
+	@for f in src/*.c src/*.h include/*.h test/*.c test/unit/*.c test/api/*.c \
+	    test/crash/*.c test/fault/*.c test/corrupt/*.c test/model/*.c \
+	    test/adapters/*.c test/golden/*.c test/stress/*.c test/bench/*.c \
+	    test/support/*.c test/support/*.h test/tools/*.c; do \
+	    [ -e "$f" ] || continue; \
+	    clang-format --dry-run --Werror "$f" || { echo "needs formatting: $f"; exit 1; }; \
+	done
+
+# Rewrite sources to canonical formatting.
+format:
+	@for f in src/*.c src/*.h include/*.h test/*.c test/unit/*.c test/api/*.c \
+	    test/crash/*.c test/fault/*.c test/corrupt/*.c test/model/*.c \
+	    test/adapters/*.c test/golden/*.c test/stress/*.c test/bench/*.c \
+	    test/support/*.c test/support/*.h test/tools/*.c; do \
+	    [ -e "$f" ] || continue; \
+	    clang-format -i "$f"; \
+	done
+
+# Verify required external tools are available.
+doctor:
+	@command -v gcc >/dev/null 2>&1 || { echo "missing: gcc"; exit 1; }
+	@command -v clang >/dev/null 2>&1 || { echo "missing: clang"; exit 1; }
+	@command -v clang-tidy >/dev/null 2>&1 || { echo "missing: clang-tidy"; exit 1; }
+	@command -v clang-format >/dev/null 2>&1 || { echo "missing: clang-format"; exit 1; }
+	@command -v just >/dev/null 2>&1 || { echo "missing: just"; exit 1; }
+	@command -v ar >/dev/null 2>&1 || { echo "missing: ar"; exit 1; }
+	@echo "doctor: all prerequisites present"
+
+clean:
+	rm -rf build
