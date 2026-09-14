@@ -1,4 +1,5 @@
 #!/bin/sh -eu
+set -eu
 # gen_compile_db <compiler> <outfile>
 #
 # Emit a compile_commands.json for the given compiler, listing every source

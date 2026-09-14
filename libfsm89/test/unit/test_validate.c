@@ -275,6 +275,26 @@ static void test_duplicate_edge_same_to(void)
 
 static void test_duplicate_edge_different_to(void)
 {
+    static const fsm89_state_def states[] = {{0, {NULL, 0}, {NULL, 0}, 0},
+                                             {1, {NULL, 0}, {NULL, 0}, 0},
+                                             {2, {NULL, 0}, {NULL, 0}, 0}};
+    static const fsm89_edge edges[] = {{0, 0, 1, {NULL, 0}},
+                                       {0, 0, 2, {NULL, 0}}};
+    fsm89_def def;
+    fsm89_status rc;
+
+    def.states = states;
+    def.state_count = 3;
+    def.edges = edges;
+    def.edge_count = 2;
+    def.initial = 0;
+    rc = fsm89_validate(&def);
+    fsm89_test_check_status(rc, FSM89_EDUP_EDGE,
+                            "validate: duplicate key, different targets");
+}
+
+static void test_duplicate_edge_different_effects(void)
+{
     static const fsm89_effect p[] = {1};
     static const fsm89_effect q[] = {2};
     static const fsm89_state_def states[] = {{0, {NULL, 0}, {NULL, 0}, 0},
@@ -418,6 +438,7 @@ int main(void)
     test_missing_edge_to();
     test_duplicate_edge_same_to();
     test_duplicate_edge_different_to();
+    test_duplicate_edge_different_effects();
     test_valid_keys();
     test_policy();
     test_accepting_initial();

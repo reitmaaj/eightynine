@@ -16,6 +16,7 @@ default: build
 # Compile every library translation unit and archive libfsm89.a.
 build:
 	mkdir -p build
+	rm -f build/*.o
 	@for f in src/*.c; do \
 	    name=$(basename "$f" .c); \
 	    {{CC}} {{STRICT}} -Iinclude -c "$f" -o "build/$name.o" || exit 1; \
@@ -35,6 +36,7 @@ smoke: build
 
 # Unit tests, one small program per concern.
 unit: build
+	@ls test/unit/test_*.c >/dev/null 2>&1 || { echo "unit: no tests" >&2; exit 1; }
 	@for t in test/unit/test_*.c; do \
 	    [ -e "$t" ] || continue; \
 	    name=$(basename "$t" .c); \
@@ -45,6 +47,7 @@ unit: build
 
 # Differential tests against an independent reference model.
 model: build
+	@ls test/model/test_*.c >/dev/null 2>&1 || { echo "model: no tests" >&2; exit 1; }
 	@for t in test/model/test_*.c; do \
 	    [ -e "$t" ] || continue; \
 	    name=$(basename "$t" .c); \
@@ -55,6 +58,7 @@ model: build
 
 # Exhaustive small-machine and generated-invalid suites.
 generated: build
+	@ls test/generated/test_*.c >/dev/null 2>&1 || { echo "generated: no tests" >&2; exit 1; }
 	@for t in test/generated/test_*.c; do \
 	    [ -e "$t" ] || continue; \
 	    name=$(basename "$t" .c); \
@@ -105,6 +109,18 @@ audit: build
 api-coverage:
 	sh scripts/api-coverage.sh
 
+# Prove every script aborts on failure when invoked as `sh scripts/<name>`.
+shell-selftest:
+	sh scripts/shell-selftest.sh
+
+# Prove the coverage gate rejects missing or incomplete reports.
+coverage-selftest:
+	sh scripts/coverage-selftest.sh
+
+# Prove the archive contains no stale objects from deleted sources.
+build-selftest:
+	sh scripts/build-selftest.sh
+
 # Generate the GCC and Clang compilation databases, then run the green gate
 # from this project root.
 green:
@@ -112,8 +128,9 @@ green:
 	sh scripts/gen_compile_db clang build/clang/compile_commands.json
 	{{GREEN}} check
 
-# Full local gate: green profile, lint, fast suite, probes, audits, coverage.
-check: green lint test compile-check cpp-check audit api-coverage coverage
+# Full local gate: green profile, lint, fast suite, probes, audits, coverage,
+# and the gate self-checks.
+check: green lint test compile-check cpp-check audit api-coverage coverage shell-selftest coverage-selftest build-selftest
 
 # Release gate: check plus the compiler matrix, sanitizers, and deep sweep.
 release: check matrix sanitize deep-test

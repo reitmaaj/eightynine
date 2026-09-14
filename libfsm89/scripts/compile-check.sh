@@ -1,4 +1,5 @@
 #!/bin/sh -eu
+set -eu
 # compile-check.sh - header hygiene and const-correctness compile probes.
 #
 # Positive probes must compile (and the linked ones must run). Negative

@@ -122,6 +122,13 @@ per declaration; pure helpers listed in `green.yaml`.
 
 `just build` produces `build/libfsm89.a`. `just test` runs the smoke, unit,
 model, and generated suites in order. `just check` adds the green gate, lint,
-symbol audit, API coverage, and the 100% line/branch coverage gate. `just
-matrix`, `just sanitize`, and `just deep-test` provide the compiler matrix,
-sanitizers, and the exhaustive N=3,E=3 sweep.
+symbol audit, API coverage, the 100% line/branch coverage gate, and the gate
+self-checks. `just matrix`, `just sanitize`, and `just deep-test` provide the
+compiler matrix, sanitizers, and the exhaustive N=3,E=3 sweep.
+
+Gates must fail rather than pass vacuously. Scripts are invoked as
+`sh scripts/<name>`, which ignores the shebang, so each script sets `set -eu`
+in its body (`just shell-selftest`). The coverage gate requires a profile
+report per source (`scripts/coverage-check.sh`), the sanitizer gate compiles
+and runs known UB and address-error probes, and the build gate rebuilds after
+a deleted source and checks that no stale symbol survives.

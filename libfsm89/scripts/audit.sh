@@ -1,4 +1,5 @@
 #!/bin/sh -eu
+set -eu
 # audit.sh - symbol audit for libfsm89.
 #
 # 1. The archive must reference no external symbol at all (no allocation, no

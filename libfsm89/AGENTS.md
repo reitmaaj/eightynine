@@ -51,8 +51,14 @@ function and non-trivial branch, then model and generated/exhaustive testing.
 Use `just` for all actions: `just build`, `just smoke`, `just unit`,
 `just model`, `just generated`, `just deep-test`, `just cpp-check`, `just test`,
 `just matrix`, `just sanitize`, `just coverage`, `just audit`,
-`just api-coverage`, `just green`, `just check`, `just release`, `just lint`,
+`just api-coverage`, `just shell-selftest`, `just coverage-selftest`,
+`just build-selftest`, `just green`, `just check`, `just release`, `just lint`,
 `just format`, `just clean`.
+
+Scripts are invoked as `sh scripts/<name>`, which ignores the shebang, so
+every script carries an explicit `set -eu` in its body; `just shell-selftest`
+enforces this. Gates must fail rather than pass vacuously; the coverage,
+sanitizer, and build gates carry self-checks.
 
 ## Git
 

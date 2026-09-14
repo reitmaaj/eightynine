@@ -1,4 +1,5 @@
 #!/bin/sh -eu
+set -eu
 # matrix.sh - compile and run the behavioral suite under gcc and clang in both
 # strict C89 and strict C23 modes, then under -O0/-O2/-O3.
 

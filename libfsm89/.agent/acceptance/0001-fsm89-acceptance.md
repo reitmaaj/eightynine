@@ -27,7 +27,12 @@ deterministic tests plus the recipes named in `Justfile`.
 | A20 | The exported symbol set is exactly the four public functions plus the three documented internal `fsm89__*` helpers. | `scripts/audit.sh` |
 | A21 | Strict C89 and strict C23 builds run the same behavioral suite under GCC and Clang. | `just matrix` |
 | A22 | ASan and UBSan runs are clean. | `just sanitize` |
-| A23 | Every source line and branch is covered by the suite. | `just coverage` |
+| A23 | Every source line and branch is covered by the suite. | `just coverage`, `scripts/coverage-check.sh` |
+| A26 | The coverage gate fails on a missing report, an unexecuted line, an unexecuted branch, or an empty source set. | `scripts/coverage-selftest.sh` |
+| A27 | The sanitizer gate proves itself armed: a known undefined behavior and a known address error must fail their runs. | `scripts/sanitize.sh` self-checks |
+| A28 | The archive contains only objects built from current sources; a deleted source leaves no stale symbol. | `scripts/build-selftest.sh` |
+| A29 | Every script aborts on failure even when invoked as `sh scripts/<name>` (shebang-independent). | `scripts/shell-selftest.sh` |
+| A30 | Each test suite refuses to pass when it finds no test files. | `Justfile` suite guards |
 | A24 | The header compiles alone, tolerates double inclusion, and works from C++23. | `test/compile/*`, `test/cpp/header_check.cpp` |
 | A25 | Result spans are not writable through the public API. | `test/compile/reject_write_through_result.c` |
 
@@ -53,3 +58,7 @@ deterministic tests plus the recipes named in `Justfile`.
   hidden global state.
 - Depending on state, event, or effect numeric values as table positions.
 - Letting table order affect any semantic result.
+- Reporting success from a verification gate that could not verify its
+  property: a failing `gcov`, a missing profile, a recovering sanitizer, a
+  stale build object, a script that continues after a failed command, or an
+  empty test glob.

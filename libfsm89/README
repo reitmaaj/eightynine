@@ -73,7 +73,11 @@ if (rc == FSM89_OK) {
 - `just sanitize` — ASan + UBSan run of the fast suite.
 - `just coverage` — 100% line and branch coverage gate on `src/`.
 - `just audit` — symbol audit: no external symbols, exact export set.
-- `just check` — green gate, lint, tests, compile probes, audits, coverage.
+- `just shell-selftest` — scripts abort on failure under `sh` invocation.
+- `just coverage-selftest` — the coverage gate rejects incomplete reports.
+- `just build-selftest` — no stale objects survive a deleted source.
+- `just check` — green gate, lint, tests, compile probes, audits, coverage,
+  and the gate self-checks.
 - `just release` — check plus matrix, sanitizers, and the deep sweep.
 
 ## Non-goals

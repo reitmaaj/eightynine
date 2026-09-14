@@ -159,7 +159,12 @@ extern "C"
 
     /* Nonzero exactly when state names a state whose accepting field is
      * nonzero; 0 when the state is not defined. Accepting does not mean
-     * terminal. */
+     * terminal.
+     *
+     * Preconditions:
+     *   def != NULL
+     *   fsm89_validate(def) == FSM89_OK
+     */
     int fsm89_accepting(const fsm89_def *def, fsm89_state state);
 
 #ifdef __cplusplus

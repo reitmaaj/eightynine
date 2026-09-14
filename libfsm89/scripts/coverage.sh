@@ -1,4 +1,5 @@
 #!/bin/sh -eu
+set -eu
 # coverage.sh - require 100% line and branch coverage over src/.
 #
 # Builds the library and every fast suite with gcov instrumentation, runs
@@ -35,26 +36,7 @@ done
 cd "$out"
 for gcno in fsm89_*.gcno; do
     [ -e "$gcno" ] || continue
-    gcov -b -c "$gcno" > /dev/null 2>&1 || true
+    gcov -b -c "$gcno" > /dev/null 2>&1
 done
 
-fail=0
-for gcovf in fsm89_*.gcov; do
-    [ -e "$gcovf" ] || continue
-    if grep -q '^ *#####' "$gcovf"; then
-        echo "coverage: unexecuted lines in $gcovf"
-        grep -n '^ *#####' "$gcovf" | head -20
-        fail=1
-    fi
-    if grep -q 'never executed' "$gcovf"; then
-        echo "coverage: unexecuted branches in $gcovf"
-        grep -n 'never executed' "$gcovf" | head -20
-        fail=1
-    fi
-done
-
-if [ "$fail" -ne 0 ]; then
-    exit 1
-fi
-
-echo "coverage: 100% lines and branches"
+sh "$root/scripts/coverage-check.sh" "$root/src" "$out"
