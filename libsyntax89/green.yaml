@@ -1,0 +1,23 @@
+version: 1
+
+compile_commands:
+    gcc: build/gcc/compile_commands.json
+    clang: build/clang/compile_commands.json
+
+project_roots:
+    - src
+
+exclude:
+    - build/**
+
+compatibility_paths: []
+
+pure_functions:
+    - syntax89__span_ok
+    - syntax89__node_at
+    - syntax89__node_mut
+    - syntax89__size_add
+    - syntax89__size_mul
+    - role_count_step
+    - role_count
+    - role_edge_at

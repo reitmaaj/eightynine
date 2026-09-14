@@ -1,0 +1,182 @@
+set shell := ["sh", "-eu", "-c"]
+
+CC := env_var_or_default("CC", "cc")
+GREEN := env_var_or_default("GREEN", "../../green/.agent/tmp/build/green")
+
+STRICT := "-std=c89 -pedantic-errors -Wall -Wextra -Werror -Wconversion -Wsign-conversion -Wstrict-prototypes -Wmissing-prototypes -Wold-style-definition -Wundef -Wshadow -Wformat=2"
+TESTFLAGS := "-Wno-unused-function"
+TESTINC := "-Iinclude -Isrc -Itest/support -Itest/model"
+SUPPORT := "test/support/syntax89_test.c test/support/syntax89_fixtures.c test/support/syntax89_invariants.c test/support/syntax89_fault_alloc.c"
+REF := "test/model/ref_syntax89.c"
+GEN := "test/support/syntax89_gen.c"
+LIB := "build/libsyntax89.a"
+
+default: build
+
+# Compile every library translation unit and archive libsyntax89.a.
+build:
+	mkdir -p build
+	rm -f build/*.o
+	@for f in src/*.c; do \
+	    name=$(basename "$f" .c); \
+	    {{CC}} {{STRICT}} -Iinclude -c "$f" -o "build/$name.o" || exit 1; \
+	done
+	@objs=""; \
+	for f in build/*.o; do \
+	    objs="$objs $f"; \
+	done; \
+	rm -f {{LIB}}; \
+	ar rcs {{LIB}} $objs
+
+# Smoke test first: one end-to-end path through the library.
+smoke: build
+	{{CC}} {{STRICT}} {{TESTFLAGS}} {{TESTINC}} \
+	    -o build/smoke test/smoke.c {{SUPPORT}} {{LIB}}
+	./build/smoke
+
+# Unit tests, one small program per concern.
+unit: build
+	@ls test/unit/test_*.c >/dev/null 2>&1 || { echo "unit: no tests" >&2; exit 1; }
+	@for t in test/unit/test_*.c; do \
+	    [ -e "$t" ] || continue; \
+	    name=$(basename "$t" .c); \
+	    {{CC}} {{STRICT}} {{TESTFLAGS}} {{TESTINC}} \
+	        -o "build/$name" "$t" {{SUPPORT}} {{LIB}} || exit 1; \
+	    ./build/$name || exit 1; \
+	done
+
+# Differential tests against an independent reference model.
+model: build
+	@ls test/model/test_*.c >/dev/null 2>&1 || { echo "model: no tests" >&2; exit 1; }
+	@for t in test/model/test_*.c; do \
+	    [ -e "$t" ] || continue; \
+	    name=$(basename "$t" .c); \
+	    {{CC}} {{STRICT}} {{TESTFLAGS}} {{TESTINC}} \
+	        -o "build/$name" "$t" {{REF}} {{GEN}} {{SUPPORT}} {{LIB}} || exit 1; \
+	    ./build/$name || exit 1; \
+	done
+
+# Exhaustive small-graph and mutation suites.
+generated: build
+	@ls test/generated/test_*.c >/dev/null 2>&1 || { echo "generated: no tests" >&2; exit 1; }
+	@for t in test/generated/test_*.c; do \
+	    [ -e "$t" ] || continue; \
+	    name=$(basename "$t" .c); \
+	    {{CC}} {{STRICT}} {{TESTFLAGS}} {{TESTINC}} \
+	        -o "build/$name" "$t" {{REF}} {{GEN}} {{SUPPORT}} {{LIB}} || exit 1; \
+	    ./build/$name || exit 1; \
+	done
+
+# Allocation-failure injection at every allocation point.
+fault: build
+	@ls test/fault/test_*.c >/dev/null 2>&1 || { echo "fault: no tests" >&2; exit 1; }
+	@for t in test/fault/test_*.c; do \
+	    [ -e "$t" ] || continue; \
+	    name=$(basename "$t" .c); \
+	    {{CC}} {{STRICT}} {{TESTFLAGS}} {{TESTINC}} \
+	        -o "build/$name" "$t" {{SUPPORT}} {{LIB}} || exit 1; \
+	    ./build/$name || exit 1; \
+	done
+
+# Scale tests: deep, wide, and highly shared graphs.
+stress: build
+	@ls test/stress/test_*.c >/dev/null 2>&1 || { echo "stress: no tests" >&2; exit 1; }
+	@for t in test/stress/test_*.c; do \
+	    [ -e "$t" ] || continue; \
+	    name=$(basename "$t" .c); \
+	    {{CC}} {{STRICT}} {{TESTFLAGS}} {{TESTINC}} \
+	        -o "build/$name" "$t" {{SUPPORT}} {{LIB}} || exit 1; \
+	    ./build/$name || exit 1; \
+	done
+
+# Deep exhaustive sweep, run only from the release gate.
+deep-test: build
+	{{CC}} {{STRICT}} {{TESTFLAGS}} {{TESTINC}} -DSYNTAX89_STRESS_DEEP \
+	    -o build/test_deep_stress test/stress/test_deep.c {{SUPPORT}} {{LIB}}
+	./build/test_deep_stress
+
+# C++23 header compile checks (g++ and clang++).
+cpp-check:
+	mkdir -p build
+	g++ -std=c++23 -pedantic-errors -Wall -Wextra -Werror -Iinclude \
+	    -c test/cpp/header_check.cpp -o build/header_check_gpp.o
+	clang++ -std=c++23 -pedantic-errors -Wall -Wextra -Werror -Iinclude \
+	    -c test/cpp/header_check.cpp -o build/header_check_clangpp.o
+
+# Compile probes: header hygiene and const-correctness.
+compile-check:
+	sh scripts/compile-check.sh
+
+# Run every fast suite (smoke first, then the rest).
+test: smoke unit model generated fault
+
+# gcc/clang x C89/C23 behavioral matrix, plus optimization levels.
+matrix:
+	sh scripts/matrix.sh
+
+# ASan + UBSan build of the library and the full fast suite.
+sanitize:
+	sh scripts/sanitize.sh
+
+# Valgrind memcheck over the fast suite (degrades to a notice if absent).
+valgrind:
+	sh scripts/valgrind.sh
+
+# 100% line and branch coverage gate over src/.
+coverage:
+	sh scripts/coverage.sh
+
+# Symbol audit: exact export set, documented libc references only.
+audit: build
+	sh scripts/audit.sh
+
+# Every public syntax89_* function is named by a test.
+api-coverage:
+	sh scripts/api-coverage.sh
+
+# Prove every script aborts on failure when invoked as `sh scripts/<name>`.
+shell-selftest:
+	sh scripts/shell-selftest.sh
+
+# Prove the coverage gate rejects missing or incomplete reports.
+coverage-selftest:
+	sh scripts/coverage-selftest.sh
+
+# Prove the archive contains no stale objects from deleted sources.
+build-selftest:
+	sh scripts/build-selftest.sh
+
+# Generate the GCC and Clang compilation databases, then run the green gate.
+green:
+	sh scripts/gen_compile_db gcc build/gcc/compile_commands.json
+	sh scripts/gen_compile_db clang build/clang/compile_commands.json
+	{{GREEN}} check
+
+# Full local gate: green profile, lint, fast suite, probes, audits, coverage,
+# and the gate self-checks.
+check: green lint test compile-check cpp-check audit api-coverage coverage shell-selftest coverage-selftest build-selftest
+
+# Release gate: check plus the compiler matrix, sanitizers, and stress runs.
+release: check matrix sanitize stress deep-test valgrind
+
+# Lint shell scripts and check C/header formatting.
+lint:
+	@for f in scripts/*; do \
+	    [ -e "$f" ] || continue; \
+	    shellcheck -s sh "$f" || exit 1; \
+	    shellcheck -s bash "$f" || exit 1; \
+	done
+	@for f in src/*.c src/*.h include/*.h test/*.c test/support/*.c test/support/*.h test/unit/*.c test/model/*.c test/model/*.h test/generated/*.c test/fault/*.c test/stress/*.c test/compile/*.c test/cpp/*.cpp; do \
+	    [ -e "$f" ] || continue; \
+	    clang-format --dry-run --Werror "$f" || { echo "needs formatting: $f"; exit 1; }; \
+	done
+
+# Rewrite sources to canonical formatting.
+format:
+	@for f in src/*.c src/*.h include/*.h test/*.c test/support/*.c test/support/*.h test/unit/*.c test/model/*.c test/model/*.h test/generated/*.c test/fault/*.c test/stress/*.c test/compile/*.c test/cpp/*.cpp; do \
+	    [ -e "$f" ] || continue; \
+	    clang-format -i "$f"; \
+	done
+
+clean:
+	rm -rf build
