@@ -1,0 +1,90 @@
+# libfsm89
+
+Deterministic labelled transition systems for strict ISO C89. `libfsm89`
+maps `(state, event)` to `(next state, emissions)` and nothing else: it does
+not execute I/O, maintain queues, schedule timers, allocate application
+objects, or interpret emissions. One representation covers recognizers,
+Moore/Mealy transducers, protocol machines, parsers, and effect-driving
+controllers.
+
+```text
+(state, event) -> (next state, emissions)
+```
+
+A successful transition emits, in order:
+
+```text
+leave(source) || edge(source, event) || enter(destination)
+```
+
+Startup emits only `enter(initial)`. A self-transition performs both leave and
+enter.
+
+## Types
+
+| Type | Meaning |
+|---|---|
+| `fsm89_state`, `fsm89_event`, `fsm89_effect` | abstract `unsigned long` identifiers |
+| `fsm89_effects` | borrowed ordered effect span |
+| `fsm89_state_def` | state ID, leave/enter spans, accepting flag |
+| `fsm89_edge` | `from`, `event`, `to`, and edge effect span |
+| `fsm89_def` | caller-owned immutable machine definition |
+| `fsm89_step_result` | one evaluated transition with three borrowed spans |
+
+There is no mutable FSM object: `fsm89_step` proposes a transition and the
+caller commits it.
+
+```c
+fsm89_step_result r;
+fsm89_status rc;
+
+rc = fsm89_step(&def, state, event, &r);
+if (rc == FSM89_OK) {
+    state = r.to;
+}
+```
+
+## Semantics
+
+- `fsm89_validate` proves structural consistency and determinism: unique
+  state IDs, an existing initial state, existing edge endpoints, unique
+  `(from, event)` keys, and valid spans. Reachability, terminality, and
+  completeness are not imposed.
+- `fsm89_step` returns `FSM89_OK`, `FSM89_NO_TRANSITION` (valid state, no
+  edge), or `FSM89_ESTATE` (unknown state). `*result` is written only on
+  `FSM89_OK`.
+- `fsm89_start` returns the initial state and its enter span only.
+- `fsm89_accepting` reports the state's accepting flag; an unknown state
+  returns 0. Accepting does not mean terminal.
+- Effects are declarative outputs. `libfsm89` never executes them and never
+  allocates; all returned spans borrow caller storage.
+
+## Build and test
+
+- `just build` — build `build/libfsm89.a`.
+- `just smoke` — one end-to-end path.
+- `just unit` — unit programs, one per concern.
+- `just model` — differential tests against an independent reference model.
+- `just generated` — exhaustive small-machine and mutation suites.
+- `just deep-test` — the exhaustive N=3, E=3 sweep.
+- `just cpp-check` — C++23 header compile checks.
+- `just test` — smoke, unit, model, generated.
+- `just matrix` — gcc/clang x C89/C23 plus optimization levels.
+- `just sanitize` — ASan + UBSan run of the fast suite.
+- `just coverage` — 100% line and branch coverage gate on `src/`.
+- `just audit` — symbol audit: no external symbols, exact export set.
+- `just shell-selftest` — scripts abort on failure under `sh` invocation.
+- `just coverage-selftest` — the coverage gate rejects incomplete reports.
+- `just build-selftest` — no stale objects survive a deleted source.
+- `just check` — green gate, lint, tests, compile probes, audits, coverage,
+  and the gate self-checks.
+- `just release` — check plus matrix, sanitizers, and the deep sweep.
+
+## Non-goals
+
+Hierarchical or orthogonal states, nondeterminism, guards, callbacks,
+transition priorities, event queues, timers, threads, asynchronous execution,
+effect handlers, payloads, dynamic graph mutation, persistence,
+serialization, allocation, rollback, and nested FSM execution. A future,
+separate `libfsmfx89` may map effect IDs to `libfx89` atoms; `libfsm89`
+itself has no dependencies.
