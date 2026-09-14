@@ -1,0 +1,39 @@
+#!/bin/sh -eu
+# strict-sanitize - run the runner-based strict subsets against an ASan+UBSan
+# build of the library and the fault shim.
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$root"
+
+cc="${CC:-cc}"
+san="build/san"
+
+rm -rf "$san"
+mkdir -p "$san/obj"
+
+for f in src/*.c; do
+    name=$(basename "$f" .c)
+    "$cc" -std=c99 -g -O1 -fsanitize=address,undefined \
+        -fno-omit-frame-pointer -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc \
+        -c "$f" -o "$san/obj/$name.o"
+done
+ar rcs "$san/libledger89.a" "$san"/obj/*.o
+
+"$cc" -std=c99 -g -O1 -fsanitize=address,undefined -fno-omit-frame-pointer \
+    -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -Itest/support \
+    -o "$san/strictrun" test/strict/strictrun.c "$san/libledger89.a"
+"$cc" -std=c89 -pedantic-errors -Wall -Wextra -Werror -g -O1 \
+    -fsanitize=address,undefined -fno-omit-frame-pointer \
+    -D_POSIX_C_SOURCE=200809L -fPIC -shared -o "$san/libledger89_fault.so" \
+    test/strict/faultshim.c -ldl
+
+export ASAN_OPTIONS="detect_leaks=1:abort_on_error=0"
+export UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1"
+export LED89_RUNNER="$root/$san/strictrun"
+export LED89_SHIM="$root/$san/libledger89_fault.so"
+
+python3 test/strict/run.py --tier fast -k shim
+python3 test/strict/run.py --tier fast -k corrupt
+python3 test/strict/run.py --tier full -k fault
+python3 test/strict/run.py --tier full -k crash
+echo "strict-sanitize: ok"

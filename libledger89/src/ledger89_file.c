@@ -24,6 +24,24 @@ struct led89_dir
 
 static void led89_close_fd(int fd);
 
+static int led89_open_retry(const char *path, int oflags)
+{
+    int fd;
+
+    for (;;)
+    {
+        fd = open(path, oflags, 0666);
+        if (fd >= 0)
+        {
+            return fd;
+        }
+        if (errno != EINTR)
+        {
+            return fd;
+        }
+    }
+}
+
 static int led89_off_ok(led89_u64 v)
 {
     led89_u64 max;
@@ -78,21 +96,14 @@ static int led89_posix_open(void *ctx, const char *path, int flags,
 
     (void)ctx;
     oflags = led89_open_oflags(flags);
-    for (;;)
+    rc = led89_open_retry(path, oflags);
+    if (rc < 0)
     {
-        rc = open(path, oflags, 0666);
-        if (rc >= 0)
-        {
-            break;
-        }
         if (errno == ENOENT)
         {
             return LEDGER89_ENOENT;
         }
-        if (errno != EINTR)
-        {
-            return LEDGER89_EIO;
-        }
+        return LEDGER89_EIO;
     }
     *fd = rc;
     return LEDGER89_OK;
@@ -373,7 +384,7 @@ static int led89_posix_sync_dir(void *ctx, const char *path)
     int rc;
 
     (void)ctx;
-    fd = open(path, O_RDONLY);
+    fd = led89_open_retry(path, O_RDONLY);
     if (fd < 0)
     {
         return LEDGER89_EIO;
@@ -425,7 +436,7 @@ static int led89_posix_lock(void *ctx, const char *path, int exclusive,
     {
         oflags = led89_lock_oflags();
     }
-    f = open(path, oflags, 0666);
+    f = led89_open_retry(path, oflags);
     if (f < 0)
     {
         if (errno == ENOENT)
@@ -434,11 +445,18 @@ static int led89_posix_lock(void *ctx, const char *path, int exclusive,
         }
         return LEDGER89_EIO;
     }
-    rc = flock(f, mode | LOCK_NB);
-    if (rc != 0)
+    for (;;)
     {
-        rc = led89_posix_lock_fail(f);
-        return rc;
+        rc = flock(f, mode | LOCK_NB);
+        if (rc == 0)
+        {
+            break;
+        }
+        if (errno != EINTR)
+        {
+            rc = led89_posix_lock_fail(f);
+            return rc;
+        }
     }
     *fd = f;
     return LEDGER89_OK;
@@ -471,7 +489,7 @@ static int led89_posix_entropy(void *ctx, unsigned char *out, size_t len)
     ssize_t n;
 
     (void)ctx;
-    fd = open("/dev/urandom", O_RDONLY);
+    fd = led89_open_retry("/dev/urandom", O_RDONLY);
     if (fd < 0)
     {
         return LEDGER89_EIO;
@@ -500,13 +518,31 @@ static int led89_posix_entropy(void *ctx, unsigned char *out, size_t len)
     return LEDGER89_OK;
 }
 
+static DIR *led89_opendir_retry(const char *path)
+{
+    DIR *d;
+
+    for (;;)
+    {
+        d = opendir(path);
+        if (d != NULL)
+        {
+            return d;
+        }
+        if (errno != EINTR)
+        {
+            return d;
+        }
+    }
+}
+
 static int led89_posix_list_open(void *ctx, const char *path, led89_dir **out)
 {
     DIR *d;
     led89_dir *dir;
 
     (void)ctx;
-    d = opendir(path);
+    d = led89_opendir_retry(path);
     if (d == NULL)
     {
         return LEDGER89_EIO;
@@ -522,14 +558,53 @@ static int led89_posix_list_open(void *ctx, const char *path, led89_dir **out)
     return LEDGER89_OK;
 }
 
-static int led89_posix_next_entry(DIR *d, struct dirent **out)
+static int led89_eof_status(void)
 {
+    if (errno != 0)
+    {
+        return LEDGER89_EIO;
+    }
+    return LEDGER89_OK;
+}
+
+static struct dirent *led89_readdir_once(DIR *d)
+{
+    struct dirent *ent;
+
+    errno = 0;
+    ent = readdir(d);
+    return ent;
+}
+
+static struct dirent *led89_readdir_retry(DIR *d)
+{
+    struct dirent *ent;
+
     for (;;)
     {
-        *out = readdir(d);
+        ent = led89_readdir_once(d);
+        if (ent != NULL)
+        {
+            return ent;
+        }
+        if (errno != EINTR)
+        {
+            return ent;
+        }
+    }
+}
+
+static int led89_posix_next_entry(DIR *d, struct dirent **out)
+{
+    int rc;
+
+    for (;;)
+    {
+        *out = led89_readdir_retry(d);
         if (*out == NULL)
         {
-            return LEDGER89_OK;
+            rc = led89_eof_status();
+            return rc;
         }
         if (led89_dot_name((*out)->d_name) == 0)
         {

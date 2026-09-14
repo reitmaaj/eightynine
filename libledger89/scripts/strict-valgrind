@@ -1,0 +1,36 @@
+#!/bin/sh -eu
+# strict-valgrind - run the runner-based strict subsets under valgrind
+# memcheck. The Python driver itself is not run under valgrind; only the
+# scenario runner is wrapped.
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$root"
+
+cc="${CC:-cc}"
+vg="build/vg"
+
+rm -rf "$vg"
+mkdir -p "$vg"
+
+"$cc" -std=c89 -pedantic-errors -Wall -Wextra -Werror -Wno-unused-function \
+    -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -Itest/support \
+    -o "$vg/strictrun" test/strict/strictrun.c test/support/*.c \
+    build/libledger89.a
+"$cc" -std=c89 -pedantic-errors -Wall -Wextra -Werror \
+    -D_POSIX_C_SOURCE=200809L -fPIC -shared \
+    -o "$vg/libledger89_fault.so" test/strict/faultshim.c -ldl
+
+cat > "$vg/strictrun-vg" <<EOF
+#!/bin/sh -eu
+exec valgrind --error-exitcode=99 --leak-check=full --quiet \
+    "$root/$vg/strictrun" "\$@"
+EOF
+chmod +x "$vg/strictrun-vg"
+
+export LED89_RUNNER="$vg/strictrun-vg"
+export LED89_SHIM="$root/$vg/libledger89_fault.so"
+
+python3 test/strict/run.py --tier fast -k shim
+python3 test/strict/run.py --tier fast -k corrupt
+python3 test/strict/run.py --tier full -k crash
+echo "strict-valgrind: ok"

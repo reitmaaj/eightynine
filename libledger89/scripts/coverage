@@ -1,0 +1,114 @@
+#!/bin/sh -eu
+# coverage - build instrumented sources, run the strict fast suite plus the
+# white-box unit tests, and enforce line/branch coverage gates for src/.
+#
+# Usage: scripts/coverage [--report]
+# Gates: LED89_MIN_LINES (default 95), LED89_MIN_BRANCHES (default 90).
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$root"
+
+min_lines="${LED89_MIN_LINES:-95}"
+min_branches="${LED89_MIN_BRANCHES:-90}"
+cov="build/cov"
+report=0
+if [ "${1:-}" = "--report" ]; then
+    report=1
+fi
+
+cc="${CC:-cc}"
+
+rm -rf "$cov"
+mkdir -p "$cov/obj"
+
+for f in src/*.c; do
+    name=$(basename "$f" .c)
+    "$cc" --coverage -O0 -g -fPIC -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc \
+        -c "$f" -o "$cov/obj/$name.o"
+done
+"$cc" --coverage -shared -o "$cov/libledger89.so" "$cov"/obj/*.o
+ar rcs "$cov/libledger89.a" "$cov"/obj/*.o
+
+# Runner-based strict subset against the instrumented archive.
+"$cc" --coverage -O0 -g -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc -Itest/support \
+    -o "$cov/strictrun" test/strict/strictrun.c "$cov/libledger89.a"
+"$cc" --coverage -O0 -g -D_POSIX_C_SOURCE=200809L -fPIC -shared \
+    -o "$cov/libledger89_fault.so" test/strict/faultshim.c -ldl
+
+LED89_LIB="$root/$cov/libledger89.so" \
+LED89_RUNNER="$root/$cov/strictrun" \
+LED89_SHIM="$root/$cov/libledger89_fault.so" \
+    python3 test/strict/run.py --tier full --json "$cov/report.json"
+
+# White-box unit tests against the instrumented archive.
+for t in test/unit/test_*.c; do
+    [ -e "$t" ] || continue
+    name=$(basename "$t" .c)
+    "$cc" --coverage -O0 -g -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc \
+        -Itest/support -o "$cov/$name" "$t" test/support/*.c \
+        "$cov/libledger89.a"
+    "$cov/$name" >/dev/null
+done
+
+# Behavioral C suites against the instrumented archive: these reach the
+# crash, fault, corruption, and randomized error paths.
+for t in test/smoke.c test/api/test_*.c test/adapters/test_*.c \
+    test/golden/test_*.c test/stress/test_*.c test/crash/test_*.c \
+    test/fault/test_*.c test/corrupt/test_*.c; do
+    [ -e "$t" ] || continue
+    name=$(basename "$t" .c)
+    "$cc" --coverage -O0 -g -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc \
+        -Itest/support -o "$cov/$name" "$t" test/support/*.c \
+        "$cov/libledger89.a"
+    "$cov/$name" >/dev/null
+done
+"$cc" --coverage -O0 -g -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc \
+    -Itest/support -o "$cov/test_random_model" test/model/test_random_model.c \
+    test/support/*.c "$cov/libledger89.a"
+"$cov/test_random_model" 1234 20000 >/dev/null
+
+# Allocation-failure and EINTR sweeps via GNU ld wrapping.
+"$cc" --coverage -O0 -g -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc \
+    -Itest/support -o "$cov/test_nomem" test/fault/nomem_main.c \
+    test/fault/nomem_shim.c test/support/*.c "$cov/libledger89.a" \
+    -Wl,--wrap=malloc -Wl,--wrap=calloc -Wl,--wrap=realloc
+"$cov/test_nomem" >/dev/null
+"$cc" --coverage -O0 -g -D_POSIX_C_SOURCE=200809L -Iinclude -Isrc \
+    -Itest/support -o "$cov/test_eintr" test/fault/eintr_main.c \
+    test/fault/eintr_shim.c test/support/*.c "$cov/libledger89.a" \
+    -Wl,--wrap=pread -Wl,--wrap=pwrite -Wl,--wrap=fsync -Wl,--wrap=fdatasync \
+    -Wl,--wrap=ftruncate -Wl,--wrap=rename -Wl,--wrap=unlink
+"$cov/test_eintr" >/dev/null
+
+lcov --capture --directory "$cov" --output-file "$cov/lcov.info" \
+    --include "$root/src/*" --branch-coverage \
+    --ignore-errors inconsistent,empty,source >/dev/null 2>&1 || true
+lcov --summary "$cov/lcov.info" --rc branch_coverage=1 > "$cov/summary.txt" 2>&1 || true
+cat "$cov/summary.txt"
+
+lines=$(sed -n 's/.*lines[^:]*: *\([0-9][0-9.]*\)%.*/\1/p' "$cov/summary.txt")
+branches=$(sed -n 's/.*branches[^:]*: *\([0-9][0-9.]*\)%.*/\1/p' "$cov/summary.txt")
+lines="${lines:-0}"
+branches="${branches:-0}"
+
+if [ "$report" = "1" ]; then
+    genhtml "$cov/lcov.info" --output-directory build/coverage/html \
+        >/dev/null 2>&1 || true
+    echo "report: build/coverage/html/index.html"
+fi
+
+awk -v l="$lines" -v b="$branches" -v ml="$min_lines" -v mb="$min_branches" '
+    BEGIN {
+        printf "coverage: lines=%s%% (gate %s%%), branches=%s%% (gate %s%%)\n",
+            l, ml, b, mb
+        if (l + 0 < ml + 0) {
+            print "FAIL: line coverage below gate"
+            exit 1
+        }
+        if (b + 0 < mb + 0) {
+            print "FAIL: branch coverage below gate"
+            exit 1
+        }
+        print "ok"
+    }
+'

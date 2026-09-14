@@ -1,0 +1,71 @@
+#!/bin/sh -eu
+# nloc - count non-blank, non-comment lines in source and tests and enforce
+# the test:source NLOC ratio gate.
+#
+# NLOC is the number of physical lines that are neither blank nor
+# comment-only. C block and line comments and Python/shell '#' comments are
+# removed before counting. Source is src/ plus include/; tests are test/.
+#
+# The gate defaults to 10.0 and can be lowered for experiments with
+# LED89_MIN_RATIO.
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+min="${LED89_MIN_RATIO:-10}"
+
+count_c() {
+    find "$@" -type f \( -name '*.c' -o -name '*.h' \) -exec awk '
+        BEGIN { inblock = 0; count = 0 }
+        {
+            line = $0
+            if (inblock) {
+                pos = index(line, "*/")
+                if (pos == 0) next
+                inblock = 0
+                line = substr(line, pos + 2)
+            }
+            sub(/^[ \t]+/, "", line)
+            while (line ~ /^\/\*/) {
+                rest = substr(line, 3)
+                pos = index(rest, "*/")
+                if (pos == 0) { inblock = 1; line = ""; break }
+                line = substr(rest, pos + 2)
+                sub(/^[ \t]+/, "", line)
+            }
+            if (line == "") next
+            if (line ~ /^\/\//) next
+            count++
+        }
+        END { print count }
+    ' {} +
+}
+
+count_hash() {
+    find "$@" -type f \( -name '*.py' -o -name '*.sh' \) -exec awk '
+        BEGIN { count = 0 }
+        {
+            line = $0
+            sub(/^[ \t]+/, "", line)
+            if (line == "") next
+            if (line ~ /^#/) next
+            count++
+        }
+        END { print count }
+    ' {} +
+}
+
+src_total=$(count_c "$root/src" "$root/include")
+test_total_c=$(count_c "$root/test")
+test_total_hash=$(count_hash "$root/test")
+test_total=$((test_total_c + test_total_hash))
+
+awk -v s="$src_total" -v t="$test_total" -v m="$min" 'BEGIN {
+    ratio = (s > 0) ? t / s : 0
+    printf "source NLOC: %d\n", s
+    printf "test   NLOC: %d\n", t
+    printf "ratio      : %.2f:1 (gate %.2f:1)\n", ratio, m
+    if (ratio < m) {
+        print "FAIL: test/source NLOC ratio below gate"
+        exit 1
+    }
+    print "ok"
+}'

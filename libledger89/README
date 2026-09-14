@@ -55,12 +55,21 @@ interprets record payloads.
 - `just model` — randomized reference-model comparison.
 - `just golden` — frozen byte fixtures; regenerate with `just golden-gen`.
 - `just stress` — many parts, huge payload, large batches.
-- `just test` — all fast suites.
+- `just test` — all fast suites, including the strict fast tier.
 - `just long` — multi-hundred-thousand-operation model run plus a many-part sweep.
 - `just sanitize` — fast suites under ASan + UBSan.
 - `just valgrind` — fast suites under valgrind memcheck.
+- `just strict-fast` — ctypes + runner strict subset (<2 min).
+- `just strict` — full strict tier: fault, crash, corruption, model, adversarial.
+- `just strict-long` — long tier: exhaustive corruption, 2M-op model, large sweeps.
+- `just strict-sanitize` / `just strict-valgrind` — runner-based strict subsets
+  under ASan+UBSan and memcheck.
+- `just gen-strict-tables` — regenerate the committed strict-suite case tables.
+- `just ratio` — enforce the 10:1 test:source NLOC gate.
+- `just coverage` / `just coverage-report` — enforce 95% line / 90% branch
+  coverage of `src/` and print the HTML report.
 - `just green` — green conformance matrix (see the status note below).
-- `just check` — green profile, lint, and all fast suites.
+- `just check` — green profile, lint, all fast suites, ratio, and coverage.
 
 ## Green conformance
 

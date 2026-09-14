@@ -1,6 +1,7 @@
 set shell := ["sh", "-eu", "-c"]
 
 CC := env_var_or_default("CC", "cc")
+PY := env_var_or_default("PYTHON", "python3")
 GREEN := env_var_or_default("GREEN", "../../green/.agent/tmp/build/green")
 
 POSIX := "-D_POSIX_C_SOURCE=200809L"
@@ -56,6 +57,61 @@ _run dir:
 	        -o "build/$name" "$t" test/support/*.c {{LIB}} || exit 1; \
 	    ./build/$name || exit 1; \
 	done
+
+# Compile the library as a position-independent shared object for the ctypes
+# strict driver (same sources and flags as the archive, plus -fPIC -shared).
+build-shared:
+	mkdir -p build/shared/obj
+	@for f in src/*.c; do \
+	    [ -e "$f" ] || continue; \
+	    name=$(basename "$f" .c); \
+	    {{CC}} {{STRICT}} {{POSIX}} -fPIC -Iinclude -Isrc -c "src/$name.c" \
+	        -o "build/shared/obj/$name.o" || exit 1; \
+	done
+	{{CC}} -shared -o build/shared/libledger89.so build/shared/obj/*.o
+
+# Build the out-of-process scenario runner and the LD_PRELOAD fault shim.
+strictrun: build
+	{{CC}} {{STRICT}} {{POSIX}} {{TESTFLAGS}} {{INC}} \
+	    -o build/strictrun test/strict/strictrun.c {{LIB}}
+	{{CC}} -std=c89 -pedantic-errors -Wall -Wextra -Werror {{POSIX}} -fPIC \
+	    -shared -o build/libledger89_fault.so test/strict/faultshim.c -ldl
+
+# Regenerate the committed strict-suite case tables (deterministic).
+gen-strict-tables:
+	{{PY}} test/strict/gen_tables.py
+
+# Fast strict tier: smoke, API tables, state, format, shim self-test.
+strict-fast: build-shared strictrun
+	{{PY}} test/strict/run.py --tier fast
+
+# Full strict tier: fault, crash, corruption, model, adversarial.
+strict: build-shared strictrun
+	{{PY}} test/strict/run.py --tier full
+
+# Long strict tier: large fuzz, 2M-op model, exhaustive corruption, latency.
+strict-long: build-shared strictrun
+	{{PY}} test/strict/run.py --tier long
+
+# Strict runner subset under ASan + UBSan.
+strict-sanitize:
+	sh scripts/strict-sanitize
+
+# Strict runner subset under valgrind memcheck.
+strict-valgrind:
+	sh scripts/strict-valgrind
+
+# Enforce the test:source NLOC ratio gate (10:1).
+ratio:
+	sh scripts/nloc
+
+# Build instrumented sources and enforce line/branch coverage gates.
+coverage:
+	sh scripts/coverage
+
+# Print the coverage report as HTML under build/coverage/html.
+coverage-report:
+	sh scripts/coverage --report
 
 # Smoke test first: one end-to-end path through the library.
 smoke: build
@@ -130,8 +186,8 @@ long: build
 	    test/support/*.c {{LIB}}
 	./build/test_stress_many
 
-# Run every fast suite (smoke first).
-test: smoke unit api crash fault fault-nomem fault-eintr corrupt model adapters golden stress
+# Run every fast suite (smoke first, strict-fast last).
+test: smoke unit api crash fault fault-nomem fault-eintr corrupt model adapters golden stress strict-fast
 
 # Reproducible throughput baseline (not part of `just test`).
 bench: build
@@ -189,20 +245,22 @@ green-fix:
 	sh scripts/gen_compile_db clang build/clang/compile_commands.json
 	cd . && {{GREEN}} fix
 
-# Full local gate: green profile, lint, and the fast suite.
-check: green lint test
+# Full local gate: green profile, lint, the fast suite, ratio, and coverage.
+check: green lint test ratio coverage
 
-# Lint shell scripts and check C/header formatting.
+# Lint shell scripts, Python tables, and check C/header formatting.
 lint:
 	@for f in scripts/*; do \
 	    [ -e "$f" ] || continue; \
 	    shellcheck -s sh "$f" || exit 1; \
 	    shellcheck -s bash "$f" || exit 1; \
 	done
+	{{PY}} -m compileall -q test/strict
 	@for f in src/*.c src/*.h include/*.h test/*.c test/unit/*.c test/api/*.c \
 	    test/crash/*.c test/fault/*.c test/corrupt/*.c test/model/*.c \
 	    test/adapters/*.c test/golden/*.c test/stress/*.c test/bench/*.c \
-	    test/support/*.c test/support/*.h test/tools/*.c; do \
+	    test/support/*.c test/support/*.h test/tools/*.c test/strict/*.c \
+	    test/strict/*.h; do \
 	    [ -e "$f" ] || continue; \
 	    clang-format --dry-run --Werror "$f" || { echo "needs formatting: $f"; exit 1; }; \
 	done
@@ -212,7 +270,8 @@ format:
 	@for f in src/*.c src/*.h include/*.h test/*.c test/unit/*.c test/api/*.c \
 	    test/crash/*.c test/fault/*.c test/corrupt/*.c test/model/*.c \
 	    test/adapters/*.c test/golden/*.c test/stress/*.c test/bench/*.c \
-	    test/support/*.c test/support/*.h test/tools/*.c; do \
+	    test/support/*.c test/support/*.h test/tools/*.c test/strict/*.c \
+	    test/strict/*.h; do \
 	    [ -e "$f" ] || continue; \
 	    clang-format -i "$f"; \
 	done

@@ -61,8 +61,12 @@ Use `just` for all actions: `just build`, `just smoke`, `just unit`,
 `just api`, `just adapters`, `just crash`, `just fault`, `just fault-nomem`,
 `just fault-eintr`, `just corrupt`, `just model`, `just stress`,
 `just golden`, `just golden-gen`, `just test`, `just long`, `just bench`,
-`just sanitize`, `just valgrind`, `just green`, `just green-fix`,
-`just check`, `just lint`, `just format`, `just doctor`, `just clean`.
+`just sanitize`, `just valgrind`, `just build-shared`, `just strictrun`,
+`just gen-strict-tables`, `just strict-fast`, `just strict`,
+`just strict-long`, `just strict-sanitize`, `just strict-valgrind`,
+`just ratio`, `just coverage`, `just coverage-report`, `just green`,
+`just green-fix`, `just check`, `just lint`, `just format`, `just doctor`,
+`just clean`.
 
 ## Git
 
