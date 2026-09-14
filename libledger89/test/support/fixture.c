@@ -6,26 +6,20 @@
 #include "fixture.h"
 #include "tmpdir.h"
 
-int fx_open_limits(fx *f, unsigned long seg_bytes, unsigned long seg_records)
+int fx_open_flags(fx *f, unsigned long flags)
 {
-    int rc;
-
     if (tmpdir_create(f->path, sizeof f->path) != 0)
     {
-        return LEDGER89_ERR_IO;
+        return LEDGER89_EIO;
     }
-    memset(&f->config, 0, sizeof f->config);
-    f->config.path = f->path;
-    f->config.max_segment_bytes = seg_bytes;
-    f->config.max_segment_records = seg_records;
     f->l = NULL;
-    rc = ledger89_open(&f->l, &f->config);
-    return rc;
+    return ledger89_open(&f->l, f->path, flags);
 }
 
 int fx_open(fx *f)
 {
-    return fx_open_limits(f, 1048576ul, 0ul);
+    return fx_open_flags(f, LEDGER89_OPEN_RDWR | LEDGER89_OPEN_CREATE |
+                                LEDGER89_OPEN_EXCL);
 }
 
 void fx_close(fx *f)
@@ -40,38 +34,33 @@ void fx_close(fx *f)
 int fx_reopen(fx *f)
 {
     fx_close(f);
-    return ledger89_open(&f->l, &f->config);
+    return ledger89_open(&f->l, f->path,
+                         LEDGER89_OPEN_RDWR | LEDGER89_OPEN_CREATE);
 }
 
-void fx_record(ledger89_record *r, ledger89_index index, unsigned long tag,
-               const void *data, size_t size)
+int fx_append(fx *f, const void *data, size_t size, ledger89_index *index_out)
 {
-    r->index = index;
-    r->tag = tag;
-    r->data = data;
-    r->size = size;
+    ledger89_slice s;
+
+    s.data = data;
+    s.size = size;
+    return ledger89_appendv(f->l, &s, 1u, index_out);
 }
 
-int fx_append(fx *f, ledger89_index index, unsigned long tag, const void *data,
-              size_t size)
+int fx_read(fx *f, ledger89_index index, void *data, size_t capacity,
+            size_t *size_out)
 {
-    ledger89_record r;
-
-    fx_record(&r, index, tag, data, size);
-    return ledger89_append(f->l, &r, 1u);
+    return ledger89_read(f->l, index, data, capacity, size_out);
 }
 
-int fx_read(fx *f, ledger89_index index, ledger89_view *out)
-{
-    return ledger89_read(f->l, index, out);
-}
-
-int fx_count_sealed(const fx *f)
+static int fx_count_prefix(const fx *f, const char *prefix)
 {
     DIR *d;
     struct dirent *e;
     int n;
+    size_t plen;
 
+    plen = strlen(prefix);
     d = opendir(f->path);
     if (d == NULL)
     {
@@ -80,14 +69,22 @@ int fx_count_sealed(const fx *f)
     n = 0;
     while ((e = readdir(d)) != NULL)
     {
-        if (strlen(e->d_name) == 24u)
+        if (strlen(e->d_name) == plen + 16u &&
+            strncmp(e->d_name, prefix, plen) == 0)
         {
-            if (strcmp(e->d_name + 20, ".seg") == 0)
-            {
-                ++n;
-            }
+            ++n;
         }
     }
     closedir(d);
     return n;
+}
+
+int fx_count_parts(const fx *f)
+{
+    return fx_count_prefix(f, "part.");
+}
+
+int fx_count_manifests(const fx *f)
+{
+    return fx_count_prefix(f, "MANIFEST.");
 }

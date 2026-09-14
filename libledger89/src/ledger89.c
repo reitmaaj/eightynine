@@ -1,11 +1,36 @@
-/* ledger89.c - public API glue: open/close, append, sync, observer, index
- * queries, and status strings. */
-
+/* ledger89.c - public API glue: open/close, state, append, sync, read,
+ * iteration, structural operations, and status strings. */
 #include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "ledger89_internal.h"
+
+static int led89_bad_args(const char *path, const led89_io *io)
+{
+    if (path == NULL)
+    {
+        return 1;
+    }
+    if (path[0] == '\0')
+    {
+        return 1;
+    }
+    if (io == NULL)
+    {
+        return 1;
+    }
+    return 0;
+}
+
+static int led89_flag_set(unsigned long flags, unsigned long bit)
+{
+    if ((flags & bit) != 0UL)
+    {
+        return 1;
+    }
+    return 0;
+}
 
 static int led89_setup_path(ledger89 *l, const char *path)
 {
@@ -15,25 +40,25 @@ static int led89_setup_path(ledger89 *l, const char *path)
     l->path = (char *)malloc(n + 1u);
     if (l->path == NULL)
     {
-        return LEDGER89_ERR_NOMEM;
+        return LEDGER89_ENOMEM;
     }
     memcpy(l->path, path, n + 1u);
     l->scratch_cap = n + (size_t)LED89_NAME_MAX + 2u;
     l->scratch = (char *)malloc(l->scratch_cap);
     if (l->scratch == NULL)
     {
-        return LEDGER89_ERR_NOMEM;
+        return LEDGER89_ENOMEM;
     }
     l->scratch2_cap = l->scratch_cap;
     l->scratch2 = (char *)malloc(l->scratch2_cap);
     if (l->scratch2 == NULL)
     {
-        return LEDGER89_ERR_NOMEM;
+        return LEDGER89_ENOMEM;
     }
     return LEDGER89_OK;
 }
 
-static int led89_lock(ledger89 *l)
+static int led89_acquire_lock(ledger89 *l)
 {
     int rc;
 
@@ -42,7 +67,8 @@ static int led89_lock(ledger89 *l)
     {
         return rc;
     }
-    rc = l->io->lock(l->io->ctx, l->scratch, &l->lock_fd);
+    rc = l->io->lock(l->io->ctx, l->scratch, l->writable, l->writable,
+                     &l->lock_fd);
     if (rc != LEDGER89_OK)
     {
         return rc;
@@ -51,109 +77,118 @@ static int led89_lock(ledger89 *l)
     return LEDGER89_OK;
 }
 
-static ledger89_iter *led89_iter_free_next(ledger89_iter *it)
-{
-    ledger89_iter *next;
-
-    next = it->next;
-    led89_iter_free(it);
-    return next;
-}
-
-static void led89_free_iters(ledger89 *l)
-{
-    ledger89_iter *it;
-
-    it = l->iters;
-    while (it != NULL)
-    {
-        it = led89_iter_free_next(it);
-    }
-}
-
 void led89_free(ledger89 *l)
 {
+    size_t i;
+
     if (l == NULL)
     {
         return;
     }
-    led89_free_iters(l);
-    if (l->active_open != 0)
+    for (i = 0u; i < l->part_count; ++i)
     {
-        l->io->close(l->io->ctx, l->active_fd);
+        led89_part_close(l, &l->parts[i]);
     }
     if (l->lock_open != 0)
     {
-        l->io->close(l->io->ctx, l->lock_fd);
+        led89_close_quiet(l, l->lock_fd);
     }
-    led89_walk_free(&l->read_walk);
-    free(l->segments);
+    free(l->parts);
+    free(l->dir);
+    free(l->buf);
     free(l->scratch);
     free(l->scratch2);
     free(l->path);
     free(l);
 }
 
-int led89_open_io(ledger89 **out, const ledger89_config *config,
+int led89_open_io(ledger89 **out, const char *path, unsigned long flags,
                   const led89_io *io)
 {
     ledger89 *l;
+    int writable;
+    int create;
+    int excl;
     int rc;
 
     if (out == NULL)
     {
-        return LEDGER89_ERR_ARG;
+        return LEDGER89_EINVAL;
     }
     *out = NULL;
-    if (config == NULL)
+    if (led89_bad_args(path, io) != 0)
     {
-        return LEDGER89_ERR_ARG;
+        return LEDGER89_EINVAL;
     }
-    if (config->path == NULL)
+    writable = led89_flag_set(flags, LEDGER89_OPEN_RDWR);
+    if (writable == led89_flag_set(flags, LEDGER89_OPEN_RDONLY))
     {
-        return LEDGER89_ERR_ARG;
+        return LEDGER89_EINVAL;
     }
-    if (config->path[0] == '\0')
+    create = led89_flag_set(flags, LEDGER89_OPEN_CREATE);
+    excl = led89_flag_set(flags, LEDGER89_OPEN_EXCL);
+    if (create != 0)
     {
-        return LEDGER89_ERR_ARG;
+        if (writable == 0)
+        {
+            return LEDGER89_EINVAL;
+        }
     }
-    if (io == NULL)
+    if (excl != 0)
     {
-        return LEDGER89_ERR_ARG;
+        if (create == 0)
+        {
+            return LEDGER89_EINVAL;
+        }
     }
     l = (ledger89 *)calloc(1u, sizeof *l);
     if (l == NULL)
     {
-        return LEDGER89_ERR_NOMEM;
+        return LEDGER89_ENOMEM;
     }
     l->io = io;
-    l->active_fd = -1;
-    l->lock_fd = -1;
-    l->seg_max_bytes = (led89_u64)config->max_segment_bytes;
-    if (l->seg_max_bytes == 0u)
+    l->writable = writable;
+    l->part_target = LED89_PART_TARGET_BYTES;
+    rc = led89_setup_path(l, path);
+    if (rc == LEDGER89_OK)
     {
-        l->seg_max_bytes = (led89_u64)LEDGER89_DEFAULT_SEGMENT_BYTES;
+        if (writable != 0)
+        {
+            if (create != 0)
+            {
+                rc = l->io->mkdir(l->io->ctx, l->path);
+            }
+        }
     }
-    l->seg_max_records = (led89_u64)config->max_segment_records;
-    rc = led89_setup_path(l, config->path);
-    if (rc != LEDGER89_OK)
+    if (rc == LEDGER89_OK)
     {
-        led89_free(l);
-        return rc;
+        rc = led89_acquire_lock(l);
     }
-    rc = l->io->mkdir(l->io->ctx, l->path);
-    if (rc != LEDGER89_OK)
+    if (rc == LEDGER89_OK)
     {
-        led89_free(l);
-        return rc;
+        rc = led89_recover(l);
     }
-    rc = led89_lock(l);
-    if (rc != LEDGER89_OK)
+    if (rc == LEDGER89_ENOENT)
     {
-        led89_free(l);
-        return rc;
+        if (create != 0)
+        {
+            rc = led89_clean_dir_for_create(l);
+            if (rc == LEDGER89_OK)
+            {
+                rc = led89_create_ledger(l);
+            }
+        }
     }
-    rc = led89_recover(l);
+    else if (rc == LEDGER89_OK)
+    {
+        if (create != 0)
+        {
+            if (excl != 0)
+            {
+                rc = LEDGER89_EEXIST;
+            }
+        }
+    }
     if (rc != LEDGER89_OK)
     {
         led89_free(l);
@@ -163,299 +198,585 @@ int led89_open_io(ledger89 **out, const ledger89_config *config,
     return LEDGER89_OK;
 }
 
-int ledger89_open(ledger89 **out, const ledger89_config *config)
+int ledger89_open(ledger89 **ledger_out, const char *path, unsigned long flags)
 {
     int rc;
 
-    rc = led89_open_io(out, config, led89_io_posix());
+    rc = led89_open_io(ledger_out, path, flags, led89_io_posix());
     return rc;
 }
 
-void ledger89_close(ledger89 *l)
+void ledger89_close(ledger89 *ledger)
 {
-    led89_free(l);
+    led89_free(ledger);
 }
 
-static int led89_validate_record(const ledger89_record *r, led89_u64 expect,
-                                 led89_u64 *next)
+int ledger89_get_state(ledger89 *ledger, ledger89_state *state_out)
 {
-    led89_u64 idx;
-
-    idx = (led89_u64)r->index;
-    if (idx != expect)
+    if (ledger == NULL)
     {
-        return LEDGER89_ERR_SEQUENCE;
+        return LEDGER89_EINVAL;
     }
-    if (r->size > (size_t)LEDGER89_MAX_RECORD_BYTES)
+    if (state_out == NULL)
     {
-        return LEDGER89_ERR_ARG;
+        return LEDGER89_EINVAL;
     }
-    if (r->size > 0u)
-    {
-        if (r->data == NULL)
-        {
-            return LEDGER89_ERR_ARG;
-        }
-    }
-    if (idx == ~(led89_u64)0)
-    {
-        return LEDGER89_ERR_RANGE;
-    }
-    *next = idx + 1u;
+    state_out->id = ledger->id;
+    state_out->revision = led89_to_public(ledger->revision);
+    state_out->first = led89_to_public(ledger->first);
+    state_out->stable_end = led89_to_public(ledger->stable_end);
+    state_out->end = led89_to_public(ledger->end);
     return LEDGER89_OK;
 }
 
-static int led89_validate_batch(const ledger89 *l,
-                                const ledger89_record *records, size_t count)
-{
-    led89_u64 expect;
-    size_t i;
-    int rc;
-
-    expect = l->last_index + 1u;
-    for (i = 0u; i < count; ++i)
-    {
-        rc = led89_validate_record(&records[i], expect, &expect);
-        if (rc != LEDGER89_OK)
-        {
-            return rc;
-        }
-    }
-    return LEDGER89_OK;
-}
-
-static void led89_notify_one(ledger89 *l, const ledger89_record *r)
-{
-    ledger89_view view;
-
-    view.index = r->index;
-    view.tag = r->tag;
-    view.data = r->data;
-    view.size = r->size;
-    l->observer(l->observer_ctx, &view);
-}
-
-static void led89_notify(ledger89 *l, const ledger89_record *records,
-                         size_t count)
+static int led89_validate_slices(const ledger89_slice *records, size_t count)
 {
     size_t i;
 
-    if (l->observer == NULL)
-    {
-        return;
-    }
-    for (i = 0u; i < count; ++i)
-    {
-        led89_notify_one(l, &records[i]);
-    }
-}
-
-int ledger89_append(ledger89 *l, const ledger89_record *records, size_t count)
-{
-    led89_u64 bytes;
-    int rotate;
-    int rc;
-
-    if (l == NULL)
-    {
-        return LEDGER89_ERR_ARG;
-    }
-    if (l->faulted != 0)
-    {
-        return LEDGER89_ERR_FAULTED;
-    }
     if (count == 0u)
     {
-        return LEDGER89_ERR_ARG;
+        return LEDGER89_EINVAL;
     }
     if (records == NULL)
     {
-        return LEDGER89_ERR_ARG;
+        return LEDGER89_EINVAL;
     }
     if ((led89_u64)count > (led89_u64)0xFFFFFFFFu)
     {
-        return LEDGER89_ERR_ARG;
+        return LEDGER89_ERANGE;
     }
-    rc = led89_validate_batch(l, records, count);
+    for (i = 0u; i < count; ++i)
+    {
+        if (records[i].size > (size_t)LEDGER89_MAX_RECORD_BYTES)
+        {
+            return LEDGER89_ERANGE;
+        }
+        if (records[i].size > 0u)
+        {
+            if (records[i].data == NULL)
+            {
+                return LEDGER89_EINVAL;
+            }
+        }
+    }
+    return LEDGER89_OK;
+}
+
+static int led89_append_common(ledger89 *l, const ledger89_slice *records,
+                               size_t count, ledger89_index *first_out,
+                               int check, led89_u64 expected_revision,
+                               led89_u64 expected_end)
+{
+    led89_u64 total;
+    led89_u64 first;
+    int rc;
+
+    rc = led89_check_mutable(l);
     if (rc != LEDGER89_OK)
     {
         return rc;
     }
-    bytes = led89_batch_bytes(records, count);
-    rotate = led89_should_rotate(l, (led89_u64)count, bytes);
-    if (rotate != 0)
+    rc = led89_validate_slices(records, count);
+    if (rc != LEDGER89_OK)
     {
-        rc = ledger89_rotate(l);
+        return rc;
+    }
+    if (check != 0)
+    {
+        if (l->revision != expected_revision)
+        {
+            return LEDGER89_ESTALE;
+        }
+        if (l->end != expected_end)
+        {
+            return LEDGER89_ESTALE;
+        }
+    }
+    if (led89_u64_add(l->end, (led89_u64)count, &first) == 0)
+    {
+        return LEDGER89_EOVERFLOW;
+    }
+    rc = led89_batch_total(records, count, &total);
+    if (rc != LEDGER89_OK)
+    {
+        return rc;
+    }
+    if (l->end > l->parts[l->active_index].desc.first)
+    {
+        if (l->parts[l->active_index].bytes + total > l->part_target)
+        {
+            rc = led89_rotate_impl(l);
+            if (rc != LEDGER89_OK)
+            {
+                return rc;
+            }
+        }
+    }
+    rc = led89_active_append(l, records, count, &first);
+    if (rc != LEDGER89_OK)
+    {
+        return rc;
+    }
+    if (first_out != NULL)
+    {
+        *first_out = led89_to_public(first);
+    }
+    return LEDGER89_OK;
+}
+
+int ledger89_appendv(ledger89 *ledger, const ledger89_slice *records,
+                     size_t count, ledger89_index *first_out)
+{
+    int rc;
+
+    if (ledger == NULL)
+    {
+        return LEDGER89_EINVAL;
+    }
+    rc = led89_append_common(ledger, records, count, first_out, 0, (led89_u64)0,
+                             (led89_u64)0);
+    return rc;
+}
+
+int ledger89_appendv_at(ledger89 *ledger, ledger89_revision expected_revision,
+                        ledger89_index expected_end,
+                        const ledger89_slice *records, size_t count,
+                        ledger89_index *first_out)
+{
+    int rc;
+
+    if (ledger == NULL)
+    {
+        return LEDGER89_EINVAL;
+    }
+    rc = led89_append_common(ledger, records, count, first_out, 1,
+                             led89_from_public(expected_revision),
+                             led89_from_public(expected_end));
+    return rc;
+}
+
+int ledger89_append(ledger89 *ledger, const void *data, size_t size,
+                    ledger89_index *index_out)
+{
+    ledger89_slice slice;
+    int rc;
+
+    if (ledger == NULL)
+    {
+        return LEDGER89_EINVAL;
+    }
+    slice.data = data;
+    slice.size = size;
+    rc = led89_append_common(ledger, &slice, 1u, index_out, 0, (led89_u64)0,
+                             (led89_u64)0);
+    return rc;
+}
+
+int ledger89_sync(ledger89 *ledger, ledger89_index *stable_end_out)
+{
+    int rc;
+
+    if (ledger == NULL)
+    {
+        return LEDGER89_EINVAL;
+    }
+    rc = led89_check_mutable(ledger);
+    if (rc != LEDGER89_OK)
+    {
+        return rc;
+    }
+    rc = led89_sync_impl(ledger);
+    if (rc != LEDGER89_OK)
+    {
+        return rc;
+    }
+    if (stable_end_out != NULL)
+    {
+        *stable_end_out = led89_to_public(ledger->stable_end);
+    }
+    return LEDGER89_OK;
+}
+
+int ledger89_read(ledger89 *ledger, ledger89_index index, void *data_out,
+                  size_t capacity, size_t *size_out)
+{
+    int rc;
+
+    if (ledger == NULL)
+    {
+        return LEDGER89_EINVAL;
+    }
+    if (size_out == NULL)
+    {
+        return LEDGER89_EINVAL;
+    }
+    rc = led89_read_impl(ledger, led89_from_public(index), data_out, capacity,
+                         size_out);
+    return rc;
+}
+
+int ledger89_iter_init(ledger89_iter *iter, ledger89 *ledger,
+                       ledger89_index from)
+{
+    led89_u64 at;
+
+    if (iter == NULL)
+    {
+        return LEDGER89_EINVAL;
+    }
+    if (ledger == NULL)
+    {
+        return LEDGER89_EINVAL;
+    }
+    at = led89_from_public(from);
+    iter->ledger = ledger;
+    iter->next = from;
+    iter->revision = led89_to_public(ledger->revision);
+    if (at < ledger->first)
+    {
+        return LEDGER89_EGONE;
+    }
+    if (at > ledger->end)
+    {
+        return LEDGER89_ERANGE;
+    }
+    return LEDGER89_OK;
+}
+
+int ledger89_iter_next(ledger89_iter *iter, ledger89_index *index_out,
+                       void *data_out, size_t capacity, size_t *size_out)
+{
+    ledger89 *l;
+    led89_u64 index;
+    int rc;
+
+    if (iter == NULL)
+    {
+        return LEDGER89_EINVAL;
+    }
+    if (iter->ledger == NULL)
+    {
+        return LEDGER89_EINVAL;
+    }
+    if (size_out == NULL)
+    {
+        return LEDGER89_EINVAL;
+    }
+    l = iter->ledger;
+    index = led89_from_public(iter->next);
+    if (index < l->first)
+    {
+        return LEDGER89_EGONE;
+    }
+    if (l->revision != led89_from_public(iter->revision))
+    {
+        return LEDGER89_ESTALE;
+    }
+    if (index >= l->end)
+    {
+        return LEDGER89_DONE;
+    }
+    rc = led89_read_impl(l, index, data_out, capacity, size_out);
+    if (rc != LEDGER89_OK)
+    {
+        return rc;
+    }
+    if (index_out != NULL)
+    {
+        *index_out = led89_to_public(index);
+    }
+    iter->next = led89_to_public(index + (led89_u64)1);
+    return LEDGER89_OK;
+}
+
+int ledger89_truncate_from(ledger89 *ledger, ledger89_index from)
+{
+    led89_u64 at;
+    int rc;
+
+    if (ledger == NULL)
+    {
+        return LEDGER89_EINVAL;
+    }
+    rc = led89_check_mutable(ledger);
+    if (rc != LEDGER89_OK)
+    {
+        return rc;
+    }
+    if (ledger->end != ledger->stable_end)
+    {
+        return LEDGER89_EUNSTABLE;
+    }
+    at = led89_from_public(from);
+    if (at < ledger->first)
+    {
+        return LEDGER89_EGONE;
+    }
+    if (at > ledger->end)
+    {
+        return LEDGER89_ERANGE;
+    }
+    rc = led89_truncate_impl(ledger, at);
+    return rc;
+}
+
+int ledger89_prune_before(ledger89 *ledger, ledger89_index requested_first,
+                          ledger89_index *actual_first_out)
+{
+    led89_u64 actual;
+    int rc;
+
+    if (ledger == NULL)
+    {
+        return LEDGER89_EINVAL;
+    }
+    if (actual_first_out == NULL)
+    {
+        return LEDGER89_EINVAL;
+    }
+    rc = led89_check_mutable(ledger);
+    if (rc != LEDGER89_OK)
+    {
+        return rc;
+    }
+    if (led89_from_public(requested_first) > ledger->stable_end)
+    {
+        return LEDGER89_EUNSTABLE;
+    }
+    rc = led89_prune_impl(ledger, led89_from_public(requested_first), &actual);
+    if (rc != LEDGER89_OK)
+    {
+        return rc;
+    }
+    *actual_first_out = led89_to_public(actual);
+    return LEDGER89_OK;
+}
+
+int ledger89_rotate(ledger89 *ledger)
+{
+    int rc;
+
+    if (ledger == NULL)
+    {
+        return LEDGER89_EINVAL;
+    }
+    rc = led89_check_mutable(ledger);
+    if (rc != LEDGER89_OK)
+    {
+        return rc;
+    }
+    rc = led89_rotate_impl(ledger);
+    return rc;
+}
+
+static int led89_verify_step(ledger89 *l, led89_fd fd, led89_u64 *off,
+                             led89_u64 *left, led89_u32 *crc)
+{
+    size_t chunk;
+    int rc;
+
+    chunk = led89_chunk_of(*left);
+    rc = led89_buf_reserve(l, chunk);
+    if (rc != LEDGER89_OK)
+    {
+        return rc;
+    }
+    rc = l->io->pread(l->io->ctx, fd, l->buf, chunk, *off);
+    if (rc != LEDGER89_OK)
+    {
+        return LEDGER89_EIO;
+    }
+    *crc = led89_crc32c(*crc, l->buf, chunk);
+    *off = led89_at_add(*off, (led89_u64)chunk);
+    *left = led89_u64_left(*left, (led89_u64)chunk);
+    return LEDGER89_OK;
+}
+
+static int led89_verify_batch(ledger89 *l, const led89_batch_dir_entry *e)
+{
+    unsigned char crcbuf[LED89_RECORD_CRC_SIZE];
+    led89_u64 off;
+    led89_u64 left;
+    led89_u32 crc;
+    led89_fd fd;
+    int rc;
+
+    rc = led89_part_open(l, l->parts[e->part].desc.file_id, LED89_OPEN_READ,
+                         &fd);
+    if (rc != LEDGER89_OK)
+    {
+        return rc;
+    }
+    crc = 0u;
+    off = e->offset;
+    left = e->bytes - (led89_u64)8;
+    while (left > (led89_u64)0)
+    {
+        rc = led89_verify_step(l, fd, &off, &left, &crc);
+        if (rc != LEDGER89_OK)
+        {
+            led89_close_quiet(l, fd);
+            return rc;
+        }
+    }
+    rc = l->io->pread(l->io->ctx, fd, crcbuf, sizeof crcbuf, off);
+    led89_close_quiet(l, fd);
+    if (rc != LEDGER89_OK)
+    {
+        return LEDGER89_EIO;
+    }
+    if (crc != led89_get_u32(crcbuf))
+    {
+        return LEDGER89_ECORRUPT;
+    }
+    return LEDGER89_OK;
+}
+
+static int led89_verify_sealed_step(ledger89 *l, led89_fd fd, led89_u64 end,
+                                    led89_u64 *off, led89_u32 *crc)
+{
+    size_t chunk;
+    int rc;
+
+    chunk = led89_chunk_of(led89_u64_left(end, *off));
+    rc = led89_buf_reserve(l, chunk);
+    if (rc != LEDGER89_OK)
+    {
+        return rc;
+    }
+    rc = l->io->pread(l->io->ctx, fd, l->buf, chunk, *off);
+    if (rc != LEDGER89_OK)
+    {
+        return LEDGER89_EIO;
+    }
+    *crc = led89_crc32c(*crc, l->buf, chunk);
+    *off = led89_at_add(*off, (led89_u64)chunk);
+    return LEDGER89_OK;
+}
+
+static int led89_verify_sealed(ledger89 *l, size_t part_index)
+{
+    led89_part *p;
+    unsigned char fbuf[LED89_SEALED_FOOTER_SIZE];
+    led89_sealed_footer f;
+    led89_fd fd;
+    led89_u64 end;
+    led89_u64 off;
+    led89_u32 crc;
+    int rc;
+
+    p = &l->parts[part_index];
+    rc = led89_part_open(l, p->desc.file_id, LED89_OPEN_READ, &fd);
+    if (rc != LEDGER89_OK)
+    {
+        return rc;
+    }
+    end = led89_u64_left(p->bytes, (led89_u64)LED89_SEALED_FOOTER_SIZE);
+    rc = l->io->pread(l->io->ctx, fd, fbuf, sizeof fbuf, end);
+    if (rc == LEDGER89_OK)
+    {
+        rc = led89_sealed_footer_decode(fbuf, &f);
+    }
+    if (rc != LEDGER89_OK)
+    {
+        led89_close_quiet(l, fd);
+        if (rc == LEDGER89_EIO)
+        {
+            return rc;
+        }
+        return LEDGER89_ECORRUPT;
+    }
+    crc = 0u;
+    off = (led89_u64)LED89_PART_HEADER_SIZE;
+    while (off < end)
+    {
+        rc = led89_verify_sealed_step(l, fd, end, &off, &crc);
+        if (rc != LEDGER89_OK)
+        {
+            led89_close_quiet(l, fd);
+            return rc;
+        }
+    }
+    led89_close_quiet(l, fd);
+    if (rc != LEDGER89_OK)
+    {
+        return rc;
+    }
+    if (crc != f.digest)
+    {
+        return LEDGER89_ECORRUPT;
+    }
+    return LEDGER89_OK;
+}
+
+int ledger89_verify(ledger89 *ledger)
+{
+    size_t i;
+    int rc;
+
+    if (ledger == NULL)
+    {
+        return LEDGER89_EINVAL;
+    }
+    for (i = 0u; i + 1u < ledger->part_count; ++i)
+    {
+        rc = led89_verify_sealed(ledger, i);
         if (rc != LEDGER89_OK)
         {
             return rc;
         }
     }
-    rc = led89_active_append(l, records, count);
-    if (rc != LEDGER89_OK)
+    for (i = 0u; i < ledger->dir_count; ++i)
     {
-        l->faulted = 1;
-        return LEDGER89_ERR_IO;
+        rc = led89_verify_batch(ledger, &ledger->dir[i]);
+        if (rc != LEDGER89_OK)
+        {
+            return rc;
+        }
     }
-    led89_notify(l, records, count);
     return LEDGER89_OK;
 }
 
-int ledger89_sync(ledger89 *l)
+const char *ledger89_strerror(int result)
 {
-    int rc;
-
-    if (l == NULL)
-    {
-        return LEDGER89_ERR_ARG;
-    }
-    if (l->faulted != 0)
-    {
-        return LEDGER89_ERR_FAULTED;
-    }
-    if (l->dirty == 0)
-    {
-        return LEDGER89_OK;
-    }
-    rc = l->io->sync(l->io->ctx, l->active_fd);
-    if (rc != LEDGER89_OK)
-    {
-        l->faulted = 1;
-        return LEDGER89_ERR_IO;
-    }
-    l->dirty = 0;
-    return LEDGER89_OK;
-}
-
-int ledger89_rotate(ledger89 *l)
-{
-    int rc;
-
-    if (l == NULL)
-    {
-        return LEDGER89_ERR_ARG;
-    }
-    if (l->faulted != 0)
-    {
-        return LEDGER89_ERR_FAULTED;
-    }
-    if (l->active_records == 0u)
-    {
-        return LEDGER89_OK;
-    }
-    rc = led89_seal_active(l);
-    if (rc != LEDGER89_OK)
-    {
-        l->faulted = 1;
-        return rc;
-    }
-    ++l->epoch;
-    return LEDGER89_OK;
-}
-
-int ledger89_set_observer(ledger89 *l, ledger89_observer_fn fn, void *ctx)
-{
-    if (l == NULL)
-    {
-        return LEDGER89_ERR_ARG;
-    }
-    l->observer = fn;
-    l->observer_ctx = ctx;
-    return LEDGER89_OK;
-}
-
-ledger89_index ledger89_first_index(const ledger89 *l)
-{
-    if (l == NULL)
-    {
-        return 0ul;
-    }
-    if (l->first_index > (led89_u64)ULONG_MAX)
-    {
-        return ULONG_MAX;
-    }
-    return (ledger89_index)l->first_index;
-}
-
-ledger89_index ledger89_last_index(const ledger89 *l)
-{
-    if (l == NULL)
-    {
-        return 0ul;
-    }
-    if (l->last_index > (led89_u64)ULONG_MAX)
-    {
-        return ULONG_MAX;
-    }
-    return (ledger89_index)l->last_index;
-}
-
-int ledger89_read(ledger89 *l, ledger89_index index, ledger89_view *out)
-{
-    int rc;
-
-    if (l == NULL)
-    {
-        return LEDGER89_ERR_ARG;
-    }
-    if (out == NULL)
-    {
-        return LEDGER89_ERR_ARG;
-    }
-    if (index == 0ul)
-    {
-        return LEDGER89_ERR_ARG;
-    }
-    rc = led89_read_impl(l, (led89_u64)index, out);
-    return rc;
-}
-
-int ledger89_iter_open(ledger89 *l, ledger89_index first, ledger89_index last,
-                       ledger89_iter **out)
-{
-    int rc;
-
-    if (l == NULL)
-    {
-        return LEDGER89_ERR_ARG;
-    }
-    if (out == NULL)
-    {
-        return LEDGER89_ERR_ARG;
-    }
-    *out = NULL;
-    rc = led89_iter_open_impl(l, (led89_u64)first, (led89_u64)last, out);
-    return rc;
-}
-
-const char *ledger89_strerror(int status)
-{
-    switch (status)
+    switch (result)
     {
     case LEDGER89_OK:
         return "ok";
-    case LEDGER89_END:
-        return "end";
-    case LEDGER89_ERR_ARG:
+    case LEDGER89_DONE:
+        return "done";
+    case LEDGER89_EINVAL:
         return "invalid argument";
-    case LEDGER89_ERR_IO:
-        return "io error";
-    case LEDGER89_ERR_NOMEM:
+    case LEDGER89_ENOMEM:
         return "out of memory";
-    case LEDGER89_ERR_NOTFOUND:
+    case LEDGER89_EIO:
+        return "io error";
+    case LEDGER89_ENOENT:
         return "not found";
-    case LEDGER89_ERR_RANGE:
-        return "out of range";
-    case LEDGER89_ERR_SEQUENCE:
-        return "sequence error";
-    case LEDGER89_ERR_CORRUPT:
-        return "corrupt";
-    case LEDGER89_ERR_BUSY:
+    case LEDGER89_EEXIST:
+        return "already exists";
+    case LEDGER89_EBUSY:
         return "busy";
-    case LEDGER89_ERR_FAULTED:
-        return "faulted";
-    case LEDGER89_ERR_STATE:
-        return "invalid state";
+    case LEDGER89_EROFS:
+        return "read-only";
+    case LEDGER89_ECORRUPT:
+        return "corrupt";
+    case LEDGER89_EFORMAT:
+        return "unsupported format";
+    case LEDGER89_ESTALE:
+        return "stale";
+    case LEDGER89_EGONE:
+        return "gone";
+    case LEDGER89_ERANGE:
+        return "out of range";
+    case LEDGER89_EUNSTABLE:
+        return "unstable";
+    case LEDGER89_ETOOSMALL:
+        return "buffer too small";
+    case LEDGER89_EOVERFLOW:
+        return "overflow";
+    case LEDGER89_EPOISONED:
+        return "poisoned";
     default:
         return "unknown";
     }

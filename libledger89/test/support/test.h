@@ -35,6 +35,22 @@ static int test_failures;
         }                                                                      \
     } while (0)
 
+static ledger89_u64 test_u64(unsigned long v)
+{
+    return ledger89_u64_from_u32((ledger89_u32)v);
+}
+
+#define CHECK_U64(a, b)                                                        \
+    do                                                                         \
+    {                                                                          \
+        if (!ledger89_u64_equal((a), (b)))                                     \
+        {                                                                      \
+            fprintf(stderr, "CHECK failed %s:%d: %s != %s\n", __FILE__,        \
+                    __LINE__, #a, #b);                                         \
+            ++test_failures;                                                   \
+        }                                                                      \
+    } while (0)
+
 #define TEST_END                                                               \
     if (test_failures != 0)                                                    \
     {                                                                          \

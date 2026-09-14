@@ -1,114 +1,101 @@
-# libledger89 design
+# libledger89 design (v2)
 
 ## 1. Logical model
 
 ```text
-base          index of the first record when the ledger is empty; 1 at creation
-first_index   smallest present record index; equals base when empty
-last_index    largest present record index; equals base - 1 when empty
+first        oldest retained record position
+stable_end   end of the locally durable prefix
+end          next append position
+revision     identity of the current index mapping
+uuid         persistent ledger identity
 ```
 
-Indices are caller-supplied and contiguous. The first record of an append
-must equal `last_index + 1`; the following records increment by one. Index 0
-is never a record index. `ledger89_append` accepts a batch and makes it
-logically visible atomically: all records or none.
+`first <= stable_end <= end`. `appendv` changes only `end`; `sync` changes
+only `stable_end`; `prune_before` changes only `first`; `truncate_from`
+changes `end`, `stable_end`, and `revision`. A fresh ledger starts at 1.
 
 ## 2. Physical model
 
-Segments form a contiguous range chain:
-
 ```text
-[first, last] [last+1, ...] ... [..., last]  active.seg
+ledger/
+    CURRENT                    atomically replaced pointer
+    MANIFEST.<16hex-gen>       immutable published topology
+    part.<16hex-file_id>       active or sealed, per manifest
+    CURRENT.tmp                transient publish staging
+    lock                       advisory ownership
 ```
 
-- Sealed segment files carry a unique creation key named `%020lu.seg`: the
-  number is the segment's `first_index` at creation. Prefix discard rewrites
-  a segment's header without changing its key, so the header's `first_index`
-  is authoritative for ordering; recovery sorts by header range.
-- `active.seg` is the only mutable file.
-- Each append call is one physical batch delimited by a batch header and a
-  checksummed batch footer.
-- A sealed segment carries a header, batches, and a sealed footer with a
-  whole-segment digest.
+Uniform part names make sealing non-destructive: appending a sealed footer
+to the active part is invisible to the previous topology (recovery ignores
+bytes after the last marker), so no referenced file is ever renamed or
+rewritten. `CURRENT` alone selects the authoritative manifest; a manifest
+with a greater generation is an orphan.
 
 ## 3. Module boundaries
 
 | Module | Responsibility |
 | --- | --- |
-| `ledger89_crc.c` | CRC-32C incremental computation |
-| `ledger89_format.c` | little-endian field codecs and structure encode/decode |
-| `ledger89_internal.h` | internal types, I/O vtable, and handle state for fault injection |
-| `ledger89_file.c` | POSIX implementation of the I/O vtable |
-| `ledger89_segment.c` | segment table, append path, rotation, sealing |
-| `ledger89_recover.c` | directory scan, topology validation, torn-tail recovery |
-| `ledger89_truncate.c` | suffix truncation and prefix discard orderings |
-| `ledger89_iter.c` | random read and ordered iteration |
-| `ledger89.c` | public API glue, configuration, sync, observer, strerror |
-| `ledger89_util.c` | pure helpers: bounds, index math, segment naming |
-
-No module knows about Raft, queries, or application semantics. The public
-header exposes only the section-3 surface of the specification.
+| `ledger89_u64.c` | portable scalar helpers and internal 64-bit arithmetic |
+| `ledger89_crc.c` | CRC-32C |
+| `ledger89_format.c` | CURRENT/manifest/part/batch/marker/footer codecs |
+| `ledger89_file.c` | POSIX I/O vtable, including `entropy` |
+| `ledger89_manifest.c` | CURRENT and manifest publication, orphan GC |
+| `ledger89_segment.c` | part creation/scanning, batches, markers, sealing, rotation |
+| `ledger89_recover.c` | open-time recovery, marker scan, forward validation |
+| `ledger89_read.c` | batch directory lookup and random read |
+| `ledger89_truncate.c` | copy-on-write truncation and pruning |
+| `ledger89_util.c` | pure name/path helpers, buffer growth, state guards |
+| `ledger89.c` | public API glue, state, poisoning, `strerror` |
 
 ## 4. Handle state
 
 ```text
-io            I/O vtable + context
-path          ledger directory
-base          logical base index
-first,last    visible range
-segments      in-memory table of sealed segments {first,last,name}
-active        active segment file handle, byte offset, record count
-dirty         appends not yet fdatasync'ed
-faulted       sticky I/O failure; mutations refused until reopen
-observer      advisory callback + context
-epoch         structural epoch; invalidates live iterators
-lock_fd       flock on lock file; released on close
+io                I/O vtable + context
+path/scratch      ledger directory and path buffers
+writable          RDWR vs RDONLY
+poisoned          sticky uncertain-durability failure
+dirty             end > stable_end
+id/revision       identity and index-mapping generation
+first/stable/end  three-boundary model
+generation        current manifest generation
+parts[]           manifest-ordered parts; active last
+dir[]             in-memory batch directory for random access
+next_file_id      next copy-on-write part id
+lock_fd           advisory ownership
 ```
 
-## 5. Error taxonomy
+## 5. Runtime state machine
 
-Positive values are states, negative values are errors, matching libraft89.
+```text
+CLEAN      end == stable_end
+DIRTY      end > stable_end
+POISONED   durability outcome uncertain after an I/O failure
+```
 
-| Status | Meaning |
-| --- | --- |
-| `LEDGER89_OK` | success |
-| `LEDGER89_END` | iteration finished |
-| `LEDGER89_ERR_ARG` | invalid argument or logical misuse |
-| `LEDGER89_ERR_IO` | I/O failure |
-| `LEDGER89_ERR_NOMEM` | allocation failure |
-| `LEDGER89_ERR_NOTFOUND` | index outside the visible range |
-| `LEDGER89_ERR_RANGE` | value not representable or outside structural limits |
-| `LEDGER89_ERR_SEQUENCE` | non-contiguous append index |
-| `LEDGER89_ERR_CORRUPT` | structural corruption or checksum failure |
-| `LEDGER89_ERR_BUSY` | another handle holds the ledger lock |
-| `LEDGER89_ERR_FAULTED` | handle poisoned by an earlier I/O failure |
-| `LEDGER89_ERR_STATE` | lifecycle/staleness violation |
+| Event | Before | After |
+| --- | --- | --- |
+| append OK | CLEAN/DIRTY | DIRTY |
+| logical reject | any | unchanged |
+| sync OK | DIRTY | CLEAN |
+| sync on CLEAN | CLEAN | CLEAN (no-op) |
+| I/O failure with uncertain frontier | CLEAN/DIRTY | POISONED |
+| mutation on POISONED | POISONED | `EPOISONED` |
+| reopen | any | CLEAN or error |
 
-Logical rejections (`ERR_ARG`, `ERR_SEQUENCE`, `ERR_RANGE`) are validated
-before any byte is written. I/O failures during a mutation poison the handle;
-`ledger89_close` and reopen recover by discarding the torn tail.
+Structural operations publish a new manifest via `CURRENT`; a crash before
+publication keeps the old topology, a crash after keeps the new one. There is
+no intermediate topology.
 
-## 6. Ownership and lifetime
+## 6. Error taxonomy
 
-- `ledger89_record.data` is caller-owned and read only during `append`.
-- `ledger89_view.data` from `read` is valid until the next call on the same
-  handle; from `iter_next` until the next iterator call.
-- The observer receives a view valid only for the duration of the callback;
-  it must not call back into the ledger.
-- One handle is caller-serialized; independent handles on independent
-  ledgers may be used concurrently. `flock` yields `ERR_BUSY` for a second
-  open of the same directory.
-- `ledger89_close` releases the handle; live iterators must be closed first.
+API/use: `EINVAL`, `ERANGE`, `ETOOSMALL`, `EOVERFLOW`.
+State: `ESTALE`, `EGONE`, `EUNSTABLE`, `EBUSY`, `EROFS`.
+Storage: `EIO`, `ECORRUPT`, `EFORMAT`, `EPOISONED`.
+Lifecycle: `ENOENT`, `EEXIST`, `ENOMEM`.
 
-## 7. Limits
+## 7. Ownership and limits
 
-| Limit | Value |
-| --- | --- |
-| maximum record payload | 16 MiB (`LEDGER89_MAX_RECORD_BYTES`) |
-| maximum batch record count | `UINT32_MAX` (on-disk field) |
-| default `max_segment_bytes` (0) | 64 MiB |
-| `max_segment_records` (0) | unlimited |
-| public index/tag width | `unsigned long`; on-disk 64-bit little-endian |
-
-A batch never splits across segments. If a single batch exceeds the segment
-thresholds, it occupies a fresh segment by itself.
+One handle is caller-serialized; a writable open is exclusive and read-only
+opens are shared. Record payloads are caller-owned during a call; read output
+buffers are caller-owned. Maximum payload 16 MiB; maximum batch count
+`UINT32_MAX`; automatic rotation target 64 MiB.

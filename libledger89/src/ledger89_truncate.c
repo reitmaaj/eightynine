@@ -1,734 +1,669 @@
-/* ledger89_truncate.c - suffix truncation and prefix discard.
+/* ledger89_truncate.c - copy-on-write suffix truncation and prefix pruning.
  *
- * Both operations are self-durable and preserve a contiguous range at every
- * crash point. Segment files are unique keys; the header's first_index is
- * authoritative. A boundary segment is rewritten atomically through a temp
- * file; tail or front segments are removed one unlink plus directory sync at
- * a time so every intermediate durable state is a contiguous range. */
-
+ * Files referenced by the current manifest are never destructively modified.
+ * A structural transition prepares new files, publishes a new manifest, then
+ * atomically replaces CURRENT. A crash resolves to the old topology or the
+ * new topology, never a mixture. */
 #include <stdlib.h>
 #include <string.h>
 
 #include "ledger89_internal.h"
 
-/* --- small helpers ---------------------------------------------------- */
-
-static void led89_tmp_close(ledger89 *l, led89_fd fd)
+static void led89_unlink_part(ledger89 *l, led89_u64 file_id)
 {
-    l->io->close(l->io->ctx, fd);
-}
-
-int led89_install_tmp(ledger89 *l, const char *target_name)
-{
+    char name[LED89_NAME_MAX];
     int rc;
 
-    rc = led89_path_join(l->scratch, l->scratch_cap, l->path, target_name);
-    if (rc != LEDGER89_OK)
+    led89_part_name(name, file_id);
+    rc = led89_path_join(l->scratch, l->scratch_cap, l->path, name);
+    if (rc == LEDGER89_OK)
     {
-        return rc;
+        led89_unlink_quiet(l, l->scratch);
     }
-    rc = led89_path_join(l->scratch2, l->scratch2_cap, l->path, LED89_TMP_NAME);
-    if (rc != LEDGER89_OK)
-    {
-        return rc;
-    }
-    rc = l->io->rename(l->io->ctx, l->scratch2, l->scratch);
-    if (rc != LEDGER89_OK)
-    {
-        return rc;
-    }
-    rc = l->io->sync_dir(l->io->ctx, l->path);
-    return rc;
 }
 
-static int led89_open_sealed(ledger89 *l, size_t i, led89_fd *fd)
+static led89_u64 led89_t_desc_id(const led89_part_desc *d)
 {
+    return d->file_id;
+}
+
+static void led89_t_copy_desc(led89_part_desc *dst, const led89_part_desc *src)
+{
+    *dst = *src;
+}
+
+static void led89_t_copy_part(led89_part *dst, const led89_part *src)
+{
+    *dst = *src;
+}
+
+static size_t led89_t_inc(size_t v)
+{
+    return v + 1u;
+}
+
+static const void *led89_t_slice_data(ledger89 *l, size_t size)
+{
+    if (size > 0u)
+    {
+        return l->buf;
+    }
+    return NULL;
+}
+
+static void led89_t_slice_set(ledger89_slice *s, const void *data, size_t size)
+{
+    s->data = data;
+    s->size = size;
+}
+
+static led89_part_desc *led89_t_alloc_descs(size_t count)
+{
+    led89_part_desc *p;
+
+    p = (led89_part_desc *)malloc(count * sizeof(led89_part_desc));
+    return p;
+}
+
+static led89_u64 *led89_t_alloc_ids(size_t count)
+{
+    led89_u64 *p;
+
+    p = (led89_u64 *)malloc(count * sizeof(led89_u64));
+    return p;
+}
+
+static int led89_copy_step(ledger89 *l, led89_fd src, led89_u64 *src_off,
+                           led89_fd dst, led89_u64 *dst_off, led89_u64 *left)
+{
+    size_t chunk;
     int rc;
 
-    rc = led89_path_join(l->scratch, l->scratch_cap, l->path,
-                         l->segments[i].name);
+    chunk = led89_chunk_of(*left);
+    rc = led89_buf_reserve(l, chunk);
     if (rc != LEDGER89_OK)
     {
         return rc;
     }
-    rc = l->io->open(l->io->ctx, l->scratch, LED89_OPEN_READ, fd);
-    return rc;
-}
-
-static void led89_active_shutdown(ledger89 *l)
-{
-    l->io->close(l->io->ctx, l->active_fd);
-    l->active_open = 0;
-    l->active_fd = -1;
-}
-
-void led89_active_close(ledger89 *l)
-{
-    if (l->active_open != 0)
-    {
-        led89_active_shutdown(l);
-    }
-}
-
-static int led89_unlink_active(ledger89 *l)
-{
-    int rc;
-
-    rc = led89_active_path(l);
+    rc = l->io->pread(l->io->ctx, src, l->buf, chunk, *src_off);
     if (rc != LEDGER89_OK)
     {
-        return rc;
+        return LEDGER89_EIO;
     }
-    led89_active_close(l);
-    rc = l->io->unlink(l->io->ctx, l->scratch);
+    rc = l->io->pwrite(l->io->ctx, dst, l->buf, chunk, *dst_off);
     if (rc != LEDGER89_OK)
     {
-        return rc;
+        return LEDGER89_EIO;
     }
-    rc = l->io->sync_dir(l->io->ctx, l->path);
-    return rc;
-}
-
-static int led89_unlink_sealed(ledger89 *l, size_t i)
-{
-    int rc;
-
-    rc = led89_path_join(l->scratch, l->scratch_cap, l->path,
-                         l->segments[i].name);
-    if (rc != LEDGER89_OK)
-    {
-        return rc;
-    }
-    rc = l->io->unlink(l->io->ctx, l->scratch);
-    if (rc != LEDGER89_OK)
-    {
-        return rc;
-    }
-    rc = l->io->sync_dir(l->io->ctx, l->path);
-    return rc;
-}
-
-static int led89_rename_sealed_active(ledger89 *l, size_t i)
-{
-    int rc;
-
-    rc = led89_path_join(l->scratch, l->scratch_cap, l->path,
-                         l->segments[i].name);
-    if (rc != LEDGER89_OK)
-    {
-        return rc;
-    }
-    rc = led89_path_join(l->scratch2, l->scratch2_cap, l->path,
-                         LED89_ACTIVE_NAME);
-    if (rc != LEDGER89_OK)
-    {
-        return rc;
-    }
-    rc = l->io->rename(l->io->ctx, l->scratch, l->scratch2);
-    if (rc != LEDGER89_OK)
-    {
-        return rc;
-    }
-    rc = l->io->sync_dir(l->io->ctx, l->path);
-    return rc;
-}
-
-static int led89_active_reset(ledger89 *l, led89_u64 first)
-{
-    int rc;
-
-    led89_active_close(l);
-    rc = led89_active_create(l, first);
-    if (rc != LEDGER89_OK)
-    {
-        return rc;
-    }
-    l->active_first = first;
-    l->active_offset = (led89_u64)LED89_SEGMENT_HEADER_SIZE;
-    l->active_records = 0u;
-    l->dirty = 0;
+    *src_off = led89_at_add(*src_off, (led89_u64)chunk);
+    *dst_off = led89_at_add(*dst_off, (led89_u64)chunk);
+    *left = led89_u64_left(*left, (led89_u64)chunk);
     return LEDGER89_OK;
 }
 
-static int led89_active_reopen(ledger89 *l)
+static int led89_copy_range(ledger89 *l, led89_fd src, led89_u64 src_off,
+                            led89_u64 len, led89_fd dst, led89_u64 *dst_off)
 {
+    led89_u64 left;
     int rc;
 
-    led89_active_close(l);
-    rc = led89_active_path(l);
-    if (rc != LEDGER89_OK)
+    left = len;
+    while (left > (led89_u64)0)
     {
-        return rc;
+        rc = led89_copy_step(l, src, &src_off, dst, dst_off, &left);
+        if (rc != LEDGER89_OK)
+        {
+            return rc;
+        }
     }
-    rc = l->io->open(l->io->ctx, l->scratch, LED89_OPEN_READ | LED89_OPEN_WRITE,
-                     &l->active_fd);
-    if (rc != LEDGER89_OK)
-    {
-        return rc;
-    }
-    l->active_open = 1;
     return LEDGER89_OK;
 }
 
-/* --- boundary rewrite ------------------------------------------------- */
-
-static led89_u64 led89_body_size(led89_u64 offset)
+static int led89_copy_one_record(ledger89 *l, size_t src_entry, size_t dst_part,
+                                 led89_u64 index, led89_u64 *dst_off)
 {
-    return offset - (led89_u64)LED89_SEGMENT_HEADER_SIZE;
-}
-
-static led89_u64 led89_add_footer(led89_u64 offset)
-{
-    return offset + (led89_u64)LED89_SEGMENT_FOOTER_SIZE;
-}
-
-static int led89_write_footer(ledger89 *l, led89_fd fd, led89_u64 offset,
-                              led89_u64 last, led89_u64 count)
-{
-    unsigned char foot[LED89_SEGMENT_FOOTER_SIZE];
-    led89_seg_footer sf;
+    ledger89_slice slice;
+    led89_u64 start;
+    size_t size;
     int rc;
 
-    rc = led89_digest_range(l, fd, (led89_u64)LED89_SEGMENT_HEADER_SIZE, offset,
-                            &sf.segment_digest);
+    rc = led89_batch_read_record(l, &l->dir[src_entry], index, NULL, 0u, &size);
     if (rc != LEDGER89_OK)
     {
         return rc;
     }
-    sf.last_index = last;
-    sf.record_count = count;
-    sf.body_size = led89_body_size(offset);
-    led89_seg_footer_encode(foot, &sf);
-    rc = l->io->pwrite(l->io->ctx, fd, foot, sizeof foot, offset);
+    rc = led89_buf_reserve(l, size);
+    if (rc != LEDGER89_OK)
+    {
+        return rc;
+    }
+    rc = led89_batch_read_record(l, &l->dir[src_entry], index, l->buf, size,
+                                 &size);
+    if (rc != LEDGER89_OK)
+    {
+        return rc;
+    }
+    led89_t_slice_set(&slice, led89_t_slice_data(l, size), size);
+    start = *dst_off;
+    rc = led89_emit_batch(l, l->parts[dst_part].fd, dst_off, &slice, 1u, index);
+    if (rc != LEDGER89_OK)
+    {
+        return rc;
+    }
+    rc = led89_dir_add(l, dst_part, index, (led89_u64)1, start,
+                       *dst_off - start);
     return rc;
 }
 
-static int led89_rewrite_abort(ledger89 *l, led89_walk *w, led89_fd tmp_fd,
-                               int rc)
+static int led89_copy_batch(ledger89 *l, size_t i, led89_fd src_fd,
+                            size_t dst_index, led89_u64 *dst_off)
 {
-    led89_walk_free(w);
-    led89_tmp_close(l, tmp_fd);
-    return rc;
-}
-
-static int led89_rewrite_step(ledger89 *l, led89_fd tmp_fd, led89_u64 *offset,
-                              const led89_rec_header *rh,
-                              const unsigned char *payload)
-{
-    ledger89_record rec;
+    led89_u64 first;
+    led89_u64 count;
+    led89_u64 offset;
     led89_u64 bytes;
+    led89_u64 start;
     int rc;
 
-    rc = led89_u64_to_index(rh->index, &rec.index);
+    first = l->dir[i].first;
+    count = l->dir[i].count;
+    offset = l->dir[i].offset;
+    bytes = l->dir[i].bytes;
+    start = *dst_off;
+    rc = led89_copy_range(l, src_fd, offset, bytes, l->parts[dst_index].fd,
+                          dst_off);
     if (rc != LEDGER89_OK)
     {
         return rc;
     }
-    rc = led89_u64_to_index(rh->tag, &rec.tag);
-    if (rc != LEDGER89_OK)
-    {
-        return rc;
-    }
-    rec.data = payload;
-    rec.size = (size_t)rh->payload_size;
-    bytes = led89_batch_bytes(&rec, 1u);
-    rc = led89_write_batch(l, tmp_fd, offset, &rec, 1u, rh->index, bytes);
+    rc = led89_dir_add(l, dst_index, first, count, start, bytes);
     return rc;
 }
 
-static int led89_rewrite_segment(ledger89 *l, led89_fd src_fd,
-                                 led89_u64 data_end, const char *target_name,
-                                 led89_u64 keep_first, led89_u64 keep_last,
-                                 led89_u64 new_first, int sealed,
-                                 led89_u64 *records_out, led89_u64 *offset_out)
+static int led89_copy_split(ledger89 *l, size_t i, led89_u64 first,
+                            led89_u64 keep, size_t dst_index,
+                            led89_u64 *dst_off)
 {
-    unsigned char hdr[LED89_SEGMENT_HEADER_SIZE];
-    led89_seg_header sh;
-    led89_walk w;
-    led89_rec_header rh;
-    const unsigned char *payload;
-    led89_fd tmp_fd;
-    led89_u64 offset;
-    led89_u64 count;
-    int done;
+    led89_u64 k;
     int rc;
 
-    rc = led89_path_join(l->scratch, l->scratch_cap, l->path, LED89_TMP_NAME);
-    if (rc != LEDGER89_OK)
+    rc = LEDGER89_OK;
+    for (k = (led89_u64)0; k < keep; ++k)
     {
-        return rc;
-    }
-    rc = l->io->open(l->io->ctx, l->scratch,
-                     LED89_OPEN_READ | LED89_OPEN_WRITE | LED89_OPEN_CREATE,
-                     &tmp_fd);
-    if (rc != LEDGER89_OK)
-    {
-        return rc;
-    }
-    rc = l->io->truncate(l->io->ctx, tmp_fd, 0u);
-    if (rc != LEDGER89_OK)
-    {
-        led89_tmp_close(l, tmp_fd);
-        return rc;
-    }
-    sh.first_index = new_first;
-    sh.flags = 0u;
-    led89_seg_header_encode(hdr, &sh);
-    rc = l->io->pwrite(l->io->ctx, tmp_fd, hdr, sizeof hdr, 0u);
-    if (rc != LEDGER89_OK)
-    {
-        led89_tmp_close(l, tmp_fd);
-        return rc;
-    }
-    offset = (led89_u64)LED89_SEGMENT_HEADER_SIZE;
-    count = 0u;
-    done = 0;
-    led89_walk_init(&w, l->io, src_fd, (led89_u64)LED89_SEGMENT_HEADER_SIZE,
-                    data_end);
-    while (done == 0)
-    {
-        rc = led89_walk_next(&w, &rh, &payload);
-        if (rc == LEDGER89_END)
-        {
-            done = 1;
-        }
-        else if (rc != LEDGER89_OK)
-        {
-            rc = led89_rewrite_abort(l, &w, tmp_fd, rc);
-            return rc;
-        }
-        else if (rh.index > keep_last)
-        {
-            done = 1;
-        }
-        else if (rh.index >= keep_first)
-        {
-            rc = led89_rewrite_step(l, tmp_fd, &offset, &rh, payload);
-            if (rc != LEDGER89_OK)
-            {
-                rc = led89_rewrite_abort(l, &w, tmp_fd, rc);
-                return rc;
-            }
-            ++count;
-        }
-    }
-    led89_walk_free(&w);
-    if (sealed != 0)
-    {
-        rc = led89_write_footer(l, tmp_fd, offset, keep_last, count);
+        rc = led89_copy_one_record(l, i, dst_index, first + k, dst_off);
         if (rc != LEDGER89_OK)
         {
-            led89_tmp_close(l, tmp_fd);
-            return rc;
+            break;
         }
-        offset = led89_add_footer(offset);
     }
-    rc = l->io->sync(l->io->ctx, tmp_fd);
-    if (rc != LEDGER89_OK)
-    {
-        led89_tmp_close(l, tmp_fd);
-        return rc;
-    }
-    rc = l->io->close(l->io->ctx, tmp_fd);
-    if (rc != LEDGER89_OK)
-    {
-        return rc;
-    }
-    rc = led89_install_tmp(l, target_name);
-    if (rc != LEDGER89_OK)
-    {
-        return rc;
-    }
-    *records_out = count;
-    *offset_out = offset;
-    return LEDGER89_OK;
-}
-
-/* --- truncation ------------------------------------------------------- */
-
-static int led89_truncate_active(ledger89 *l, led89_u64 target)
-{
-    led89_u64 count;
-    led89_u64 offset;
-    int rc;
-
-    rc = led89_rewrite_segment(l, l->active_fd, l->active_offset,
-                               LED89_ACTIVE_NAME, l->active_first, target,
-                               l->active_first, 0, &count, &offset);
-    if (rc != LEDGER89_OK)
-    {
-        return rc;
-    }
-    rc = led89_active_reopen(l);
-    if (rc != LEDGER89_OK)
-    {
-        return rc;
-    }
-    l->active_offset = offset;
-    l->active_records = count;
-    l->last_index = target;
-    l->dirty = 0;
-    return LEDGER89_OK;
-}
-
-static int led89_rewrite_sealed(ledger89 *l, size_t b, led89_u64 keep_first,
-                                led89_u64 keep_last, led89_u64 new_first)
-{
-    led89_fd fd;
-    led89_u64 size;
-    led89_u64 count;
-    led89_u64 offset;
-    int rc;
-
-    rc = led89_open_sealed(l, b, &fd);
-    if (rc != LEDGER89_OK)
-    {
-        return rc;
-    }
-    rc = l->io->size(l->io->ctx, fd, &size);
-    if (rc != LEDGER89_OK)
-    {
-        l->io->close(l->io->ctx, fd);
-        return rc;
-    }
-    if (size <
-        (led89_u64)(LED89_SEGMENT_HEADER_SIZE + LED89_SEGMENT_FOOTER_SIZE))
-    {
-        l->io->close(l->io->ctx, fd);
-        return LEDGER89_ERR_CORRUPT;
-    }
-    rc = led89_rewrite_segment(
-        l, fd, size - (led89_u64)LED89_SEGMENT_FOOTER_SIZE, l->segments[b].name,
-        keep_first, keep_last, new_first, 1, &count, &offset);
-    l->io->close(l->io->ctx, fd);
     return rc;
 }
 
-static int led89_drop_last(ledger89 *l)
+static int led89_copy_entry(ledger89 *l, size_t i, led89_u64 from,
+                            led89_fd src_fd, size_t dst_index,
+                            led89_u64 *dst_off, int *done)
 {
+    led89_u64 first;
+    led89_u64 count;
+    led89_u64 keep;
     int rc;
 
-    rc = led89_unlink_sealed(l, l->segment_count - 1u);
-    if (rc != LEDGER89_OK)
+    first = l->dir[i].first;
+    count = l->dir[i].count;
+    *done = 0;
+    if (first >= from)
     {
-        return rc;
+        *done = 1;
+        return LEDGER89_OK;
     }
-    l->segment_count -= 1u;
-    return LEDGER89_OK;
+    keep = count;
+    if (first + count > from)
+    {
+        keep = led89_u64_left(from, first);
+    }
+    if (keep == count)
+    {
+        rc = led89_copy_batch(l, i, src_fd, dst_index, dst_off);
+    }
+    else
+    {
+        rc = led89_copy_split(l, i, first, keep, dst_index, dst_off);
+    }
+    return rc;
 }
 
-static int led89_truncate_sealed(ledger89 *l, size_t b, led89_u64 target)
+static int led89_copy_prefix(ledger89 *l, size_t src_index, led89_u64 from,
+                             size_t dst_index, led89_u64 *dst_off)
 {
-    int rc;
-
-    rc = led89_unlink_active(l);
-    if (rc != LEDGER89_OK)
-    {
-        return rc;
-    }
-    while (l->segment_count > b + 1u)
-    {
-        rc = led89_drop_last(l);
-        if (rc != LEDGER89_OK)
-        {
-            return rc;
-        }
-    }
-    if (target < l->segments[b].last_index)
-    {
-        rc = led89_rewrite_sealed(l, b, l->segments[b].first_index, target,
-                                  l->segments[b].first_index);
-        if (rc != LEDGER89_OK)
-        {
-            return rc;
-        }
-        l->segments[b].last_index = target;
-    }
-    rc = led89_active_reset(l, target + 1u);
-    if (rc != LEDGER89_OK)
-    {
-        return rc;
-    }
-    l->last_index = target;
-    return LEDGER89_OK;
-}
-
-static void led89_mark_empty(ledger89 *l)
-{
-    l->last_index = l->base - 1u;
-}
-
-static int led89_truncate_all(ledger89 *l)
-{
+    led89_fd src_fd;
     size_t i;
     int rc;
 
-    if (l->segment_count == 0u)
+    rc = led89_part_open(l, l->parts[src_index].desc.file_id, LED89_OPEN_READ,
+                         &src_fd);
+    if (rc != LEDGER89_OK)
     {
-        rc = led89_active_reset(l, l->base);
+        return rc;
+    }
+    rc = LEDGER89_OK;
+    i = 0u;
+    for (;;)
+    {
+        if (i >= l->dir_count)
+        {
+            break;
+        }
+        if (l->dir[i].part == src_index)
+        {
+            break;
+        }
+        ++i;
+    }
+    for (;;)
+    {
+        int done;
+
+        if (i >= l->dir_count)
+        {
+            break;
+        }
+        if (l->dir[i].part != src_index)
+        {
+            break;
+        }
+        rc = led89_copy_entry(l, i, from, src_fd, dst_index, dst_off, &done);
         if (rc != LEDGER89_OK)
         {
-            return rc;
+            break;
         }
-        led89_mark_empty(l);
-        return LEDGER89_OK;
-    }
-    rc = led89_unlink_active(l);
-    if (rc != LEDGER89_OK)
-    {
-        return rc;
-    }
-    for (i = l->segment_count - 1u; i > 0u; --i)
-    {
-        rc = led89_unlink_sealed(l, i);
-        if (rc != LEDGER89_OK)
+        if (done != 0)
         {
-            return rc;
+            break;
         }
+        ++i;
     }
-    rc = led89_rename_sealed_active(l, 0u);
-    if (rc != LEDGER89_OK)
-    {
-        return rc;
-    }
-    l->segment_count = 0u;
-    rc = led89_active_reset(l, l->base);
-    if (rc != LEDGER89_OK)
-    {
-        return rc;
-    }
-    l->last_index = l->base - 1u;
-    return LEDGER89_OK;
-}
-
-static int led89_truncate_some(ledger89 *l, led89_u64 target)
-{
-    size_t b;
-    int is_active;
-    int rc;
-
-    rc = led89_segment_find(l, target, &b, &is_active);
-    if (rc != LEDGER89_OK)
-    {
-        return rc;
-    }
-    if (is_active != 0)
-    {
-        rc = led89_truncate_active(l, target);
-        return rc;
-    }
-    rc = led89_truncate_sealed(l, b, target);
+    led89_close_quiet(l, src_fd);
     return rc;
 }
 
-/* --- discard ---------------------------------------------------------- */
-
-static void led89_segments_drop_first(ledger89 *l)
+static int led89_publish_manifest(ledger89 *l, led89_u64 revision,
+                                  led89_u64 first, size_t sealed_count)
 {
-    if (l->segment_count > 1u)
-    {
-        memmove(&l->segments[0], &l->segments[1],
-                (l->segment_count - 1u) * sizeof l->segments[0]);
-    }
-    l->segment_count -= 1u;
-}
-
-static int led89_discard_first(ledger89 *l)
-{
+    led89_manifest m;
+    size_t i;
     int rc;
 
-    rc = led89_unlink_sealed(l, 0u);
+    m.generation = led89_u64_inc(l->generation);
+    memcpy(m.uuid, l->id.bytes, 16u);
+    m.revision = revision;
+    m.first = first;
+    m.sealed_count = (led89_u32)sealed_count;
+    m.sealed = NULL;
+    if (sealed_count > 0u)
+    {
+        m.sealed = led89_t_alloc_descs(sealed_count);
+        if (m.sealed == NULL)
+        {
+            return LEDGER89_ENOMEM;
+        }
+        for (i = 0u; i < sealed_count; ++i)
+        {
+            led89_t_copy_desc(&m.sealed[i], &l->parts[i].desc);
+        }
+    }
+    led89_t_copy_desc(&m.active, &l->parts[sealed_count].desc);
+    rc = led89_manifest_publish(l, &m);
+    if (rc == LEDGER89_OK)
+    {
+        rc = led89_current_publish(l, m.generation);
+    }
+    free(m.sealed);
     if (rc != LEDGER89_OK)
     {
+        rc = led89_io_error(l, rc);
         return rc;
     }
-    led89_segments_drop_first(l);
+    l->generation = m.generation;
     return LEDGER89_OK;
 }
 
-static int led89_discard_active(ledger89 *l, led89_u64 target)
+static size_t led89_count_keep(const ledger89 *l, size_t sealed_count,
+                               led89_u64 from)
 {
-    led89_u64 count;
-    led89_u64 offset;
+    size_t keep;
+
+    keep = 0u;
+    for (;;)
+    {
+        if (keep >= sealed_count)
+        {
+            break;
+        }
+        if (l->parts[keep].desc.end > from)
+        {
+            break;
+        }
+        keep = led89_t_inc(keep);
+    }
+    return keep;
+}
+
+static size_t led89_kept_entries(const ledger89 *l, size_t keep_sealed)
+{
+    size_t n;
+
+    n = 0u;
+    for (;;)
+    {
+        if (n >= l->dir_count)
+        {
+            break;
+        }
+        if (l->dir[n].part >= keep_sealed)
+        {
+            break;
+        }
+        n = led89_t_inc(n);
+    }
+    return n;
+}
+
+static int led89_make_copy(ledger89 *l, size_t boundary, led89_u64 from,
+                           led89_u64 new_revision, size_t *copy_index)
+{
+    led89_u64 off;
     int rc;
 
-    rc = led89_rewrite_segment(l, l->active_fd, l->active_offset,
-                               LED89_ACTIVE_NAME, target, l->last_index, target,
-                               0, &count, &offset);
+    rc = led89_part_create(l, l->next_file_id, l->parts[boundary].desc.first,
+                           new_revision, copy_index);
     if (rc != LEDGER89_OK)
     {
+        rc = led89_io_error(l, rc);
         return rc;
     }
-    rc = led89_active_reopen(l);
+    l->next_file_id = led89_u64_inc(l->next_file_id);
+    off = l->parts[*copy_index].bytes;
+    rc = led89_copy_prefix(l, boundary, from, *copy_index, &off);
+    if (rc == LEDGER89_OK)
+    {
+        rc = led89_write_marker(l, l->parts[*copy_index].fd,
+                                l->parts[*copy_index].desc.file_id,
+                                new_revision, &off, from);
+    }
+    l->parts[*copy_index].bytes = off;
+    if (rc == LEDGER89_OK)
+    {
+        rc = led89_write_sealed_footer(l, &l->parts[*copy_index], from);
+    }
     if (rc != LEDGER89_OK)
     {
+        rc = led89_io_error(l, rc);
         return rc;
     }
-    l->active_first = target;
-    l->active_offset = offset;
-    l->active_records = count;
+    l->parts[*copy_index].sealed = 1;
+    led89_part_close(l, &l->parts[*copy_index]);
+    return LEDGER89_OK;
+}
+
+static void led89_move_dir(ledger89 *l, size_t keep_entries,
+                           size_t old_dir_count, size_t keep_sealed)
+{
+    size_t copy_entries;
+    size_t i;
+
+    copy_entries = l->dir_count - old_dir_count;
+    memmove(&l->dir[keep_entries], &l->dir[old_dir_count],
+            copy_entries * sizeof(led89_batch_dir_entry));
+    l->dir_count = keep_entries + copy_entries;
+    for (i = keep_entries; i < l->dir_count; ++i)
+    {
+        l->dir[i].part = keep_sealed;
+    }
+}
+
+static size_t led89_take_obsolete(ledger89 *l, size_t i, led89_u64 *dst,
+                                  size_t n)
+{
+    dst[n] = led89_t_desc_id(&l->parts[i].desc);
+    led89_part_close(l, &l->parts[i]);
+    return led89_t_inc(n);
+}
+
+static size_t led89_rebuild_step(ledger89 *l, size_t pos, size_t copy_index)
+{
+    led89_t_copy_part(&l->parts[pos], &l->parts[copy_index]);
+    return led89_t_inc(pos);
+}
+
+static void led89_rebuild_parts(ledger89 *l, size_t keep_sealed, int need_copy,
+                                size_t copy_index, size_t new_active)
+{
+    size_t pos;
+
+    pos = keep_sealed;
+    if (need_copy != 0)
+    {
+        pos = led89_rebuild_step(l, pos, copy_index);
+    }
+    led89_t_copy_part(&l->parts[pos], &l->parts[new_active]);
+    l->part_count = led89_t_inc(pos);
+    l->active_index = pos;
+}
+
+int led89_truncate_impl(ledger89 *l, led89_u64 from)
+{
+    size_t old_count;
+    size_t sealed_count;
+    size_t keep_sealed;
+    size_t boundary;
+    size_t old_dir_count;
+    size_t keep_entries;
+    size_t copy_index;
+    size_t new_active;
+    size_t obsolete_count;
+    led89_u64 new_revision;
+    led89_u64 *obsolete;
+    size_t i;
+    int need_copy;
+    int rc;
+
+    if (from == l->end)
+    {
+        return LEDGER89_OK;
+    }
+    old_count = l->part_count;
+    sealed_count = old_count - 1u;
+    keep_sealed = led89_count_keep(l, sealed_count, from);
+    boundary = keep_sealed;
+    need_copy = 0;
+    if (from > l->parts[boundary].desc.first)
+    {
+        need_copy = 1;
+    }
+    old_dir_count = l->dir_count;
+    keep_entries = led89_kept_entries(l, keep_sealed);
+    new_revision = led89_u64_inc(l->revision);
+    copy_index = 0u;
+    if (need_copy != 0)
+    {
+        rc = led89_make_copy(l, boundary, from, new_revision, &copy_index);
+        if (rc != LEDGER89_OK)
+        {
+            return rc;
+        }
+    }
+    rc = led89_part_create(l, l->next_file_id, from, new_revision, &new_active);
+    if (rc != LEDGER89_OK)
+    {
+        rc = led89_io_error(l, rc);
+        return rc;
+    }
+    l->next_file_id = led89_u64_inc(l->next_file_id);
+    if (need_copy != 0)
+    {
+        led89_move_dir(l, keep_entries, old_dir_count, keep_sealed);
+    }
+    else
+    {
+        l->dir_count = keep_entries;
+    }
+    obsolete = led89_t_alloc_ids(old_count);
+    if (obsolete == NULL)
+    {
+        rc = led89_io_error(l, LEDGER89_ENOMEM);
+        return rc;
+    }
+    obsolete_count = 0u;
+    for (i = keep_sealed; i < old_count; ++i)
+    {
+        obsolete_count = led89_take_obsolete(l, i, obsolete, obsolete_count);
+    }
+    led89_rebuild_parts(l, keep_sealed, need_copy, copy_index, new_active);
+    rc = led89_publish_manifest(l, new_revision, l->first, l->part_count - 1u);
+    if (rc != LEDGER89_OK)
+    {
+        free(obsolete);
+        return rc;
+    }
+    l->revision = new_revision;
+    l->end = from;
+    l->stable_end = from;
     l->dirty = 0;
-    l->base = target;
-    l->first_index = target;
+    for (i = 0u; i < obsolete_count; ++i)
+    {
+        led89_unlink_part(l, obsolete[i]);
+    }
+    led89_sync_dir_quiet(l);
+    free(obsolete);
     return LEDGER89_OK;
 }
 
-static int led89_discard_some(ledger89 *l, led89_u64 target)
+static size_t led89_count_drop(const ledger89 *l, size_t sealed_count,
+                               led89_u64 requested)
 {
-    size_t b;
-    int is_active;
-    int rc;
+    size_t drop;
 
-    rc = led89_segment_find(l, target, &b, &is_active);
-    if (rc != LEDGER89_OK)
+    drop = 0u;
+    for (;;)
     {
-        return rc;
-    }
-    if (is_active != 0)
-    {
-        while (l->segment_count > 0u)
+        if (drop >= sealed_count)
         {
-            rc = led89_discard_first(l);
-            if (rc != LEDGER89_OK)
-            {
-                return rc;
-            }
+            break;
         }
-        rc = led89_discard_active(l, target);
-        return rc;
-    }
-    while (b > 0u)
-    {
-        rc = led89_discard_first(l);
-        if (rc != LEDGER89_OK)
+        if (l->parts[drop].desc.end > requested)
         {
-            return rc;
+            break;
         }
-        --b;
+        drop = led89_t_inc(drop);
     }
-    if (target > l->segments[0].first_index)
-    {
-        rc = led89_rewrite_sealed(l, 0u, target, l->segments[0].last_index,
-                                  target);
-        if (rc != LEDGER89_OK)
-        {
-            return rc;
-        }
-        l->segments[0].first_index = target;
-    }
-    l->base = target;
-    l->first_index = target;
-    return LEDGER89_OK;
+    return drop;
 }
 
-static int led89_discard_all(ledger89 *l, led89_u64 base_new)
+static size_t led89_count_drop_entries(const ledger89 *l, size_t drop)
 {
-    int rc;
+    size_t n;
 
-    while (l->segment_count > 0u)
+    n = 0u;
+    for (;;)
     {
-        rc = led89_discard_first(l);
-        if (rc != LEDGER89_OK)
+        if (n >= l->dir_count)
         {
-            return rc;
+            break;
         }
+        if (l->dir[n].part >= drop)
+        {
+            break;
+        }
+        n = led89_t_inc(n);
     }
-    rc = led89_active_reset(l, base_new);
-    if (rc != LEDGER89_OK)
-    {
-        return rc;
-    }
-    l->base = base_new;
-    l->first_index = base_new;
-    l->last_index = base_new - 1u;
-    return LEDGER89_OK;
+    return n;
 }
 
-/* --- public API ------------------------------------------------------- */
-
-int ledger89_truncate_after(ledger89 *l, ledger89_index index)
+static void led89_shift_parts(ledger89 *l, size_t drop)
 {
-    led89_u64 target;
+    size_t i;
+
+    for (i = drop; i < l->part_count; ++i)
+    {
+        led89_t_copy_part(&l->parts[i - drop], &l->parts[i]);
+    }
+}
+
+static void led89_dir_rebase(led89_batch_dir_entry *e, size_t drop)
+{
+    e->part -= drop;
+}
+
+static void led89_shift_dir(ledger89 *l, size_t drop_entries, size_t drop)
+{
+    size_t i;
+
+    memmove(&l->dir[0], &l->dir[drop_entries],
+            (l->dir_count - drop_entries) * sizeof(led89_batch_dir_entry));
+    l->dir_count -= drop_entries;
+    for (i = 0u; i < l->dir_count; ++i)
+    {
+        led89_dir_rebase(&l->dir[i], drop);
+    }
+}
+
+static void led89_set_actual(led89_u64 *out, led89_u64 v)
+{
+    *out = v;
+}
+
+int led89_prune_impl(ledger89 *l, led89_u64 requested, led89_u64 *actual)
+{
+    size_t sealed_count;
+    size_t drop;
+    size_t drop_entries;
+    size_t obsolete_count;
+    led89_u64 new_first;
+    led89_u64 *obsolete;
+    size_t i;
     int rc;
 
-    if (l == NULL)
+    if (requested <= l->first)
     {
-        return LEDGER89_ERR_ARG;
-    }
-    if (l->faulted != 0)
-    {
-        return LEDGER89_ERR_FAULTED;
-    }
-    target = (led89_u64)index;
-    if (target >= l->last_index)
-    {
+        led89_set_actual(actual, l->first);
         return LEDGER89_OK;
     }
-    if (target < l->base - 1u)
+    sealed_count = l->part_count - 1u;
+    drop = led89_count_drop(l, sealed_count, requested);
+    if (drop == 0u)
     {
-        return LEDGER89_ERR_RANGE;
-    }
-    if (target == l->base - 1u)
-    {
-        rc = led89_truncate_all(l);
-    }
-    else
-    {
-        rc = led89_truncate_some(l, target);
-    }
-    if (rc != LEDGER89_OK)
-    {
-        l->faulted = 1;
-    }
-    if (rc == LEDGER89_OK)
-    {
-        ++l->epoch;
-    }
-    return rc;
-}
-
-static led89_u64 led89_last_plus_one(const ledger89 *l)
-{
-    return l->last_index + 1u;
-}
-
-int ledger89_discard_before(ledger89 *l, ledger89_index index)
-{
-    led89_u64 target;
-    int rc;
-
-    if (l == NULL)
-    {
-        return LEDGER89_ERR_ARG;
-    }
-    if (l->faulted != 0)
-    {
-        return LEDGER89_ERR_FAULTED;
-    }
-    target = (led89_u64)index;
-    if (target <= l->first_index)
-    {
+        led89_set_actual(actual, l->first);
         return LEDGER89_OK;
     }
-    if (target > l->last_index)
+    new_first = l->parts[drop].desc.first;
+    drop_entries = led89_count_drop_entries(l, drop);
+    obsolete = led89_t_alloc_ids(drop);
+    if (obsolete == NULL)
     {
-        target = led89_last_plus_one(l);
+        return LEDGER89_ENOMEM;
     }
-    if (target > l->last_index)
+    obsolete_count = 0u;
+    for (i = 0u; i < drop; ++i)
     {
-        rc = led89_discard_all(l, target);
+        obsolete_count = led89_take_obsolete(l, i, obsolete, obsolete_count);
     }
-    else
-    {
-        rc = led89_discard_some(l, target);
-    }
+    led89_shift_parts(l, drop);
+    l->part_count -= drop;
+    l->active_index = l->part_count - 1u;
+    led89_shift_dir(l, drop_entries, drop);
+    l->first = new_first;
+    rc = led89_publish_manifest(l, l->revision, l->first, l->part_count - 1u);
     if (rc != LEDGER89_OK)
     {
-        l->faulted = 1;
+        free(obsolete);
+        return rc;
     }
-    if (rc == LEDGER89_OK)
+    for (i = 0u; i < drop; ++i)
     {
-        ++l->epoch;
+        led89_unlink_part(l, obsolete[i]);
     }
-    return rc;
+    led89_sync_dir_quiet(l);
+    free(obsolete);
+    led89_set_actual(actual, new_first);
+    return LEDGER89_OK;
 }

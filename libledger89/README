@@ -1,78 +1,79 @@
 # libledger89
 
-A durable, append-only sequence of opaque records stored in immutable rotated
-segments, with crash recovery and deterministic iteration, in strict ISO C89.
+A durable, ordered, rewindable sequence of opaque byte records addressed by
+stable logical positions, in strict ISO C89.
 
 ```text
-            application
-        +-----------------+
-        | storage adapter |
-        | timers/policy   |
-        +--------+--------+
-                 | append / sync / truncate
-        +--------v--------+
-        |   libledger89   |
-        | durable local   |
-        | record sequence |
-        +--------+--------+
-                 |
-           segment files
+                     index space
+              first             end
+                |                |
+                v                v
+          [ R ][ R ][ R ][ R ][   ]
+            \____________/
+              stable prefix
+
+append       extends the right edge
+sync         advances the stable edge
+truncate     moves the right edge left (revision++)
+prune        moves the left edge right
+read         addresses one retained position
+iterate      walks retained positions
 ```
 
-libledger89 owns exactly one thing: a local, durable, append-only sequence of
-opaque records. It knows nothing about Raft terms, leaders, agents, SQL,
-indexes, queries, capabilities, or application semantics. It never interprets
-record payloads.
+libledger89 owns exactly one thing: a locally durable, ordered, rewindable
+sequence of opaque byte records. It knows nothing about Raft terms, leaders,
+message queues, SQL, indexes, queries, or application semantics, and it never
+interprets record payloads.
 
 ## Boundaries
 
 | Concern | Owner |
 | --- | --- |
-| record encoding envelope | `libledger89` |
-| monotonic local sequence | `libledger89` |
-| append durability | `libledger89` |
-| segment creation/sealing/rotation | `libledger89` |
-| crash recovery | `libledger89` |
-| checksums / corruption detection | `libledger89` |
-| sequential/range iteration | `libledger89` |
-| suffix truncation | `libledger89`, when explicitly requested |
-| prefix discard (retention) | `libledger89`, when explicitly requested |
-| replication | `libraft89` |
-| deciding commit | caller / `libraft89` integration |
-| semantic event format | application |
-| secondary indexes, SQL, queries | external query engine |
-| snapshots and projections | external component |
+| record framing and checksums | `libledger89` |
+| locally durable sequence numbering | `libledger89` |
+| append batch atomicity | `libledger89` |
+| explicit stable frontier (`stable_end`) | `libledger89` |
+| part creation/sealing/rotation | `libledger89` |
+| crash recovery and topology publication | `libledger89` |
+| suffix truncation (`truncate_from`) | `libledger89`, explicit request |
+| prefix pruning mechanism (`prune_before`) | `libledger89`, explicit request |
+| retention policy | caller |
+| replication, consensus | `libraft89` and an adapter |
+| semantic record envelopes (WAL/MQ/Raft/IPC) | higher layers |
+| secondary indexes, SQL, queries, projections | external query engine |
 
 ## Build and test
 
 - `just build` — build `build/libledger89.a`.
 - `just smoke` — one end-to-end open/append/sync/reopen/read path.
-- `just unit` — pure unit programs (format, checksums, index math).
+- `just unit` — codecs, checksums, scalar math, model filesystem.
 - `just api` — black-box public API behavior.
-- `just adapters` — consumer-boundary fixtures (replication-style usage).
-- `just crash` — crash points over the deterministic model filesystem and
-  real-filesystem process kills.
-- `just fault` — I/O errors, ENOSPC, allocation failure, torn writes.
+- `just adapters` — WAL-style, replicated-log-style, and checkpoint consumers.
+- `just crash` — crash sweeps over the model filesystem plus real process kills.
+- `just fault`, `just fault-nomem`, `just fault-eintr` — I/O, allocation, EINTR.
 - `just corrupt` — structural corruption classification.
-- `just model` — randomized reference-model stress.
-- `just stress` — many-segment, huge-payload, and recovery stress.
-- `just bench` — reproducible throughput baseline (not part of `just test`).
-- `just golden` — verify the committed on-disk byte fixtures; regenerate with
-  `just golden-gen` and review the diff.
+- `just model` — randomized reference-model comparison.
+- `just golden` — frozen byte fixtures; regenerate with `just golden-gen`.
+- `just stress` — many parts, huge payload, large batches.
 - `just test` — all fast suites.
-- `just long` — multi-million-operation model runs plus a heavy many-segment
-  sweep.
+- `just long` — multi-hundred-thousand-operation model run plus a many-part sweep.
 - `just sanitize` — fast suites under ASan + UBSan.
 - `just valgrind` — fast suites under valgrind memcheck.
+- `just green` — green conformance matrix (see the status note below).
 - `just check` — green profile, lint, and all fast suites.
-- `just build32` — best-effort 32-bit library build. This host has no 32-bit
-  multilib (`gnu/stubs-32.h`, `crt1.o` are absent), so the recipe reports
-  `SKIPPED`; 32-bit portability is exercised on hosts that provide multilib.
+
+## Green conformance
+
+`just green` reports CGREEN PASS: GCC and Clang in both C89 and C23 modes,
+the clang-tidy semantic checks, and the canonical format all pass. `just
+check` runs the green matrix, lint, and the full fast test suite.
 
 ## Conventions
 
 - Public API namespaced `ledger89_*`, declared in `include/ledger89.h`.
-- On-disk format is fixed little-endian with CRC-32C; no native structs.
+- On-disk format v2 is little-endian with CRC-32C; no native structs.
+- `CURRENT` selects the committed manifest; stable markers select the durable
+  frontier inside the active part.
 - Test-driven: scenario -> acceptance -> failing test -> minimal code ->
   refactor.
 - `main` stays green; no commits or pushes without permission.

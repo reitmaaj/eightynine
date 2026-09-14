@@ -1,195 +1,763 @@
-/* ledger89_recover.c - directory scan, topology validation, and active
- * segment recovery.
+/* ledger89_recover.c - open-time recovery.
  *
- * Recovery validates segment structure only: headers, sealed footers, and
- * name/range ordering. The active segment is scanned batch by batch; at the
- * first invalid position, a fully valid batch later in the file means
- * corruption, otherwise the remainder is a torn tail and is truncated. */
-
+ * CURRENT selects the committed physical topology; the latest valid stable
+ * marker selects the committed data frontier inside the active part.
+ * Recovery never synthesizes a mixture of old and new structural state. */
 #include <stdlib.h>
 #include <string.h>
 
 #include "ledger89_internal.h"
 
-#define LED89_SCAN_BUF 4096u
-#define LED89_DIR_NAME_MAX 256u
+#define LED89_SCAN_CHUNK 4096u
+#define LED89_TRAILER_OVERLAP 7u
 
-/* --- pure helpers ----------------------------------------------------- */
+static const unsigned char led89_trailer[LED89_MARKER_TRAILER_SIZE] = {
+    '8', '9', 'S', 'T', 'A', 'B', 'L', 'E'};
 
-static size_t led89_double(size_t value)
+static int led89_create_name_kind(const char *name)
 {
-    return value * 2u;
-}
-
-static size_t led89_grow_cap(size_t cap, size_t need)
-{
-    while (cap < need)
-    {
-        cap = led89_double(cap);
-    }
-    return cap;
-}
-
-static int led89_is_empty(const ledger89 *l)
-{
-    return l->last_index < l->first_index;
-}
-
-/* Expected first index for the active segment: 0 means "keep the existing
- * header", which preserves a discarded base when no sealed segment remains. */
-static led89_u64 led89_segment_next(const ledger89 *l)
-{
-    if (l->segment_count == 0u)
-    {
-        return 0u;
-    }
-    return l->segments[l->segment_count - 1u].last_index + 1u;
-}
-
-static led89_u64 led89_base_of(const ledger89 *l)
-{
-    if (l->segment_count == 0u)
-    {
-        return l->active_first;
-    }
-    return l->segments[0].first_index;
-}
-
-static led89_u64 led89_fix_last(const ledger89 *l)
-{
-    if (led89_is_empty(l) != 0)
-    {
-        return l->base - 1u;
-    }
-    return l->last_index;
-}
-
-/* --- segment table ---------------------------------------------------- */
-
-static int led89_segments_reserve(ledger89 *l, size_t need)
-{
-    led89_segment *p;
-    size_t cap;
-
-    if (need <= l->segment_cap)
-    {
-        return LEDGER89_OK;
-    }
-    cap = l->segment_cap;
-    if (cap == 0u)
-    {
-        cap = 8u;
-    }
-    cap = led89_grow_cap(cap, need);
-    p = (led89_segment *)realloc(l->segments, cap * sizeof *p);
-    if (p == NULL)
-    {
-        return LEDGER89_ERR_NOMEM;
-    }
-    l->segments = p;
-    l->segment_cap = cap;
-    return LEDGER89_OK;
-}
-
-int led89_segments_add(ledger89 *l, const char *name, led89_u64 first,
-                       led89_u64 last)
-{
-    led89_segment *seg;
+    led89_u64 ignored;
     int rc;
 
-    rc = led89_segments_reserve(l, l->segment_count + 1u);
+    if (strcmp(name, LED89_LOCK_NAME) == 0)
+    {
+        return 0;
+    }
+    rc = led89_part_name_parse(name, &ignored);
+    if (rc != 0)
+    {
+        return 1;
+    }
+    rc = led89_manifest_name_parse(name, &ignored);
+    if (rc != 0)
+    {
+        return 1;
+    }
+    if (strcmp(name, LED89_CURRENT_TMP_NAME) == 0)
+    {
+        return 1;
+    }
+    return 2;
+}
+
+static void led89_unlink_name(ledger89 *l, const char *name)
+{
+    int rc;
+
+    rc = led89_path_join(l->scratch, l->scratch_cap, l->path, name);
+    if (rc == LEDGER89_OK)
+    {
+        led89_unlink_quiet(l, l->scratch);
+    }
+}
+
+static led89_u64 led89_r_min(void)
+{
+    return (led89_u64)LED89_PART_HEADER_SIZE;
+}
+
+static int led89_scan_error(int rc)
+{
+    if (rc == LEDGER89_EIO)
+    {
+        return rc;
+    }
+    if (rc == LEDGER89_ENOMEM)
+    {
+        return rc;
+    }
+    return LEDGER89_ECORRUPT;
+}
+
+static int led89_marker_matches(const ledger89 *l, const led89_marker *m)
+{
+    if (led89_bytes_equal(m->uuid, l->id.bytes, 16u) == 0)
+    {
+        return 0;
+    }
+    if (m->file_id != l->parts[l->active_index].desc.file_id)
+    {
+        return 0;
+    }
+    if (m->revision != l->revision)
+    {
+        return 0;
+    }
+    return 1;
+}
+
+static size_t led89_find_trailer(const unsigned char *buf, size_t limit)
+{
+    size_t i;
+
+    if (limit < (size_t)LED89_MARKER_TRAILER_SIZE)
+    {
+        return (size_t)-1;
+    }
+    i = limit - (size_t)LED89_MARKER_TRAILER_SIZE;
+    for (;;)
+    {
+        if (memcmp(buf + i, led89_trailer, (size_t)LED89_MARKER_TRAILER_SIZE) ==
+            0)
+        {
+            return i;
+        }
+        if (i == 0u)
+        {
+            break;
+        }
+        --i;
+    }
+    return (size_t)-1;
+}
+
+static led89_u64 led89_trailer_moff(led89_u64 read_lo, size_t idx)
+{
+    return led89_u64_left(led89_at_add(read_lo, (led89_u64)idx), (led89_u64)56);
+}
+
+static int led89_try_marker(ledger89 *l, led89_fd fd, led89_u64 moff,
+                            led89_u64 size, led89_marker *marker,
+                            led89_u64 *offset)
+{
+    unsigned char mb[LED89_MARKER_SIZE];
+    led89_marker m;
+    int rc;
+
+    if (moff < led89_r_min())
+    {
+        return 0;
+    }
+    if (led89_at_add(moff, (led89_u64)LED89_MARKER_SIZE) > size)
+    {
+        return 0;
+    }
+    rc = l->io->pread(l->io->ctx, fd, mb, sizeof mb, moff);
+    if (rc != LEDGER89_OK)
+    {
+        return 0;
+    }
+    rc = led89_marker_decode(mb, &m);
+    if (rc != LEDGER89_OK)
+    {
+        return 0;
+    }
+    if (led89_marker_matches(l, &m) == 0)
+    {
+        return 0;
+    }
+    *marker = m;
+    *offset = moff;
+    return 1;
+}
+
+static int led89_scan_hit(ledger89 *l, led89_fd fd, led89_u64 read_lo,
+                          size_t idx, led89_u64 size, led89_marker *marker,
+                          led89_u64 *offset)
+{
+    led89_u64 moff;
+    int rc;
+
+    moff = led89_trailer_moff(read_lo, idx);
+    rc = led89_try_marker(l, fd, moff, size, marker, offset);
+    return rc;
+}
+
+static int led89_scan_window(ledger89 *l, led89_fd fd, led89_u64 read_lo,
+                             led89_u64 hi, led89_u64 size, led89_marker *marker,
+                             led89_u64 *offset, int *found)
+{
+    size_t len;
+    size_t idx;
+    int rc;
+
+    *found = 0;
+    rc = led89_u64_to_size(led89_u64_left(hi, read_lo), &len);
+    if (rc != LEDGER89_OK)
+    {
+        return LEDGER89_ECORRUPT;
+    }
+    rc = led89_buf_reserve(l, len);
     if (rc != LEDGER89_OK)
     {
         return rc;
     }
-    seg = &l->segments[l->segment_count];
-    seg->first_index = first;
-    seg->last_index = last;
-    memcpy(seg->name, name, strlen(name) + 1u);
-    l->segment_count += 1u;
+    rc = l->io->pread(l->io->ctx, fd, l->buf, len, read_lo);
+    if (rc != LEDGER89_OK)
+    {
+        return LEDGER89_EIO;
+    }
+    idx = led89_find_trailer(l->buf, len);
+    while (idx != (size_t)-1)
+    {
+        if (led89_at_add(read_lo, (led89_u64)idx) >= (led89_u64)56)
+        {
+            int hit;
+
+            hit = led89_scan_hit(l, fd, read_lo, idx, size, marker, offset);
+            if (hit != 0)
+            {
+                *found = 1;
+                return LEDGER89_OK;
+            }
+        }
+        idx = led89_find_trailer(l->buf, idx);
+    }
     return LEDGER89_OK;
 }
 
-static size_t led89_segments_pos(const ledger89 *l, size_t upto,
-                                 led89_u64 first)
+static led89_u64 led89_window_lo(led89_u64 hi)
 {
-    size_t j;
+    led89_u64 min;
 
-    j = upto;
-    while (j > 0u)
+    min = led89_r_min();
+    if (hi > led89_at_add(min, (led89_u64)LED89_SCAN_CHUNK))
     {
-        if (l->segments[j - 1u].first_index <= first)
-        {
-            break;
-        }
-        --j;
+        return led89_u64_left(hi, (led89_u64)LED89_SCAN_CHUNK);
     }
-    return j;
+    return min;
 }
 
-static void led89_segments_insert(ledger89 *l, size_t upto)
+static led89_u64 led89_window_read_lo(led89_u64 lo)
 {
-    led89_segment tmp;
-    size_t j;
+    led89_u64 min;
 
-    tmp = l->segments[upto];
-    j = led89_segments_pos(l, upto, tmp.first_index);
-    memmove(&l->segments[j + 1u], &l->segments[j], (upto - j) * sizeof tmp);
-    l->segments[j] = tmp;
-}
-
-static void led89_segments_sort(ledger89 *l)
-{
-    size_t i;
-
-    for (i = 1u; i < l->segment_count; ++i)
+    min = led89_r_min();
+    if (lo > led89_at_add(min, (led89_u64)LED89_TRAILER_OVERLAP))
     {
-        led89_segments_insert(l, i);
+        return led89_u64_left(lo, (led89_u64)LED89_TRAILER_OVERLAP);
     }
+    return min;
 }
 
-/* --- directory scan --------------------------------------------------- */
-
-static int led89_take_entry(ledger89 *l, const char *name, int *has_active)
+static int led89_marker_step(ledger89 *l, led89_fd fd, led89_u64 size,
+                             led89_u64 *pos, led89_marker *marker,
+                             led89_u64 *offset, int *found)
 {
-    led89_u64 first;
+    led89_u64 lo;
+    led89_u64 read_lo;
     int rc;
 
-    if (strcmp(name, LED89_ACTIVE_NAME) == 0)
+    lo = led89_window_lo(*pos);
+    read_lo = led89_window_read_lo(lo);
+    rc = led89_scan_window(l, fd, read_lo, *pos, size, marker, offset, found);
+    if (rc != LEDGER89_OK)
     {
-        *has_active = 1;
-        return LEDGER89_OK;
+        return rc;
     }
-    if (strcmp(name, LED89_LOCK_NAME) == 0)
-    {
-        return LEDGER89_OK;
-    }
-    rc = led89_name_parse(name, &first);
-    if (rc == 0)
+    if (*found != 0)
     {
         return LEDGER89_OK;
     }
-    rc = led89_segments_add(l, name, first, 0u);
-    return rc;
+    if (lo == led89_r_min())
+    {
+        *pos = (led89_u64)0;
+        return LEDGER89_OK;
+    }
+    *pos = lo;
+    return LEDGER89_OK;
 }
 
-static int led89_scan_dir_close(ledger89 *l, led89_dir *dir, int rc)
+int led89_find_last_marker(ledger89 *l, led89_fd fd, led89_u64 size,
+                           led89_marker *marker, led89_u64 *offset)
 {
-    int close_rc;
+    led89_u64 pos;
 
-    close_rc = l->io->list_close(l->io->ctx, dir);
-    (void)close_rc;
-    return rc;
+    pos = size;
+    while (pos > led89_r_min())
+    {
+        int found;
+        int rc;
+
+        rc = led89_marker_step(l, fd, size, &pos, marker, offset, &found);
+        if (rc != LEDGER89_OK)
+        {
+            return rc;
+        }
+        if (found != 0)
+        {
+            return LEDGER89_OK;
+        }
+    }
+    return LEDGER89_ECORRUPT;
 }
 
-static int led89_scan_dir(ledger89 *l, int *has_active)
+static int led89_scan_marker_at(ledger89 *l, led89_fd fd, size_t part_index,
+                                int sealed, led89_u64 off, led89_u64 *expected)
+{
+    unsigned char mb[LED89_MARKER_SIZE];
+    led89_marker m;
+    int rc;
+
+    rc = l->io->pread(l->io->ctx, fd, mb, sizeof mb, off);
+    if (rc != LEDGER89_OK)
+    {
+        return LEDGER89_EIO;
+    }
+    rc = led89_marker_decode(mb, &m);
+    if (rc != LEDGER89_OK)
+    {
+        return LEDGER89_ECORRUPT;
+    }
+    if (led89_bytes_equal(m.uuid, l->id.bytes, 16u) == 0)
+    {
+        return LEDGER89_ECORRUPT;
+    }
+    if (m.file_id != l->parts[part_index].desc.file_id)
+    {
+        return LEDGER89_ECORRUPT;
+    }
+    if (sealed == 0)
+    {
+        if (m.revision != l->revision)
+        {
+            return LEDGER89_ECORRUPT;
+        }
+    }
+    if (m.end != *expected)
+    {
+        return LEDGER89_ECORRUPT;
+    }
+    return LEDGER89_OK;
+}
+
+static int led89_scan_batch_at(ledger89 *l, led89_fd fd, size_t part_index,
+                               led89_u64 *off, led89_u64 limit,
+                               led89_u64 *expected)
+{
+    unsigned char hb[LED89_BATCH_HEADER_SIZE];
+    unsigned char fb[LED89_BATCH_FOOTER_SIZE];
+    led89_batch_header bh;
+    led89_batch_footer bf;
+    int rc;
+
+    if (led89_at_add(*off, (led89_u64)LED89_MIN_BATCH_BYTES) > limit)
+    {
+        return LEDGER89_ECORRUPT;
+    }
+    rc = l->io->pread(l->io->ctx, fd, hb, sizeof hb, *off);
+    if (rc != LEDGER89_OK)
+    {
+        return LEDGER89_EIO;
+    }
+    rc = led89_batch_header_decode(hb, &bh);
+    if (rc != LEDGER89_OK)
+    {
+        return LEDGER89_ECORRUPT;
+    }
+    if (bh.first != *expected)
+    {
+        return LEDGER89_ECORRUPT;
+    }
+    if (bh.bytes > led89_u64_left(limit, *off))
+    {
+        return LEDGER89_ECORRUPT;
+    }
+    rc = l->io->pread(
+        l->io->ctx, fd, fb, sizeof fb,
+        led89_u64_left(led89_at_add(*off, bh.bytes), (led89_u64)sizeof fb));
+    if (rc != LEDGER89_OK)
+    {
+        return LEDGER89_EIO;
+    }
+    rc = led89_batch_footer_decode(fb, &bf);
+    if (rc != LEDGER89_OK)
+    {
+        return LEDGER89_ECORRUPT;
+    }
+    if (bf.count != bh.count)
+    {
+        return LEDGER89_ECORRUPT;
+    }
+    if (bf.last != led89_u64_left(led89_at_add(*expected, (led89_u64)bh.count),
+                                  (led89_u64)1))
+    {
+        return LEDGER89_ECORRUPT;
+    }
+    rc = led89_dir_add(l, part_index, *expected, (led89_u64)bh.count, *off,
+                       bh.bytes);
+    if (rc != LEDGER89_OK)
+    {
+        return rc;
+    }
+    *expected = led89_at_add(*expected, (led89_u64)bh.count);
+    *off = led89_at_add(*off, bh.bytes);
+    return LEDGER89_OK;
+}
+
+static int led89_scan_batches(ledger89 *l, led89_fd fd, size_t part_index,
+                              int sealed, led89_u64 limit, int have_chosen,
+                              led89_u64 chosen_off, led89_u64 *expected_out)
+{
+    led89_u64 off;
+    led89_u64 expected;
+    int rc;
+
+    off = (led89_u64)128;
+    expected = l->parts[part_index].desc.first;
+    while (off < limit)
+    {
+        unsigned char mag[8];
+
+        if (led89_at_add(off, (led89_u64)8) > limit)
+        {
+            return LEDGER89_ECORRUPT;
+        }
+        rc = l->io->pread(l->io->ctx, fd, mag, sizeof mag, off);
+        if (rc != LEDGER89_OK)
+        {
+            return LEDGER89_EIO;
+        }
+        if (led89_is_marker(mag) != 0)
+        {
+            if (led89_at_add(off, (led89_u64)LED89_MARKER_SIZE) > limit)
+            {
+                return LEDGER89_ECORRUPT;
+            }
+            rc =
+                led89_scan_marker_at(l, fd, part_index, sealed, off, &expected);
+            if (rc != LEDGER89_OK)
+            {
+                return rc;
+            }
+            off = led89_at_add(off, (led89_u64)LED89_MARKER_SIZE);
+            if (have_chosen != 0)
+            {
+                if (off ==
+                    led89_at_add(chosen_off, (led89_u64)LED89_MARKER_SIZE))
+                {
+                    break;
+                }
+            }
+        }
+        else if (led89_is_batch_header(mag) != 0)
+        {
+            rc = led89_scan_batch_at(l, fd, part_index, &off, limit, &expected);
+            if (rc != LEDGER89_OK)
+            {
+                return rc;
+            }
+        }
+        else
+        {
+            return LEDGER89_ECORRUPT;
+        }
+    }
+    if (have_chosen != 0)
+    {
+        if (off != led89_at_add(chosen_off, (led89_u64)LED89_MARKER_SIZE))
+        {
+            return LEDGER89_ECORRUPT;
+        }
+    }
+    else
+    {
+        if (off != limit)
+        {
+            return LEDGER89_ECORRUPT;
+        }
+    }
+    *expected_out = expected;
+    return LEDGER89_OK;
+}
+
+static int led89_rw_flags(void)
+{
+    return LED89_OPEN_READ | LED89_OPEN_WRITE;
+}
+
+static void led89_set_bytes(led89_part *p, led89_u64 v)
+{
+    p->bytes = v;
+}
+
+static int led89_scan_header(ledger89 *l, led89_fd fd, size_t part_index)
+{
+    unsigned char hdr[LED89_PART_HEADER_SIZE];
+    led89_part_header ph;
+    int rc;
+
+    rc = l->io->pread(l->io->ctx, fd, hdr, sizeof hdr, (led89_u64)0);
+    if (rc != LEDGER89_OK)
+    {
+        return LEDGER89_EIO;
+    }
+    rc = led89_part_header_decode(hdr, &ph);
+    if (rc != LEDGER89_OK)
+    {
+        return LEDGER89_ECORRUPT;
+    }
+    if (led89_bytes_equal(ph.uuid, l->id.bytes, 16u) == 0)
+    {
+        return LEDGER89_ECORRUPT;
+    }
+    if (ph.file_id != l->parts[part_index].desc.file_id)
+    {
+        return LEDGER89_ECORRUPT;
+    }
+    if (ph.first != l->parts[part_index].desc.first)
+    {
+        return LEDGER89_ECORRUPT;
+    }
+    return LEDGER89_OK;
+}
+
+static int led89_scan_baseline(ledger89 *l, led89_fd fd, size_t part_index,
+                               int sealed)
+{
+    unsigned char bm[LED89_MARKER_SIZE];
+    led89_marker baseline;
+    int rc;
+
+    rc = l->io->pread(l->io->ctx, fd, bm, sizeof bm,
+                      (led89_u64)LED89_PART_HEADER_SIZE);
+    if (rc != LEDGER89_OK)
+    {
+        return LEDGER89_EIO;
+    }
+    rc = led89_marker_decode(bm, &baseline);
+    if (rc != LEDGER89_OK)
+    {
+        return LEDGER89_ECORRUPT;
+    }
+    if (led89_bytes_equal(baseline.uuid, l->id.bytes, 16u) == 0)
+    {
+        return LEDGER89_ECORRUPT;
+    }
+    if (baseline.file_id != l->parts[part_index].desc.file_id)
+    {
+        return LEDGER89_ECORRUPT;
+    }
+    if (baseline.end != l->parts[part_index].desc.first)
+    {
+        return LEDGER89_ECORRUPT;
+    }
+    if (sealed == 0)
+    {
+        if (baseline.revision != l->revision)
+        {
+            return LEDGER89_ECORRUPT;
+        }
+    }
+    return LEDGER89_OK;
+}
+
+static int led89_scan_footer(ledger89 *l, led89_fd fd, size_t part_index,
+                             led89_u64 size, led89_sealed_footer *sf)
+{
+    unsigned char fbuf[LED89_SEALED_FOOTER_SIZE];
+    int rc;
+
+    if (size < (led89_u64)LED89_PART_HEADER_SIZE +
+                   (led89_u64)LED89_MARKER_SIZE +
+                   (led89_u64)LED89_SEALED_FOOTER_SIZE)
+    {
+        return LEDGER89_ECORRUPT;
+    }
+    rc =
+        l->io->pread(l->io->ctx, fd, fbuf, sizeof fbuf,
+                     led89_u64_left(size, (led89_u64)LED89_SEALED_FOOTER_SIZE));
+    if (rc != LEDGER89_OK)
+    {
+        return LEDGER89_EIO;
+    }
+    rc = led89_sealed_footer_decode(fbuf, sf);
+    if (rc != LEDGER89_OK)
+    {
+        return LEDGER89_ECORRUPT;
+    }
+    if (led89_bytes_equal(sf->uuid, l->id.bytes, 16u) == 0)
+    {
+        return LEDGER89_ECORRUPT;
+    }
+    if (sf->file_id != l->parts[part_index].desc.file_id)
+    {
+        return LEDGER89_ECORRUPT;
+    }
+    if (sf->first != l->parts[part_index].desc.first)
+    {
+        return LEDGER89_ECORRUPT;
+    }
+    if (sf->end != l->parts[part_index].desc.end)
+    {
+        return LEDGER89_ECORRUPT;
+    }
+    if (sf->records != led89_u64_left(sf->end, sf->first))
+    {
+        return LEDGER89_ECORRUPT;
+    }
+    return LEDGER89_OK;
+}
+
+static int led89_trim_active(ledger89 *l, led89_fd fd, led89_u64 size,
+                             led89_u64 stable)
+{
+    int rc;
+
+    if (stable >= size)
+    {
+        return LEDGER89_OK;
+    }
+    rc = l->io->truncate(l->io->ctx, fd, stable);
+    if (rc == LEDGER89_OK)
+    {
+        rc = l->io->sync(l->io->ctx, fd);
+    }
+    if (rc != LEDGER89_OK)
+    {
+        rc = led89_io_error(l, LEDGER89_EIO);
+        return rc;
+    }
+    return LEDGER89_OK;
+}
+
+static int led89_scan_sealed(ledger89 *l, led89_fd fd, size_t part_index,
+                             led89_u64 size, led89_sealed_footer *sf,
+                             led89_u64 *limit)
+{
+    int rc;
+
+    rc = led89_scan_footer(l, fd, part_index, size, sf);
+    if (rc != LEDGER89_OK)
+    {
+        return rc;
+    }
+    *limit = led89_u64_left(size, (led89_u64)LED89_SEALED_FOOTER_SIZE);
+    return LEDGER89_OK;
+}
+
+static int led89_scan_active(ledger89 *l, led89_fd fd, size_t part_index,
+                             led89_u64 size, led89_u64 *stable_bytes,
+                             led89_u64 *expected_out)
+{
+    led89_marker chosen;
+    led89_u64 chosen_off;
+    led89_u64 limit;
+    int rc;
+
+    rc = led89_find_last_marker(l, fd, size, &chosen, &chosen_off);
+    if (rc != LEDGER89_OK)
+    {
+        return LEDGER89_ECORRUPT;
+    }
+    limit = led89_at_add(chosen_off, (led89_u64)LED89_MARKER_SIZE);
+    *stable_bytes = limit;
+    rc = led89_scan_batches(l, fd, part_index, 0, limit, 1, chosen_off,
+                            expected_out);
+    if (rc != LEDGER89_OK)
+    {
+        return rc;
+    }
+    if (*expected_out != chosen.end)
+    {
+        return LEDGER89_ECORRUPT;
+    }
+    return LEDGER89_OK;
+}
+
+int led89_part_scan(ledger89 *l, size_t part_index, int sealed,
+                    led89_u64 *stable_bytes)
+{
+    led89_part *p;
+    led89_fd fd;
+    led89_u64 size;
+    led89_u64 limit;
+    led89_u64 expected;
+    led89_sealed_footer sf;
+    int flags;
+    int rc;
+
+    memset(&sf, 0, sizeof sf);
+    p = &l->parts[part_index];
+    flags = LED89_OPEN_READ;
+    if (l->writable != 0)
+    {
+        flags = led89_rw_flags();
+    }
+    rc = led89_part_open(l, p->desc.file_id, flags, &fd);
+    if (rc != LEDGER89_OK)
+    {
+        return rc;
+    }
+    rc = l->io->size(l->io->ctx, fd, &size);
+    if (rc == LEDGER89_OK)
+    {
+        if (size < (led89_u64)128)
+        {
+            rc = LEDGER89_ECORRUPT;
+        }
+    }
+    if (rc == LEDGER89_OK)
+    {
+        rc = led89_scan_header(l, fd, part_index);
+    }
+    if (rc == LEDGER89_OK)
+    {
+        rc = led89_scan_baseline(l, fd, part_index, sealed);
+    }
+    expected = (led89_u64)0;
+    limit = (led89_u64)0;
+    if (rc == LEDGER89_OK)
+    {
+        if (sealed != 0)
+        {
+            rc = led89_scan_sealed(l, fd, part_index, size, &sf, &limit);
+        }
+        else
+        {
+            rc = led89_scan_active(l, fd, part_index, size, stable_bytes,
+                                   &expected);
+        }
+    }
+    if (rc == LEDGER89_OK)
+    {
+        if (sealed != 0)
+        {
+            rc = led89_scan_batches(l, fd, part_index, 1, limit, 0,
+                                    (led89_u64)0, &expected);
+            if (rc == LEDGER89_OK)
+            {
+                if (expected != sf.end)
+                {
+                    rc = LEDGER89_ECORRUPT;
+                }
+            }
+        }
+    }
+    if (rc != LEDGER89_OK)
+    {
+        led89_close_quiet(l, fd);
+        return rc;
+    }
+    p->fd = fd;
+    p->open = 1;
+    p->bytes = size;
+    p->sealed = sealed;
+    if (sealed != 0)
+    {
+        led89_part_close(l, p);
+        return LEDGER89_OK;
+    }
+    p->desc.end = expected;
+    if (l->writable != 0)
+    {
+        rc = led89_trim_active(l, fd, size, *stable_bytes);
+        if (rc != LEDGER89_OK)
+        {
+            return rc;
+        }
+        led89_set_bytes(p, *stable_bytes);
+    }
+    return LEDGER89_OK;
+}
+
+int led89_clean_dir_for_create(ledger89 *l)
 {
     led89_dir *dir;
-    char name[LED89_DIR_NAME_MAX];
+    char name[LED89_NAME_MAX];
     int done;
     int rc;
 
-    *has_active = 0;
     rc = l->io->list_open(l->io->ctx, l->path, &dir);
     if (rc != LEDGER89_OK)
     {
@@ -201,727 +769,186 @@ static int led89_scan_dir(ledger89 *l, int *has_active)
         rc = l->io->list_next(l->io->ctx, dir, name, sizeof name, &done);
         if (rc != LEDGER89_OK)
         {
-            rc = led89_scan_dir_close(l, dir, rc);
+            led89_list_close_quiet(l, dir);
             return rc;
         }
-        if (done == 0)
+        if (done != 0)
         {
-            rc = led89_take_entry(l, name, has_active);
-            if (rc != LEDGER89_OK)
-            {
-                rc = led89_scan_dir_close(l, dir, rc);
-                return rc;
-            }
+            break;
         }
-    }
-    rc = l->io->list_close(l->io->ctx, dir);
-    return rc;
-}
-
-/* --- sealed segment validation ---------------------------------------- */
-
-static int led89_check_sealed_body(ledger89 *l, led89_fd fd, led89_segment *seg)
-{
-    unsigned char hdr[LED89_SEGMENT_HEADER_SIZE];
-    unsigned char foot[LED89_SEGMENT_FOOTER_SIZE];
-    led89_seg_header sh;
-    led89_seg_footer sf;
-    led89_u64 size;
-    int rc;
-
-    rc = l->io->size(l->io->ctx, fd, &size);
-    if (rc != LEDGER89_OK)
-    {
-        return rc;
-    }
-    if (size <
-        (led89_u64)(LED89_SEGMENT_HEADER_SIZE + LED89_SEGMENT_FOOTER_SIZE))
-    {
-        return LEDGER89_ERR_CORRUPT;
-    }
-    rc = l->io->pread(l->io->ctx, fd, hdr, sizeof hdr, 0u);
-    if (rc != LEDGER89_OK)
-    {
-        return rc;
-    }
-    rc = led89_seg_header_decode(hdr, &sh);
-    if (rc != LEDGER89_OK)
-    {
-        return LEDGER89_ERR_CORRUPT;
-    }
-    if (sh.flags != 0u)
-    {
-        return LEDGER89_ERR_CORRUPT;
-    }
-    seg->first_index = sh.first_index;
-    rc = l->io->pread(l->io->ctx, fd, foot, sizeof foot,
-                      size - (led89_u64)LED89_SEGMENT_FOOTER_SIZE);
-    if (rc != LEDGER89_OK)
-    {
-        return rc;
-    }
-    rc = led89_seg_footer_decode(foot, &sf);
-    if (rc != LEDGER89_OK)
-    {
-        return LEDGER89_ERR_CORRUPT;
-    }
-    if (sf.body_size != size - (led89_u64)(LED89_SEGMENT_HEADER_SIZE +
-                                           LED89_SEGMENT_FOOTER_SIZE))
-    {
-        return LEDGER89_ERR_CORRUPT;
-    }
-    if (sf.last_index < sh.first_index)
-    {
-        return LEDGER89_ERR_CORRUPT;
-    }
-    if (sf.record_count != sf.last_index - sh.first_index + 1u)
-    {
-        return LEDGER89_ERR_CORRUPT;
-    }
-    seg->last_index = sf.last_index;
-    return LEDGER89_OK;
-}
-
-static int led89_check_sealed(ledger89 *l, led89_segment *seg)
-{
-    led89_fd fd;
-    int rc;
-    int close_rc;
-
-    rc = led89_path_join(l->scratch, l->scratch_cap, l->path, seg->name);
-    if (rc != LEDGER89_OK)
-    {
-        return rc;
-    }
-    rc = l->io->open(l->io->ctx, l->scratch, LED89_OPEN_READ, &fd);
-    if (rc != LEDGER89_OK)
-    {
-        return rc;
-    }
-    rc = led89_check_sealed_body(l, fd, seg);
-    close_rc = l->io->close(l->io->ctx, fd);
-    (void)close_rc;
-    return rc;
-}
-
-static int led89_check_gap(const ledger89 *l, size_t i)
-{
-    if (l->segments[i].first_index != l->segments[i - 1u].last_index + 1u)
-    {
-        return LEDGER89_ERR_CORRUPT;
-    }
-    return LEDGER89_OK;
-}
-
-/* --- active segment --------------------------------------------------- */
-
-int led89_active_path(ledger89 *l)
-{
-    int rc;
-
-    rc =
-        led89_path_join(l->scratch, l->scratch_cap, l->path, LED89_ACTIVE_NAME);
-    return rc;
-}
-
-int led89_write_active_header(ledger89 *l, led89_u64 first)
-{
-    unsigned char hdr[LED89_SEGMENT_HEADER_SIZE];
-    led89_seg_header sh;
-    led89_fd fd;
-    int rc;
-
-    sh.first_index = first;
-    sh.flags = 0u;
-    led89_seg_header_encode(hdr, &sh);
-    led89_active_close(l);
-    rc = led89_path_join(l->scratch, l->scratch_cap, l->path, LED89_TMP_NAME);
-    if (rc != LEDGER89_OK)
-    {
-        return rc;
-    }
-    rc = l->io->open(l->io->ctx, l->scratch,
-                     LED89_OPEN_READ | LED89_OPEN_WRITE | LED89_OPEN_CREATE,
-                     &fd);
-    if (rc != LEDGER89_OK)
-    {
-        return rc;
-    }
-    rc = l->io->truncate(l->io->ctx, fd, 0u);
-    if (rc != LEDGER89_OK)
-    {
-        l->io->close(l->io->ctx, fd);
-        return rc;
-    }
-    rc = l->io->pwrite(l->io->ctx, fd, hdr, sizeof hdr, 0u);
-    if (rc != LEDGER89_OK)
-    {
-        l->io->close(l->io->ctx, fd);
-        return rc;
-    }
-    rc = l->io->sync(l->io->ctx, fd);
-    if (rc != LEDGER89_OK)
-    {
-        l->io->close(l->io->ctx, fd);
-        return rc;
-    }
-    rc = l->io->close(l->io->ctx, fd);
-    if (rc != LEDGER89_OK)
-    {
-        return rc;
-    }
-    rc = led89_install_tmp(l, LED89_ACTIVE_NAME);
-    if (rc != LEDGER89_OK)
-    {
-        return rc;
-    }
-    rc = led89_active_path(l);
-    if (rc != LEDGER89_OK)
-    {
-        return rc;
-    }
-    rc = l->io->open(l->io->ctx, l->scratch, LED89_OPEN_READ | LED89_OPEN_WRITE,
-                     &l->active_fd);
-    if (rc != LEDGER89_OK)
-    {
-        return rc;
-    }
-    l->active_open = 1;
-    return LEDGER89_OK;
-}
-
-static led89_u64 led89_or_one(led89_u64 v)
-{
-    if (v == 0u)
-    {
-        return 1u;
-    }
-    return v;
-}
-
-static int led89_active_repair(ledger89 *l, led89_u64 size, led89_u64 expected)
-{
-    int rc;
-
-    if (size == (led89_u64)LED89_SEGMENT_HEADER_SIZE)
-    {
-        rc = led89_write_active_header(l, led89_or_one(expected));
-        return rc;
-    }
-    return LEDGER89_ERR_CORRUPT;
-}
-
-static int led89_active_open(ledger89 *l, led89_u64 expected)
-{
-    unsigned char hdr[LED89_SEGMENT_HEADER_SIZE];
-    led89_seg_header sh;
-    led89_u64 size;
-    int rc;
-
-    rc = led89_active_path(l);
-    if (rc != LEDGER89_OK)
-    {
-        return rc;
-    }
-    rc = l->io->open(l->io->ctx, l->scratch,
-                     LED89_OPEN_READ | LED89_OPEN_WRITE | LED89_OPEN_CREATE,
-                     &l->active_fd);
-    if (rc != LEDGER89_OK)
-    {
-        return rc;
-    }
-    l->active_open = 1;
-    rc = l->io->size(l->io->ctx, l->active_fd, &size);
-    if (rc != LEDGER89_OK)
-    {
-        return rc;
-    }
-    if (size < (led89_u64)LED89_SEGMENT_HEADER_SIZE)
-    {
-        rc = led89_write_active_header(l, led89_or_one(expected));
-        return rc;
-    }
-    rc = l->io->pread(l->io->ctx, l->active_fd, hdr, sizeof hdr, 0u);
-    if (rc != LEDGER89_OK)
-    {
-        return rc;
-    }
-    rc = led89_seg_header_decode(hdr, &sh);
-    if (rc != LEDGER89_OK)
-    {
-        rc = led89_active_repair(l, size, expected);
-        return rc;
-    }
-    if (sh.flags != 0u)
-    {
-        return LEDGER89_ERR_CORRUPT;
-    }
-    if (expected == 0u)
-    {
-        return LEDGER89_OK;
-    }
-    if (sh.first_index == expected)
-    {
-        return LEDGER89_OK;
-    }
-    rc = led89_active_repair(l, size, expected);
-    return rc;
-}
-
-int led89_active_create(ledger89 *l, led89_u64 first)
-{
-    int rc;
-
-    rc = led89_write_active_header(l, first);
-    return rc;
-}
-
-static int led89_active_read_header(ledger89 *l)
-{
-    unsigned char hdr[LED89_SEGMENT_HEADER_SIZE];
-    led89_seg_header sh;
-    int rc;
-
-    rc = l->io->pread(l->io->ctx, l->active_fd, hdr, sizeof hdr, 0u);
-    if (rc != LEDGER89_OK)
-    {
-        return rc;
-    }
-    rc = led89_seg_header_decode(hdr, &sh);
-    if (rc != LEDGER89_OK)
-    {
-        return LEDGER89_ERR_CORRUPT;
-    }
-    l->active_first = sh.first_index;
-    return LEDGER89_OK;
-}
-
-/* --- active batch scan ------------------------------------------------ */
-
-typedef struct led89_scan_state
-{
-    led89_u64 at;
-    led89_u64 size;
-    led89_u64 last_valid;
-    led89_u64 last_index;
-    led89_u64 records;
-} led89_scan_state;
-
-static int led89_scan_chunk(const led89_io *io, led89_fd fd, unsigned char *buf,
-                            size_t cap, led89_u64 *at, led89_u64 *left,
-                            led89_u32 *rec_crc, led89_u32 *batch_crc)
-{
-    size_t chunk;
-    int rc;
-
-    chunk = led89_chunk_size(cap, *left);
-    rc = io->pread(io->ctx, fd, buf, chunk, *at);
-    if (rc != LEDGER89_OK)
-    {
-        return rc;
-    }
-    *rec_crc = led89_crc32c(*rec_crc, buf, chunk);
-    *batch_crc = led89_crc32c(*batch_crc, buf, chunk);
-    *at += (led89_u64)chunk;
-    *left -= (led89_u64)chunk;
-    return LEDGER89_OK;
-}
-
-static int led89_scan_record(const led89_io *io, led89_fd fd, led89_u64 *offset,
-                             led89_u64 end, led89_u32 *batch_crc,
-                             led89_rec_header *rh)
-{
-    unsigned char hdr[LED89_RECORD_HEADER_SIZE];
-    unsigned char buf[LED89_SCAN_BUF];
-    unsigned char crcbuf[LED89_RECORD_CRC_SIZE];
-    led89_u32 rec_crc;
-    led89_u32 stored;
-    led89_u64 left;
-    led89_u64 at;
-    int rc;
-
-    if (end - *offset < (led89_u64)LED89_RECORD_HEADER_SIZE)
-    {
-        return LEDGER89_ERR_CORRUPT;
-    }
-    rc = io->pread(io->ctx, fd, hdr, sizeof hdr, *offset);
-    if (rc != LEDGER89_OK)
-    {
-        return rc;
-    }
-    rc = led89_rec_header_decode(hdr, rh);
-    if (rc != LEDGER89_OK)
-    {
-        return LEDGER89_ERR_CORRUPT;
-    }
-    *batch_crc = led89_crc32c(*batch_crc, hdr, sizeof hdr);
-    rec_crc = led89_crc32c(0u, hdr, sizeof hdr);
-    at = *offset + (led89_u64)LED89_RECORD_HEADER_SIZE;
-    left = (led89_u64)rh->payload_size;
-    if (left > end - at)
-    {
-        return LEDGER89_ERR_CORRUPT;
-    }
-    if (end - at - left < (led89_u64)LED89_RECORD_CRC_SIZE)
-    {
-        return LEDGER89_ERR_CORRUPT;
-    }
-    while (left > 0u)
-    {
-        rc = led89_scan_chunk(io, fd, buf, sizeof buf, &at, &left, &rec_crc,
-                              batch_crc);
-        if (rc != LEDGER89_OK)
+        rc = led89_create_name_kind(name);
+        if (rc == 0)
         {
-            return rc;
+            continue;
         }
+        if (rc == 2)
+        {
+            led89_list_close_quiet(l, dir);
+            return LEDGER89_ECORRUPT;
+        }
+        led89_unlink_name(l, name);
     }
-    if (end - at < (led89_u64)LED89_RECORD_CRC_SIZE)
-    {
-        return LEDGER89_ERR_CORRUPT;
-    }
-    rc = io->pread(io->ctx, fd, crcbuf, sizeof crcbuf, at);
-    if (rc != LEDGER89_OK)
-    {
-        return rc;
-    }
-    *batch_crc = led89_crc32c(*batch_crc, crcbuf, sizeof crcbuf);
-    stored = led89_get_u32(crcbuf);
-    if (stored != rec_crc)
-    {
-        return LEDGER89_ERR_CORRUPT;
-    }
-    *offset = at + (led89_u64)LED89_RECORD_CRC_SIZE;
+    led89_list_close_quiet(l, dir);
     return LEDGER89_OK;
 }
 
-static int led89_scan_batch_record(const led89_io *io, led89_fd fd,
-                                   led89_u64 *at, led89_u64 batch_end,
-                                   led89_u64 *expect, led89_u64 *last_seen,
-                                   led89_u32 *bcrc)
+int led89_create_ledger(ledger89 *l)
 {
-    led89_rec_header rh;
+    led89_manifest m;
+    size_t idx;
     int rc;
 
-    rc = led89_scan_record(io, fd, at, batch_end, bcrc, &rh);
+    rc = l->io->entropy(l->io->ctx, l->id.bytes, 16u);
+    if (rc != LEDGER89_OK)
+    {
+        return LEDGER89_EIO;
+    }
+    l->revision = (led89_u64)0;
+    l->first = (led89_u64)1;
+    l->stable_end = (led89_u64)1;
+    l->end = (led89_u64)1;
+    l->generation = (led89_u64)1;
+    l->next_file_id = (led89_u64)2;
+    rc = led89_part_create(l, (led89_u64)1, (led89_u64)1, (led89_u64)0, &idx);
     if (rc != LEDGER89_OK)
     {
         return rc;
     }
-    if (rh.index != *expect)
+    l->active_index = idx;
+    m.generation = (led89_u64)1;
+    memcpy(m.uuid, l->id.bytes, 16u);
+    m.revision = (led89_u64)0;
+    m.first = (led89_u64)1;
+    m.sealed_count = 0u;
+    m.sealed = NULL;
+    m.active = l->parts[idx].desc;
+    rc = led89_manifest_publish(l, &m);
+    if (rc == LEDGER89_OK)
     {
-        return LEDGER89_ERR_CORRUPT;
+        rc = led89_current_publish(l, (led89_u64)1);
     }
-    *expect += 1u;
-    *last_seen = rh.index;
-    return LEDGER89_OK;
-}
-
-static int led89_scan_footer(const led89_io *io, led89_fd fd, led89_u64 at,
-                             const led89_batch_header *bh, led89_u64 last_seen,
-                             led89_u32 bcrc)
-{
-    unsigned char foot[LED89_BATCH_FOOTER_SIZE];
-    led89_batch_footer bf;
-    led89_u32 crc;
-    int rc;
-
-    rc = io->pread(io->ctx, fd, foot, sizeof foot, at);
     if (rc != LEDGER89_OK)
     {
+        rc = led89_io_error(l, rc);
         return rc;
     }
-    rc = led89_batch_footer_decode(foot, &bf);
-    if (rc != LEDGER89_OK)
-    {
-        return LEDGER89_ERR_CORRUPT;
-    }
-    if (bf.record_count != bh->record_count)
-    {
-        return LEDGER89_ERR_CORRUPT;
-    }
-    if (bf.last_index != last_seen)
-    {
-        return LEDGER89_ERR_CORRUPT;
-    }
-    crc = led89_crc32c(bcrc, foot, 16u);
-    if (crc != bf.crc)
-    {
-        return LEDGER89_ERR_CORRUPT;
-    }
     return LEDGER89_OK;
 }
 
-int led89_scan_batch(const led89_io *io, led89_fd fd, led89_u64 offset,
-                     led89_u64 end, led89_u64 *next, led89_u64 *first,
-                     led89_u64 *last, led89_u32 *count)
+static led89_u64 led89_max_id(led89_u64 a, led89_u64 b)
 {
-    unsigned char hdr[LED89_BATCH_HEADER_SIZE];
-    led89_batch_header bh;
-    led89_u64 at;
-    led89_u64 expect;
-    led89_u64 last_seen;
-    led89_u64 batch_end;
-    led89_u32 bcrc;
+    if (a > b)
+    {
+        return a;
+    }
+    return b;
+}
+
+static led89_u64 led89_max_ref_id(const led89_manifest *m)
+{
+    led89_u64 max_id;
     led89_u32 i;
-    int rc;
 
-    if (end - offset < (led89_u64)LED89_BATCH_HEADER_SIZE)
+    max_id = m->active.file_id;
+    for (i = 0u; i < m->sealed_count; ++i)
     {
-        return LEDGER89_ERR_CORRUPT;
+        max_id = led89_max_id(max_id, m->sealed[i].file_id);
     }
-    rc = io->pread(io->ctx, fd, hdr, sizeof hdr, offset);
-    if (rc != LEDGER89_OK)
-    {
-        return rc;
-    }
-    rc = led89_batch_header_decode(hdr, &bh);
-    if (rc != LEDGER89_OK)
-    {
-        return LEDGER89_ERR_CORRUPT;
-    }
-    if (bh.batch_bytes > end - offset)
-    {
-        return LEDGER89_ERR_CORRUPT;
-    }
-    batch_end = offset + bh.batch_bytes;
-    bcrc = led89_crc32c(0u, hdr, sizeof hdr);
-    at = offset + (led89_u64)LED89_BATCH_HEADER_SIZE;
-    expect = bh.first_index;
-    last_seen = bh.first_index;
-    for (i = 0u; i < bh.record_count; ++i)
-    {
-        rc = led89_scan_batch_record(io, fd, &at, batch_end, &expect,
-                                     &last_seen, &bcrc);
-        if (rc != LEDGER89_OK)
-        {
-            return rc;
-        }
-    }
-    if (at != batch_end - (led89_u64)LED89_BATCH_FOOTER_SIZE)
-    {
-        return LEDGER89_ERR_CORRUPT;
-    }
-    rc = led89_scan_footer(io, fd, at, &bh, last_seen, bcrc);
-    if (rc != LEDGER89_OK)
-    {
-        return rc;
-    }
-    *next = batch_end;
-    *first = bh.first_index;
-    *last = last_seen;
-    *count = bh.record_count;
-    return LEDGER89_OK;
+    return max_id;
 }
 
-static int led89_try_batch(const led89_io *io, led89_fd fd, led89_u64 at,
-                           led89_u64 end, int *found)
+static void led89_set_next_id(ledger89 *l, const led89_manifest *m)
 {
-    unsigned char magic[4];
-    led89_u64 next;
-    led89_u64 first;
-    led89_u64 last;
-    led89_u32 count;
-    int rc;
+    led89_u64 max_id;
 
-    rc = io->pread(io->ctx, fd, magic, sizeof magic, at);
-    if (rc != LEDGER89_OK)
-    {
-        return rc;
-    }
-    if (led89_is_batch_header(magic) == 0)
-    {
-        return LEDGER89_OK;
-    }
-    rc = led89_scan_batch(io, fd, at, end, &next, &first, &last, &count);
-    if (rc == LEDGER89_OK)
-    {
-        *found = 1;
-        return LEDGER89_OK;
-    }
-    if (rc == LEDGER89_ERR_CORRUPT)
-    {
-        return LEDGER89_OK;
-    }
-    return rc;
+    max_id = led89_max_ref_id(m);
+    l->next_file_id = led89_u64_inc(max_id);
 }
 
-static int led89_find_valid_batch(const led89_io *io, led89_fd fd,
-                                  led89_u64 start, led89_u64 end, int *found)
+static void led89_set_part(led89_part *p, const led89_part_desc *d, int sealed)
 {
-    led89_u64 at;
-    int rc;
-
-    *found = 0;
-    at = start;
-    while (at + 4u <= end)
-    {
-        rc = led89_try_batch(io, fd, at, end, found);
-        if (rc != LEDGER89_OK)
-        {
-            return rc;
-        }
-        if (*found != 0)
-        {
-            return LEDGER89_OK;
-        }
-        ++at;
-    }
-    return LEDGER89_OK;
-}
-
-static int led89_scan_torn(ledger89 *l, led89_scan_state *s, int *done)
-{
-    int found;
-    int rc;
-
-    rc = led89_find_valid_batch(l->io, l->active_fd, s->at + 1u, s->size,
-                                &found);
-    if (rc != LEDGER89_OK)
-    {
-        return rc;
-    }
-    if (found != 0)
-    {
-        return LEDGER89_ERR_CORRUPT;
-    }
-    rc = l->io->truncate(l->io->ctx, l->active_fd, s->last_valid);
-    if (rc != LEDGER89_OK)
-    {
-        return rc;
-    }
-    rc = l->io->sync(l->io->ctx, l->active_fd);
-    if (rc != LEDGER89_OK)
-    {
-        return rc;
-    }
-    *done = 1;
-    return LEDGER89_OK;
-}
-
-static int led89_scan_accept(led89_scan_state *s, led89_u64 first,
-                             led89_u64 last, led89_u32 count, led89_u64 next)
-{
-    if (first != s->last_index + 1u)
-    {
-        return LEDGER89_ERR_CORRUPT;
-    }
-    s->last_index = last;
-    s->records += (led89_u64)count;
-    s->at = next;
-    s->last_valid = next;
-    return LEDGER89_OK;
-}
-
-static int led89_scan_next_batch(ledger89 *l, led89_scan_state *s, int *done)
-{
-    led89_u64 next;
-    led89_u64 first;
-    led89_u64 last;
-    led89_u32 count;
-    int rc;
-
-    *done = 0;
-    rc = led89_scan_batch(l->io, l->active_fd, s->at, s->size, &next, &first,
-                          &last, &count);
-    if (rc == LEDGER89_OK)
-    {
-        rc = led89_scan_accept(s, first, last, count, next);
-        return rc;
-    }
-    if (rc == LEDGER89_ERR_CORRUPT)
-    {
-        rc = led89_scan_torn(l, s, done);
-        return rc;
-    }
-    return rc;
-}
-
-static int led89_scan_active(ledger89 *l)
-{
-    led89_scan_state s;
-    int done;
-    int rc;
-
-    rc = l->io->size(l->io->ctx, l->active_fd, &s.size);
-    if (rc != LEDGER89_OK)
-    {
-        return rc;
-    }
-    s.at = (led89_u64)LED89_SEGMENT_HEADER_SIZE;
-    s.last_valid = s.at;
-    s.last_index = l->active_first - 1u;
-    s.records = 0u;
-    done = 0;
-    while (done == 0)
-    {
-        if (s.at >= s.size)
-        {
-            done = 1;
-        }
-        else
-        {
-            rc = led89_scan_next_batch(l, &s, &done);
-            if (rc != LEDGER89_OK)
-            {
-                return rc;
-            }
-        }
-    }
-    l->active_offset = s.last_valid;
-    l->active_records = s.records;
-    l->last_index = s.last_index;
-    return LEDGER89_OK;
+    p->desc = *d;
+    p->sealed = sealed;
+    p->open = 0;
+    p->fd = -1;
+    p->bytes = (led89_u64)0;
 }
 
 int led89_recover(ledger89 *l)
 {
-    int has_active;
+    led89_current cur;
+    led89_manifest m;
+    led89_u64 stable;
     size_t i;
     int rc;
 
-    rc = led89_scan_dir(l, &has_active);
+    rc = led89_current_read(l, &cur);
     if (rc != LEDGER89_OK)
     {
         return rc;
     }
-    (void)has_active;
-    for (i = 0u; i < l->segment_count; ++i)
+    rc = led89_manifest_read(l, cur.generation, &m);
+    if (rc == LEDGER89_ENOENT)
     {
-        rc = led89_check_sealed(l, &l->segments[i]);
+        return LEDGER89_ECORRUPT;
+    }
+    if (rc != LEDGER89_OK)
+    {
+        return rc;
+    }
+    if (m.generation != cur.generation)
+    {
+        led89_manifest_free(&m);
+        return LEDGER89_ECORRUPT;
+    }
+    memcpy(l->id.bytes, m.uuid, 16u);
+    l->revision = m.revision;
+    l->first = m.first;
+    l->generation = m.generation;
+    rc = led89_handle_reserve_parts(l, (size_t)m.sealed_count + 1u);
+    if (rc != LEDGER89_OK)
+    {
+        led89_manifest_free(&m);
+        return rc;
+    }
+    for (i = 0u; i < (size_t)m.sealed_count; ++i)
+    {
+        led89_set_part(&l->parts[i], &m.sealed[i], 1);
+    }
+    led89_set_part(&l->parts[m.sealed_count], &m.active, 0);
+    l->active_index = (size_t)m.sealed_count;
+    l->part_count = (size_t)m.sealed_count + 1u;
+    for (i = 0u; i < (size_t)m.sealed_count; ++i)
+    {
+        rc = led89_part_scan(l, i, 1, &stable);
         if (rc != LEDGER89_OK)
         {
+            led89_manifest_free(&m);
+            return led89_scan_error(rc);
+        }
+    }
+    rc = led89_part_scan(l, l->active_index, 0, &stable);
+    if (rc != LEDGER89_OK)
+    {
+        led89_manifest_free(&m);
+        return led89_scan_error(rc);
+    }
+    l->stable_end = l->parts[l->active_index].desc.end;
+    l->end = l->stable_end;
+    l->dirty = 0;
+    if (l->writable != 0)
+    {
+        rc = led89_gc_orphans(l, &m);
+        if (rc != LEDGER89_OK)
+        {
+            led89_manifest_free(&m);
             return rc;
         }
     }
-    led89_segments_sort(l);
-    for (i = 1u; i < l->segment_count; ++i)
+    else
     {
-        rc = led89_check_gap(l, i);
-        if (rc != LEDGER89_OK)
-        {
-            return rc;
-        }
+        led89_set_next_id(l, &m);
     }
-    rc = led89_active_open(l, led89_segment_next(l));
-    if (rc != LEDGER89_OK)
-    {
-        return rc;
-    }
-    rc = led89_active_read_header(l);
-    if (rc != LEDGER89_OK)
-    {
-        return rc;
-    }
-    l->base = led89_base_of(l);
-    rc = led89_scan_active(l);
-    if (rc != LEDGER89_OK)
-    {
-        return rc;
-    }
-    l->first_index = l->base;
-    l->last_index = led89_fix_last(l);
-    /* Bytes recovered from a previous incarnation may still be only in the
-     * page cache; force the next sync to fsync the active segment. */
-    l->dirty = 1;
+    led89_manifest_free(&m);
     return LEDGER89_OK;
 }

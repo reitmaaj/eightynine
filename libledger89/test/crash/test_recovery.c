@@ -1,167 +1,190 @@
-/* test_recovery.c - R01..R08: crash recovery, torn tails, and batch
- * atomicity over the deterministic model filesystem. */
+/* test_recovery.c - targeted recovery outcomes over the model filesystem. */
 
 #include <string.h>
 
+#include "crash_util.h"
 #include "test.h"
 
-#include "model_fs.h"
-
-static int open_model(mfs *fs, led89_io *io, ledger89 **l)
-{
-    ledger89_config cfg;
-
-    mfs_bind(io, fs);
-    memset(&cfg, 0, sizeof cfg);
-    cfg.path = "ledger";
-    cfg.max_segment_bytes = 4096ul;
-    cfg.max_segment_records = 0ul;
-    *l = NULL;
-    return led89_open_io(l, &cfg, io);
-}
-
-static int append_one(ledger89 *l, ledger89_index index, unsigned long tag)
-{
-    ledger89_record r;
-    unsigned char data[1];
-
-    data[0] = 'x';
-    r.index = index;
-    r.tag = tag;
-    r.data = data;
-    r.size = 1u;
-    return ledger89_append(l, &r, 1u);
-}
-
-static int read_one(ledger89 *l, ledger89_index index)
-{
-    ledger89_view v;
-
-    return ledger89_read(l, index, &v);
-}
-
-int main(void)
+static void test_unsynced_tail_discarded(void)
 {
     mfs fs;
     led89_io io;
     ledger89 *l;
-    mfs_file *f;
+    ledger89_state st;
 
-    /* R02: a process crash keeps the page cache, so an unsynced append
-     * survives. */
     mfs_init(&fs);
-    CHECK_EQ(open_model(&fs, &io, &l), LEDGER89_OK);
-    CHECK_EQ(append_one(l, 1ul, 1ul), LEDGER89_OK);
-    CHECK_EQ(ledger89_sync(l), LEDGER89_OK);
-    CHECK_EQ(append_one(l, 2ul, 2ul), LEDGER89_OK);
-    ledger89_close(l);
-    CHECK_EQ(open_model(&fs, &io, &l), LEDGER89_OK);
-    CHECK_EQ(ledger89_last_index(l), 2ul);
-    ledger89_close(l);
-    mfs_destroy(&fs);
-
-    /* R01: power loss discards the unsynced append. */
-    mfs_init(&fs);
-    CHECK_EQ(open_model(&fs, &io, &l), LEDGER89_OK);
-    CHECK_EQ(append_one(l, 1ul, 1ul), LEDGER89_OK);
-    CHECK_EQ(ledger89_sync(l), LEDGER89_OK);
-    CHECK_EQ(append_one(l, 2ul, 2ul), LEDGER89_OK);
-    ledger89_close(l);
+    CHECK_EQ(cu_open(&fs, &io, &l), LEDGER89_OK);
+    CHECK(cu_fill(l, 3ul));
+    CHECK_EQ(ledger89_sync(l, NULL), LEDGER89_OK);
+    CHECK_EQ(cu_append(l, 4ul), LEDGER89_OK);
     mfs_crash(&fs);
-    CHECK_EQ(open_model(&fs, &io, &l), LEDGER89_OK);
-    CHECK_EQ(ledger89_last_index(l), 1ul);
-    CHECK_EQ(read_one(l, 1ul), LEDGER89_OK);
-    CHECK_EQ(read_one(l, 2ul), LEDGER89_ERR_NOTFOUND);
-    /* R08: append after recovery continues contiguously and syncs. */
-    CHECK_EQ(append_one(l, 2ul, 22ul), LEDGER89_OK);
-    CHECK_EQ(ledger89_sync(l), LEDGER89_OK);
     ledger89_close(l);
+    CHECK_EQ(cu_open(&fs, &io, &l), LEDGER89_OK);
+    CHECK_EQ(ledger89_get_state(l, &st), LEDGER89_OK);
+    CHECK_U64(st.first, test_u64(1));
+    CHECK_U64(st.stable_end, test_u64(4));
+    CHECK_U64(st.end, test_u64(4));
+    CHECK(cu_check_range(l, 1ul, 3ul));
+    ledger89_close(l);
+    mfs_destroy(&fs);
+}
+
+static void test_complete_but_unsynced_batch(void)
+{
+    mfs fs;
+    led89_io io;
+    ledger89 *l;
+    ledger89_state st;
+
+    mfs_init(&fs);
+    CHECK_EQ(cu_open(&fs, &io, &l), LEDGER89_OK);
+    CHECK(cu_fill(l, 3ul));
+    CHECK_EQ(ledger89_sync(l, NULL), LEDGER89_OK);
+    CHECK(cu_fill(l, 0ul));
+    CHECK_EQ(cu_append(l, 4ul), LEDGER89_OK);
+    CHECK_EQ(cu_append(l, 5ul), LEDGER89_OK);
+    /* Power loss: both batches were complete in the page cache. */
     mfs_crash(&fs);
-    CHECK_EQ(open_model(&fs, &io, &l), LEDGER89_OK);
-    CHECK_EQ(ledger89_last_index(l), 2ul);
+    ledger89_close(l);
+    CHECK_EQ(cu_open(&fs, &io, &l), LEDGER89_OK);
+    CHECK_EQ(ledger89_get_state(l, &st), LEDGER89_OK);
+    CHECK_U64(st.end, test_u64(4));
+    CHECK_U64(st.stable_end, test_u64(4));
     ledger89_close(l);
     mfs_destroy(&fs);
+}
 
-    /* R03: a torn append never becomes visible; recovery truncates it. */
-    mfs_init(&fs);
-    CHECK_EQ(open_model(&fs, &io, &l), LEDGER89_OK);
-    CHECK_EQ(append_one(l, 1ul, 1ul), LEDGER89_OK);
-    CHECK_EQ(ledger89_sync(l), LEDGER89_OK);
-    fs.torn_bytes = 10;
-    CHECK_EQ(append_one(l, 2ul, 2ul), LEDGER89_ERR_IO);
-    CHECK_EQ(append_one(l, 2ul, 2ul), LEDGER89_ERR_FAULTED);
-    ledger89_close(l);
-    CHECK_EQ(open_model(&fs, &io, &l), LEDGER89_OK);
-    CHECK_EQ(ledger89_last_index(l), 1ul);
-    CHECK_EQ(read_one(l, 2ul), LEDGER89_ERR_NOTFOUND);
-    CHECK_EQ(mfs_live_size(&fs, "ledger/active.seg"), 117u);
-    ledger89_close(l);
-    mfs_destroy(&fs);
+static void test_framing_corruption_fails_open(void)
+{
+    mfs fs;
+    led89_io io;
+    ledger89 *l;
 
-    /* R04: arbitrary bytes after the last batch are a torn tail. */
     mfs_init(&fs);
-    CHECK_EQ(open_model(&fs, &io, &l), LEDGER89_OK);
-    CHECK_EQ(append_one(l, 1ul, 1ul), LEDGER89_OK);
-    CHECK_EQ(ledger89_sync(l), LEDGER89_OK);
+    CHECK_EQ(cu_open(&fs, &io, &l), LEDGER89_OK);
+    CHECK(cu_fill(l, 3ul));
+    CHECK_EQ(ledger89_sync(l, NULL), LEDGER89_OK);
+    mfs_crash(&fs);
     ledger89_close(l);
-    CHECK(mfs_insert(&fs, "ledger/active.seg",
-                     mfs_live_size(&fs, "ledger/active.seg"),
-                     "\xFF\xFF\xFF\xFF", 4u) != 0);
-    CHECK_EQ(open_model(&fs, &io, &l), LEDGER89_OK);
-    CHECK_EQ(ledger89_last_index(l), 1ul);
-    CHECK_EQ(mfs_live_size(&fs, "ledger/active.seg"), 117u);
-    ledger89_close(l);
-    mfs_destroy(&fs);
-
-    /* R05: arbitrary bytes between complete batches are corruption. */
-    mfs_init(&fs);
-    CHECK_EQ(open_model(&fs, &io, &l), LEDGER89_OK);
-    CHECK_EQ(append_one(l, 1ul, 1ul), LEDGER89_OK);
-    CHECK_EQ(append_one(l, 2ul, 2ul), LEDGER89_OK);
-    CHECK_EQ(ledger89_sync(l), LEDGER89_OK);
-    ledger89_close(l);
-    CHECK(mfs_insert(&fs, "ledger/active.seg", 117u, "\xFF\xFF\xFF\xFF", 4u) !=
-          0);
-    CHECK_EQ(open_model(&fs, &io, &l), LEDGER89_ERR_CORRUPT);
+    /* Flip the batch header magic inside the stable prefix. */
+    CHECK(mfs_poke(&fs, "ledger/part.0000000000000001", 128u,
+                   (unsigned char)'X') != 0);
+    l = NULL;
+    CHECK_EQ(cu_open(&fs, &io, &l), LEDGER89_ECORRUPT);
     CHECK(l == NULL);
     mfs_destroy(&fs);
+}
 
-    /* R06: a torn active header is recreated as an empty ledger. */
+static void test_payload_corruption_fails_read(void)
+{
+    mfs fs;
+    led89_io io;
+    ledger89 *l;
+    unsigned char buf[2];
+    size_t size;
+
     mfs_init(&fs);
-    CHECK_EQ(open_model(&fs, &io, &l), LEDGER89_OK);
-    CHECK_EQ(append_one(l, 1ul, 1ul), LEDGER89_OK);
-    CHECK_EQ(ledger89_sync(l), LEDGER89_OK);
+    CHECK_EQ(cu_open(&fs, &io, &l), LEDGER89_OK);
+    CHECK(cu_fill(l, 3ul));
+    CHECK_EQ(ledger89_sync(l, NULL), LEDGER89_OK);
+    mfs_crash(&fs);
     ledger89_close(l);
-    f = mfs_find(&fs, "ledger/active.seg");
-    CHECK(f != NULL);
-    if (f != NULL)
-    {
-        f->live_size = 10u;
-    }
-    CHECK_EQ(open_model(&fs, &io, &l), LEDGER89_OK);
-    CHECK_EQ(ledger89_last_index(l), 0ul);
-    CHECK_EQ(mfs_live_size(&fs, "ledger/active.seg"), 32u);
+    /* Corrupt one payload byte: framing still validates at open. */
+    CHECK(mfs_poke(&fs, "ledger/part.0000000000000001", 164u,
+                   (unsigned char)'Z') != 0);
+    CHECK_EQ(cu_open(&fs, &io, &l), LEDGER89_OK);
+    CHECK_EQ(ledger89_read(l, test_u64(1), buf, sizeof buf, &size),
+             LEDGER89_ECORRUPT);
     ledger89_close(l);
     mfs_destroy(&fs);
+}
 
-    /* R07: recovery is idempotent. */
+static void test_missing_manifest(void)
+{
+    mfs fs;
+    led89_io io;
+    ledger89 *l;
+    int rc;
+
     mfs_init(&fs);
-    CHECK_EQ(open_model(&fs, &io, &l), LEDGER89_OK);
-    CHECK_EQ(append_one(l, 1ul, 1ul), LEDGER89_OK);
-    CHECK_EQ(append_one(l, 2ul, 2ul), LEDGER89_OK);
-    CHECK_EQ(ledger89_sync(l), LEDGER89_OK);
+    CHECK_EQ(cu_open(&fs, &io, &l), LEDGER89_OK);
+    CHECK(cu_fill(l, 2ul));
+    CHECK_EQ(ledger89_sync(l, NULL), LEDGER89_OK);
+    mfs_crash(&fs);
     ledger89_close(l);
-    {
-        int i;
-
-        for (i = 0; i < 3; ++i)
-        {
-            CHECK_EQ(open_model(&fs, &io, &l), LEDGER89_OK);
-            CHECK_EQ(ledger89_last_index(l), 2ul);
-            ledger89_close(l);
-        }
-    }
+    rc = io.unlink(io.ctx, "ledger/MANIFEST.0000000000000001");
+    CHECK_EQ(rc, LEDGER89_OK);
+    l = NULL;
+    CHECK_EQ(cu_open(&fs, &io, &l), LEDGER89_ECORRUPT);
     mfs_destroy(&fs);
+}
 
+static void test_orphan_manifest_ignored(void)
+{
+    mfs fs;
+    led89_io io;
+    ledger89 *l;
+    mfs_file *m;
+    ledger89_state st;
+    int rc;
+
+    mfs_init(&fs);
+    CHECK_EQ(cu_open(&fs, &io, &l), LEDGER89_OK);
+    CHECK(cu_fill(l, 2ul));
+    CHECK_EQ(ledger89_sync(l, NULL), LEDGER89_OK);
+    mfs_crash(&fs);
+    ledger89_close(l);
+
+    m = mfs_find(&fs, "ledger/MANIFEST.0000000000000001");
+    CHECK(m != NULL);
+    if (m != NULL)
+    {
+        rc = mfs_put(&fs, "ledger/MANIFEST.0000000000000002", m->live_data,
+                     m->live_size);
+        CHECK(rc != 0);
+    }
+    CHECK_EQ(cu_open(&fs, &io, &l), LEDGER89_OK);
+    CHECK_EQ(ledger89_get_state(l, &st), LEDGER89_OK);
+    CHECK_U64(st.end, test_u64(3));
+    ledger89_close(l);
+    mfs_destroy(&fs);
+}
+
+static void test_idempotent_recovery(void)
+{
+    mfs fs;
+    led89_io io;
+    ledger89 *l;
+    ledger89_state st1;
+    ledger89_state st2;
+
+    mfs_init(&fs);
+    CHECK_EQ(cu_open(&fs, &io, &l), LEDGER89_OK);
+    CHECK(cu_fill(l, 2ul));
+    CHECK_EQ(ledger89_sync(l, NULL), LEDGER89_OK);
+    CHECK_EQ(cu_append(l, 3ul), LEDGER89_OK);
+    mfs_crash(&fs);
+    ledger89_close(l);
+    CHECK_EQ(cu_open(&fs, &io, &l), LEDGER89_OK);
+    CHECK_EQ(ledger89_get_state(l, &st1), LEDGER89_OK);
+    ledger89_close(l);
+    CHECK_EQ(cu_open(&fs, &io, &l), LEDGER89_OK);
+    CHECK_EQ(ledger89_get_state(l, &st2), LEDGER89_OK);
+    CHECK_U64(st1.end, st2.end);
+    CHECK_U64(st1.stable_end, st2.stable_end);
+    CHECK_U64(st1.first, st2.first);
+    ledger89_close(l);
+    mfs_destroy(&fs);
+}
+
+int main(void)
+{
+    test_unsynced_tail_discarded();
+    test_complete_but_unsynced_batch();
+    test_framing_corruption_fails_open();
+    test_payload_corruption_fails_read();
+    test_missing_manifest();
+    test_orphan_manifest_ignored();
+    test_idempotent_recovery();
     TEST_END;
 }

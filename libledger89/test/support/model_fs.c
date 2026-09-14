@@ -491,24 +491,24 @@ static int mfs_open(void *ctx, const char *path, int flags, led89_fd *fd)
     fs = (mfs *)ctx;
     if (mfs_maybe_crash(fs, MFS_OP_OPEN) != 0)
     {
-        return LEDGER89_ERR_IO;
+        return LEDGER89_EIO;
     }
     if (fs->fail_open > 0)
     {
         --fs->fail_open;
-        return LEDGER89_ERR_IO;
+        return LEDGER89_EIO;
     }
     f = mfs_lookup_live(fs, path);
     if (f == NULL)
     {
         if ((flags & LED89_OPEN_CREATE) == 0)
         {
-            return LEDGER89_ERR_IO;
+            return LEDGER89_ENOENT;
         }
         f = mfs_alloc(fs, path);
         if (f == NULL)
         {
-            return LEDGER89_ERR_NOMEM;
+            return LEDGER89_ENOMEM;
         }
     }
     *fd = (led89_fd)(f - fs->files) + 1;
@@ -523,12 +523,12 @@ static int mfs_close(void *ctx, led89_fd fd)
     (void)fd;
     if (mfs_maybe_crash(fs, MFS_OP_CLOSE) != 0)
     {
-        return LEDGER89_ERR_IO;
+        return LEDGER89_EIO;
     }
     if (fs->fail_close > 0)
     {
         --fs->fail_close;
-        return LEDGER89_ERR_IO;
+        return LEDGER89_EIO;
     }
     return LEDGER89_OK;
 }
@@ -555,29 +555,29 @@ static int mfs_pread(void *ctx, led89_fd fd, void *buf, size_t len,
     fs = (mfs *)ctx;
     if (mfs_maybe_crash(fs, MFS_OP_PREAD) != 0)
     {
-        return LEDGER89_ERR_IO;
+        return LEDGER89_EIO;
     }
     if (fs->fail_pread > 0)
     {
         --fs->fail_pread;
-        return LEDGER89_ERR_IO;
+        return LEDGER89_EIO;
     }
     f = mfs_by_fd(fs, fd);
     if (f == NULL)
     {
-        return LEDGER89_ERR_IO;
+        return LEDGER89_EIO;
     }
     if (f->live == 0)
     {
-        return LEDGER89_ERR_IO;
+        return LEDGER89_EIO;
     }
     if (offset > (led89_u64)f->live_size)
     {
-        return LEDGER89_ERR_IO;
+        return LEDGER89_EIO;
     }
     if (offset + (led89_u64)len > (led89_u64)f->live_size)
     {
-        return LEDGER89_ERR_IO;
+        return LEDGER89_EIO;
     }
     if (len > 0u)
     {
@@ -598,20 +598,20 @@ static int mfs_pwrite(void *ctx, led89_fd fd, const void *buf, size_t len,
     if (fs->fail_pwrite > 0)
     {
         --fs->fail_pwrite;
-        return LEDGER89_ERR_IO;
+        return LEDGER89_EIO;
     }
     f = mfs_by_fd(fs, fd);
     if (f == NULL)
     {
-        return LEDGER89_ERR_IO;
+        return LEDGER89_EIO;
     }
     if (f->live == 0)
     {
-        return LEDGER89_ERR_IO;
+        return LEDGER89_EIO;
     }
     if (offset > (led89_u64)((size_t)-1))
     {
-        return LEDGER89_ERR_IO;
+        return LEDGER89_EIO;
     }
     crash = mfs_maybe_crash(fs, MFS_OP_PWRITE);
     if (crash != 0)
@@ -622,20 +622,20 @@ static int mfs_pwrite(void *ctx, led89_fd fd, const void *buf, size_t len,
             if (mfs_write_at(&f->live_data, &f->live_size, (size_t)offset,
                              (const unsigned char *)buf, n) == 0)
             {
-                return LEDGER89_ERR_NOMEM;
+                return LEDGER89_ENOMEM;
             }
         }
-        return LEDGER89_ERR_IO;
+        return LEDGER89_EIO;
     }
     n = mfs_torn_len(fs, len);
     if (mfs_write_at(&f->live_data, &f->live_size, (size_t)offset,
                      (const unsigned char *)buf, n) == 0)
     {
-        return LEDGER89_ERR_NOMEM;
+        return LEDGER89_ENOMEM;
     }
     if (n < len)
     {
-        return LEDGER89_ERR_IO;
+        return LEDGER89_EIO;
     }
     return LEDGER89_OK;
 }
@@ -648,17 +648,17 @@ static int mfs_size(void *ctx, led89_fd fd, led89_u64 *out)
     fs = (mfs *)ctx;
     if (mfs_maybe_crash(fs, MFS_OP_SIZE) != 0)
     {
-        return LEDGER89_ERR_IO;
+        return LEDGER89_EIO;
     }
     if (fs->fail_size > 0)
     {
         --fs->fail_size;
-        return LEDGER89_ERR_IO;
+        return LEDGER89_EIO;
     }
     f = mfs_by_fd(fs, fd);
     if (f == NULL)
     {
-        return LEDGER89_ERR_IO;
+        return LEDGER89_EIO;
     }
     *out = (led89_u64)f->live_size;
     return LEDGER89_OK;
@@ -672,32 +672,32 @@ static int mfs_truncate(void *ctx, led89_fd fd, led89_u64 size)
     fs = (mfs *)ctx;
     if (mfs_maybe_crash(fs, MFS_OP_TRUNCATE) != 0)
     {
-        return LEDGER89_ERR_IO;
+        return LEDGER89_EIO;
     }
     if (fs->fail_truncate > 0)
     {
         --fs->fail_truncate;
-        return LEDGER89_ERR_IO;
+        return LEDGER89_EIO;
     }
     f = mfs_by_fd(fs, fd);
     if (f == NULL)
     {
-        return LEDGER89_ERR_IO;
+        return LEDGER89_EIO;
     }
     if (size > (led89_u64)((size_t)-1))
     {
-        return LEDGER89_ERR_IO;
+        return LEDGER89_EIO;
     }
     if ((size_t)size > f->live_size)
     {
         if (mfs_write_at(&f->live_data, &f->live_size, f->live_size,
                          (const unsigned char *)"", 0u) == 0)
         {
-            return LEDGER89_ERR_NOMEM;
+            return LEDGER89_ENOMEM;
         }
         if (mfs_reserve(&f->live_data, (size_t)size) == 0)
         {
-            return LEDGER89_ERR_NOMEM;
+            return LEDGER89_ENOMEM;
         }
         memset(f->live_data + f->live_size, 0, (size_t)size - f->live_size);
     }
@@ -713,17 +713,17 @@ static int mfs_sync(void *ctx, led89_fd fd)
     fs = (mfs *)ctx;
     if (mfs_maybe_crash(fs, MFS_OP_SYNC) != 0)
     {
-        return LEDGER89_ERR_IO;
+        return LEDGER89_EIO;
     }
     if (fs->fail_sync > 0)
     {
         --fs->fail_sync;
-        return LEDGER89_ERR_IO;
+        return LEDGER89_EIO;
     }
     f = mfs_by_fd(fs, fd);
     if (f == NULL)
     {
-        return LEDGER89_ERR_IO;
+        return LEDGER89_EIO;
     }
     free(f->dur_data);
     f->dur_data = NULL;
@@ -733,7 +733,7 @@ static int mfs_sync(void *ctx, led89_fd fd)
         f->dur_data = (unsigned char *)malloc(f->live_size);
         if (f->dur_data == NULL)
         {
-            return LEDGER89_ERR_NOMEM;
+            return LEDGER89_ENOMEM;
         }
         memcpy(f->dur_data, f->live_data, f->live_size);
         f->dur_size = f->live_size;
@@ -751,17 +751,17 @@ static int mfs_rename(void *ctx, const char *from, const char *to)
     fs = (mfs *)ctx;
     if (mfs_maybe_crash(fs, MFS_OP_RENAME) != 0)
     {
-        return LEDGER89_ERR_IO;
+        return LEDGER89_EIO;
     }
     if (fs->fail_rename > 0)
     {
         --fs->fail_rename;
-        return LEDGER89_ERR_IO;
+        return LEDGER89_EIO;
     }
     a = mfs_lookup_live(fs, from);
     if (a == NULL)
     {
-        return LEDGER89_ERR_IO;
+        return LEDGER89_EIO;
     }
     if (strcmp(from, to) == 0)
     {
@@ -774,7 +774,7 @@ static int mfs_rename(void *ctx, const char *from, const char *to)
         b = mfs_alloc(fs, to);
         if (b == NULL)
         {
-            return LEDGER89_ERR_NOMEM;
+            return LEDGER89_ENOMEM;
         }
         /* mfs_alloc may have moved the file table. */
         a = &fs->files[ai];
@@ -799,12 +799,12 @@ static int mfs_unlink(void *ctx, const char *path)
     fs = (mfs *)ctx;
     if (mfs_maybe_crash(fs, MFS_OP_UNLINK) != 0)
     {
-        return LEDGER89_ERR_IO;
+        return LEDGER89_EIO;
     }
     if (fs->fail_unlink > 0)
     {
         --fs->fail_unlink;
-        return LEDGER89_ERR_IO;
+        return LEDGER89_EIO;
     }
     f = mfs_lookup_live(fs, path);
     if (f == NULL)
@@ -823,12 +823,12 @@ static int mfs_mkdir(void *ctx, const char *path)
     (void)path;
     if (mfs_maybe_crash(fs, MFS_OP_MKDIR) != 0)
     {
-        return LEDGER89_ERR_IO;
+        return LEDGER89_EIO;
     }
     if (fs->fail_mkdir > 0)
     {
         --fs->fail_mkdir;
-        return LEDGER89_ERR_IO;
+        return LEDGER89_EIO;
     }
     return LEDGER89_OK;
 }
@@ -842,12 +842,12 @@ static int mfs_sync_dir(void *ctx, const char *path)
     fs = (mfs *)ctx;
     if (mfs_maybe_crash(fs, MFS_OP_SYNC_DIR) != 0)
     {
-        return LEDGER89_ERR_IO;
+        return LEDGER89_EIO;
     }
     if (fs->fail_sync_dir > 0)
     {
         --fs->fail_sync_dir;
-        return LEDGER89_ERR_IO;
+        return LEDGER89_EIO;
     }
     n = strlen(path);
     for (i = 0u; i < fs->count; ++i)
@@ -872,7 +872,7 @@ static int mfs_sync_dir(void *ctx, const char *path)
             f->dur_data = (unsigned char *)malloc(f->live_size);
             if (f->dur_data == NULL)
             {
-                return LEDGER89_ERR_NOMEM;
+                return LEDGER89_ENOMEM;
             }
             memcpy(f->dur_data, f->live_data, f->live_size);
             f->dur_size = f->live_size;
@@ -881,21 +881,60 @@ static int mfs_sync_dir(void *ctx, const char *path)
     return LEDGER89_OK;
 }
 
-static int mfs_lock(void *ctx, const char *path, led89_fd *fd)
+static int mfs_lock(void *ctx, const char *path, int exclusive, int create,
+                    led89_fd *fd)
 {
     mfs *fs;
+    mfs_file *f;
+
     fs = (mfs *)ctx;
+    (void)exclusive;
     if (mfs_maybe_crash(fs, MFS_OP_LOCK) != 0)
     {
-        return LEDGER89_ERR_IO;
+        return LEDGER89_EIO;
     }
     if (fs->fail_lock > 0)
     {
         --fs->fail_lock;
-        return LEDGER89_ERR_IO;
+        return LEDGER89_EIO;
     }
-    return mfs_open(ctx, path,
-                    LED89_OPEN_READ | LED89_OPEN_WRITE | LED89_OPEN_CREATE, fd);
+    f = mfs_lookup_live(fs, path);
+    if (f == NULL)
+    {
+        if (create == 0)
+        {
+            return LEDGER89_ENOENT;
+        }
+        f = mfs_alloc(fs, path);
+        if (f == NULL)
+        {
+            return LEDGER89_ENOMEM;
+        }
+    }
+    *fd = (led89_fd)(f - fs->files) + 1;
+    return LEDGER89_OK;
+}
+
+static int mfs_entropy(void *ctx, unsigned char *out, size_t len)
+{
+    mfs *fs;
+    size_t i;
+
+    fs = (mfs *)ctx;
+    if (mfs_maybe_crash(fs, MFS_OP_ENTROPY) != 0)
+    {
+        return LEDGER89_EIO;
+    }
+    if (fs->fail_entropy > 0)
+    {
+        --fs->fail_entropy;
+        return LEDGER89_EIO;
+    }
+    for (i = 0u; i < len; ++i)
+    {
+        out[i] = (unsigned char)(0xA0u + (unsigned int)i);
+    }
+    return LEDGER89_OK;
 }
 
 static int mfs_list_open(void *ctx, const char *path, led89_dir **out)
@@ -907,22 +946,22 @@ static int mfs_list_open(void *ctx, const char *path, led89_dir **out)
     fs = (mfs *)ctx;
     if (mfs_maybe_crash(fs, MFS_OP_LIST_OPEN) != 0)
     {
-        return LEDGER89_ERR_IO;
+        return LEDGER89_EIO;
     }
     if (fs->fail_list > 0)
     {
         --fs->fail_list;
-        return LEDGER89_ERR_IO;
+        return LEDGER89_EIO;
     }
     n = strlen(path);
     if (n + 1u > MFS_MAX_PATH)
     {
-        return LEDGER89_ERR_RANGE;
+        return LEDGER89_ERANGE;
     }
     dir = (led89_dir *)malloc(sizeof *dir);
     if (dir == NULL)
     {
-        return LEDGER89_ERR_NOMEM;
+        return LEDGER89_ENOMEM;
     }
     memcpy(dir->prefix, path, n + 1u);
     dir->pos = 0u;
@@ -939,7 +978,7 @@ static int mfs_list_next(void *ctx, led89_dir *dir, char *name, size_t cap,
     fs = (mfs *)ctx;
     if (mfs_maybe_crash(fs, MFS_OP_LIST_NEXT) != 0)
     {
-        return LEDGER89_ERR_IO;
+        return LEDGER89_EIO;
     }
     plen = strlen(dir->prefix);
     while (dir->pos < fs->count)
@@ -964,7 +1003,7 @@ static int mfs_list_next(void *ctx, led89_dir *dir, char *name, size_t cap,
         base = f->name + plen + 1u;
         if (strlen(base) + 1u > cap)
         {
-            return LEDGER89_ERR_RANGE;
+            return LEDGER89_ERANGE;
         }
         memcpy(name, base, strlen(base) + 1u);
         *done = 0;
@@ -981,7 +1020,7 @@ static int mfs_list_close(void *ctx, led89_dir *dir)
     fs = (mfs *)ctx;
     if (mfs_maybe_crash(fs, MFS_OP_LIST_CLOSE) != 0)
     {
-        return LEDGER89_ERR_IO;
+        return LEDGER89_EIO;
     }
     free(dir);
     return LEDGER89_OK;
@@ -1005,4 +1044,5 @@ void mfs_bind(led89_io *io, mfs *fs)
     io->list_open = mfs_list_open;
     io->list_next = mfs_list_next;
     io->list_close = mfs_list_close;
+    io->entropy = mfs_entropy;
 }

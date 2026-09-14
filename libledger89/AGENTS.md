@@ -1,10 +1,10 @@
 # libledger89 — agentic workflow
 
-A green-compliant, standalone ISO C89 library for a durable, append-only
-sequence of opaque records stored in immutable rotated segments, with crash
-recovery and deterministic iteration. It owns the local durability core and
-nothing around it: no Raft terms, leaders, replication, SQL, indexes,
-queries, capabilities, or application semantics.
+A green-compliant, standalone ISO C89 library for a durable, ordered,
+rewindable sequence of opaque byte records addressed by stable logical
+positions. It owns the local durability core and nothing around it: no Raft
+terms, leaders, replication, message queues, SQL, indexes, queries,
+capabilities, or application semantics.
 
 ## Hard constraints
 
@@ -16,12 +16,14 @@ queries, capabilities, or application semantics.
   another library. libc and POSIX file primitives only. No Raft, query, or
   application code in `include/` or `src/`.
 - **Opaque payloads**: the library never interprets record payload bytes.
-  `tag` is the only coarse discriminator.
-- **No clocks, no policy**: rotation is byte/record-count based or explicit;
-  wall-clock rotation belongs to the caller.
-- **Explicit durability**: `ledger89_sync()` establishes the crash-durable
-  boundary for appends. Structural operations (`rotate`, `truncate_after`,
-  `discard_before`) are self-durable and crash-safe step by step.
+  There is no record tag, type, or timestamp.
+- **Ledger-assigned positions**: callers cannot choose indices. Optional
+  compare-and-append (`appendv_at`) compares revision and end.
+- **Explicit durability**: `ledger89_sync()` writes a stable marker and
+  advances `stable_end`, the exact local crash-recovery frontier.
+- **No clocks, no policy**: rotation is explicit or at a fixed internal byte
+  target; retention policy is the caller's; the only entropy is the internal
+  I/O `entropy` hook used for ledger identity.
 - Four-space indentation; functional style; most functions short (2-7 lines).
 
 ## Public contract
@@ -29,13 +31,15 @@ queries, capabilities, or application semantics.
 - The public header is `include/ledger89.h`; names are namespaced `ledger89_*`.
 - `spec/ledger89-spec.md` is the normative specification; sections map to
   tests under `test/` and scenarios under `.agent/testing/`.
-- On-disk format, durability contract, recovery classification, and the
-  truncate/discard orderings are fixed in `.agent/design/`.
-- Indices are caller-supplied, start at 1, and must be contiguous: the first
-  record of an append must equal `last_index + 1`.
-- v1 excludes replication, commit decisions, snapshots, query semantics,
-  secondary indexes, retention policy beyond explicit `discard_before`, and
-  application schemas.
+- On-disk format v2, durability, recovery, and the Raft adapter boundary are
+  fixed in `.agent/design/`.
+- Indices are ledger-assigned contiguous positions starting at 1. `first`,
+  `stable_end`, and `end` form the three-boundary model; suffix truncation
+  increments `revision` because indices may be reused.
+- v2 excludes transactions, WAL/MQ semantics, topics, acks, subscriptions,
+  consumer groups, SQL/query semantics, schemas, secondary indexes,
+  replication, consensus, membership, networking, threads, IPC, snapshots,
+  retention policy, timestamps, application record types, and serialization.
 
 ## `.agent` directory
 
@@ -51,19 +55,14 @@ cover must-exhibit and must-reject behavior. Coverage order: one end-to-end
 smoke test first, then unit tests for every pure function and non-trivial
 branch, then crash, fault, corruption, and model-based testing.
 
-The crash fixture table `.agent/testing/0006-crash-fixtures.md` is normative
-for the crash suites: every injection point states the pre-state, the durable
-filesystem state after the crash, the allowed recovered states, and the
-required assertion.
-
 ## `just` and `make`
 
-Use `just` for all actions: `just build`, `just build32`, `just smoke`,
-`just unit`, `just api`, `just crash`, `just fault`, `just fault-nomem`,
+Use `just` for all actions: `just build`, `just smoke`, `just unit`,
+`just api`, `just adapters`, `just crash`, `just fault`, `just fault-nomem`,
 `just fault-eintr`, `just corrupt`, `just model`, `just stress`,
-`just adapters`, `just golden`, `just golden-gen`, `just test`, `just long`,
-`just bench`, `just sanitize`, `just valgrind`, `just green`, `just check`,
-`just lint`, `just format`, `just doctor`, `just clean`.
+`just golden`, `just golden-gen`, `just test`, `just long`, `just bench`,
+`just sanitize`, `just valgrind`, `just green`, `just green-fix`,
+`just check`, `just lint`, `just format`, `just doctor`, `just clean`.
 
 ## Git
 

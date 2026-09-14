@@ -1,168 +1,184 @@
-/* test_read_iter.c - RD01..RD10 and IT01..IT14: random read and ordered
- * iteration. */
-
-#include <string.h>
-
-#include "test.h"
+/* test_read_iter.c - random read and iterator invalidation. */
 
 #include "fixture.h"
+#include "test.h"
 
-static int iter_collect(fx *f, ledger89_index first, ledger89_index last,
-                        ledger89_index *out, size_t cap, size_t *count)
+static void fill(fx *f, unsigned long count)
 {
-    ledger89_iter *it;
-    ledger89_view v;
-    size_t n;
+    unsigned long i;
+
+    for (i = 1ul; i <= count; ++i)
+    {
+        unsigned char b;
+        ledger89_slice s;
+
+        b = (unsigned char)('a' + (int)((i - 1ul) % 26ul));
+        s.data = &b;
+        s.size = 1u;
+        CHECK_EQ(ledger89_appendv(f->l, &s, 1u, NULL), LEDGER89_OK);
+    }
+}
+
+static void test_read(void)
+{
+    fx f;
+    unsigned char buf[4];
+    size_t size;
     int rc;
 
-    it = NULL;
-    *count = 0u;
-    rc = ledger89_iter_open(f->l, first, last, &it);
-    if (rc != LEDGER89_OK)
-    {
-        return rc;
-    }
-    n = 0u;
+    CHECK_EQ(fx_open(&f), LEDGER89_OK);
+    fill(&f, 3u);
+    rc = ledger89_read(f.l, test_u64(0), buf, sizeof buf, &size);
+    CHECK_EQ(rc, LEDGER89_EGONE);
+    rc = ledger89_read(f.l, test_u64(4), buf, sizeof buf, &size);
+    CHECK_EQ(rc, LEDGER89_ENOENT);
+    rc = ledger89_read(f.l, test_u64(1), NULL, 0u, &size);
+    CHECK_EQ(rc, LEDGER89_OK);
+    CHECK_EQ(size, 1u);
+    rc = ledger89_read(f.l, test_u64(1), buf, 0u, &size);
+    CHECK_EQ(rc, LEDGER89_ETOOSMALL);
+    CHECK_EQ(size, 1u);
+    rc = ledger89_read(f.l, test_u64(1), buf, sizeof buf, &size);
+    CHECK_EQ(rc, LEDGER89_OK);
+    CHECK_EQ(buf[0], (unsigned char)'a');
+    rc = ledger89_read(f.l, test_u64(1), buf, sizeof buf, NULL);
+    CHECK_EQ(rc, LEDGER89_EINVAL);
+    fx_close(&f);
+}
+
+static void test_iteration(void)
+{
+    fx f;
+    ledger89_iter it;
+    ledger89_index idx;
+    ledger89_slice s;
+    unsigned char buf[4];
+    size_t size;
+    unsigned long seen;
+    int rc;
+
+    CHECK_EQ(fx_open(&f), LEDGER89_OK);
+    fill(&f, 3u);
+    rc = ledger89_iter_init(&it, f.l, test_u64(0));
+    CHECK_EQ(rc, LEDGER89_EGONE);
+    rc = ledger89_iter_init(&it, f.l, test_u64(9));
+    CHECK_EQ(rc, LEDGER89_ERANGE);
+    rc = ledger89_iter_init(&it, f.l, test_u64(4));
+    CHECK_EQ(rc, LEDGER89_OK);
+    rc = ledger89_iter_next(&it, NULL, NULL, 0u, &size);
+    CHECK_EQ(rc, LEDGER89_DONE);
+
+    /* DONE is not permanent. */
+    s.data = "d";
+    s.size = 1u;
+    rc = ledger89_appendv(f.l, &s, 1u, NULL);
+    CHECK_EQ(rc, LEDGER89_OK);
+    rc = ledger89_iter_next(&it, &idx, buf, sizeof buf, &size);
+    CHECK_EQ(rc, LEDGER89_OK);
+    CHECK_U64(idx, test_u64(4));
+    CHECK_EQ(buf[0], (unsigned char)'d');
+
+    rc = ledger89_iter_init(&it, f.l, test_u64(1));
+    CHECK_EQ(rc, LEDGER89_OK);
+    seen = 0ul;
     for (;;)
     {
-        rc = ledger89_iter_next(it, &v);
-        if (rc == LEDGER89_END)
+        rc = ledger89_iter_next(&it, &idx, NULL, 0u, &size);
+        if (rc != LEDGER89_OK)
         {
             break;
         }
-        if (rc != LEDGER89_OK)
-        {
-            ledger89_iter_close(it);
-            return rc;
-        }
-        if (n >= cap)
-        {
-            ledger89_iter_close(it);
-            return LEDGER89_ERR_RANGE;
-        }
-        out[n] = v.index;
-        ++n;
+        CHECK_U64(idx, test_u64(seen + 1ul));
+        ++seen;
     }
-    ledger89_iter_close(it);
-    *count = n;
-    return LEDGER89_OK;
+    CHECK_EQ(rc, LEDGER89_DONE);
+    CHECK_EQ(seen, 4ul);
+
+    /* Capacity failure does not advance. */
+    rc = ledger89_iter_init(&it, f.l, test_u64(1));
+    CHECK_EQ(rc, LEDGER89_OK);
+    rc = ledger89_iter_next(&it, &idx, buf, 0u, &size);
+    CHECK_EQ(rc, LEDGER89_ETOOSMALL);
+    CHECK_EQ(size, 1u);
+    rc = ledger89_iter_next(&it, &idx, buf, sizeof buf, &size);
+    CHECK_EQ(rc, LEDGER89_OK);
+    CHECK_U64(idx, test_u64(1));
+
+    /* Ordinary append and sync do not invalidate. */
+    rc = ledger89_sync(f.l, NULL);
+    CHECK_EQ(rc, LEDGER89_OK);
+    s.data = "e";
+    rc = ledger89_appendv(f.l, &s, 1u, NULL);
+    CHECK_EQ(rc, LEDGER89_OK);
+    rc = ledger89_iter_next(&it, &idx, buf, sizeof buf, &size);
+    CHECK_EQ(rc, LEDGER89_OK);
+    CHECK_U64(idx, test_u64(2));
+    fx_close(&f);
+}
+
+static void test_truncate_invalidates(void)
+{
+    fx f;
+    ledger89_iter it;
+    ledger89_index idx;
+    unsigned char buf[4];
+    size_t size;
+    int rc;
+
+    CHECK_EQ(fx_open(&f), LEDGER89_OK);
+    fill(&f, 4u);
+    rc = ledger89_sync(f.l, NULL);
+    CHECK_EQ(rc, LEDGER89_OK);
+    rc = ledger89_iter_init(&it, f.l, test_u64(1));
+    CHECK_EQ(rc, LEDGER89_OK);
+    rc = ledger89_iter_next(&it, &idx, buf, sizeof buf, &size);
+    CHECK_EQ(rc, LEDGER89_OK);
+    rc = ledger89_truncate_from(f.l, test_u64(3));
+    CHECK_EQ(rc, LEDGER89_OK);
+    rc = ledger89_iter_next(&it, &idx, buf, sizeof buf, &size);
+    CHECK_EQ(rc, LEDGER89_ESTALE);
+    fx_close(&f);
+}
+
+static void test_prune_gone(void)
+{
+    fx f;
+    ledger89_iter it;
+    ledger89_index idx;
+    ledger89_index actual;
+    unsigned char buf[4];
+    size_t size;
+    int rc;
+
+    CHECK_EQ(fx_open(&f), LEDGER89_OK);
+    fill(&f, 2u);
+    rc = ledger89_sync(f.l, NULL);
+    CHECK_EQ(rc, LEDGER89_OK);
+    rc = ledger89_rotate(f.l);
+    CHECK_EQ(rc, LEDGER89_OK);
+    fill(&f, 3u);
+    rc = ledger89_sync(f.l, NULL);
+    CHECK_EQ(rc, LEDGER89_OK);
+    rc = ledger89_prune_before(f.l, test_u64(3), &actual);
+    CHECK_EQ(rc, LEDGER89_OK);
+    CHECK_U64(actual, test_u64(3));
+    rc = ledger89_iter_init(&it, f.l, test_u64(1));
+    CHECK_EQ(rc, LEDGER89_EGONE);
+    rc = ledger89_iter_init(&it, f.l, test_u64(3));
+    CHECK_EQ(rc, LEDGER89_OK);
+    rc = ledger89_iter_next(&it, &idx, buf, sizeof buf, &size);
+    CHECK_EQ(rc, LEDGER89_OK);
+    CHECK_U64(idx, test_u64(3));
+    rc = ledger89_read(f.l, test_u64(1), buf, sizeof buf, &size);
+    CHECK_EQ(rc, LEDGER89_EGONE);
+    fx_close(&f);
 }
 
 int main(void)
 {
-    fx f;
-    ledger89_view v;
-    ledger89_index got[8];
-    size_t count;
-    unsigned char payload[1];
-    ledger89_index i;
-
-    CHECK_EQ(fx_open(&f), LEDGER89_OK);
-    for (i = 1ul; i <= 5ul; ++i)
-    {
-        payload[0] = (unsigned char)('0' + (int)i);
-        CHECK_EQ(fx_append(&f, i, (unsigned long)(i * 10ul), payload, 1u),
-                 LEDGER89_OK);
-    }
-    CHECK_EQ(ledger89_last_index(f.l), 5ul);
-
-    /* RD01/RD02/RD03: first, middle, last. */
-    CHECK_EQ(fx_read(&f, 1ul, &v), LEDGER89_OK);
-    CHECK_EQ(v.index, 1ul);
-    CHECK_EQ(v.tag, 10ul);
-    CHECK_EQ(v.size, 1u);
-    CHECK_EQ(((const unsigned char *)v.data)[0], (unsigned char)'1');
-
-    CHECK_EQ(fx_read(&f, 3ul, &v), LEDGER89_OK);
-    CHECK_EQ(v.index, 3ul);
-    CHECK_EQ(v.tag, 30ul);
-
-    CHECK_EQ(fx_read(&f, 5ul, &v), LEDGER89_OK);
-    CHECK_EQ(v.index, 5ul);
-
-    /* RD04/RD05/RD08: missing and stable repeats. */
-    CHECK_EQ(fx_read(&f, 0ul, &v), LEDGER89_ERR_ARG);
-    CHECK_EQ(fx_read(&f, 6ul, &v), LEDGER89_ERR_NOTFOUND);
-    CHECK_EQ(fx_read(&f, 2ul, &v), LEDGER89_OK);
-    CHECK_EQ(fx_read(&f, 2ul, &v), LEDGER89_OK);
-    CHECK_EQ(v.index, 2ul);
-
-    /* IT03: iterate all. */
-    CHECK_EQ(iter_collect(&f, 0ul, 0ul, got, 8u, &count), LEDGER89_OK);
-    CHECK_EQ(count, 5u);
-    CHECK_EQ(got[0], 1ul);
-    CHECK_EQ(got[4], 5ul);
-
-    /* IT04: subrange. */
-    CHECK_EQ(iter_collect(&f, 2ul, 4ul, got, 8u, &count), LEDGER89_OK);
-    CHECK_EQ(count, 3u);
-    CHECK_EQ(got[0], 2ul);
-    CHECK_EQ(got[2], 4ul);
-
-    /* IT05/IT06: single-element and wildcard bounds. */
-    CHECK_EQ(iter_collect(&f, 4ul, 4ul, got, 8u, &count), LEDGER89_OK);
-    CHECK_EQ(count, 1u);
-    CHECK_EQ(got[0], 4ul);
-    CHECK_EQ(iter_collect(&f, 3ul, 0ul, got, 8u, &count), LEDGER89_OK);
-    CHECK_EQ(count, 3u);
-    CHECK_EQ(got[0], 3ul);
-    CHECK_EQ(iter_collect(&f, 0ul, 2ul, got, 8u, &count), LEDGER89_OK);
-    CHECK_EQ(count, 2u);
-    CHECK_EQ(got[1], 2ul);
-
-    /* IT10/IT11: clamping. */
-    CHECK_EQ(iter_collect(&f, 1ul, 99ul, got, 8u, &count), LEDGER89_OK);
-    CHECK_EQ(count, 5u);
-    CHECK_EQ(iter_collect(&f, 6ul, 9ul, got, 8u, &count), LEDGER89_OK);
-    CHECK_EQ(count, 0u);
-
-    /* IT12: reversed explicit range. */
-    {
-        ledger89_iter *it;
-
-        it = NULL;
-        CHECK_EQ(ledger89_iter_open(f.l, 4ul, 2ul, &it), LEDGER89_ERR_ARG);
-        CHECK(it == NULL);
-    }
-
-    /* IT14: independent simultaneous iterators. */
-    {
-        ledger89_iter *a;
-        ledger89_iter *b;
-        ledger89_view va;
-        ledger89_view vb;
-
-        a = NULL;
-        b = NULL;
-        CHECK_EQ(ledger89_iter_open(f.l, 1ul, 5ul, &a), LEDGER89_OK);
-        CHECK_EQ(ledger89_iter_open(f.l, 1ul, 5ul, &b), LEDGER89_OK);
-        CHECK_EQ(ledger89_iter_next(a, &va), LEDGER89_OK);
-        CHECK_EQ(va.index, 1ul);
-        CHECK_EQ(ledger89_iter_next(b, &vb), LEDGER89_OK);
-        CHECK_EQ(vb.index, 1ul);
-        CHECK_EQ(ledger89_iter_next(a, &va), LEDGER89_OK);
-        CHECK_EQ(va.index, 2ul);
-        CHECK_EQ(ledger89_iter_next(b, &vb), LEDGER89_OK);
-        CHECK_EQ(vb.index, 2ul);
-        ledger89_iter_close(a);
-        ledger89_iter_close(b);
-    }
-
-    fx_close(&f);
-
-    /* IT01: iterating an empty ledger ends immediately. */
-    {
-        fx e;
-        ledger89_iter *it;
-        ledger89_view ev;
-
-        CHECK_EQ(fx_open(&e), LEDGER89_OK);
-        it = NULL;
-        CHECK_EQ(ledger89_iter_open(e.l, 0ul, 0ul, &it), LEDGER89_OK);
-        CHECK_EQ(ledger89_iter_next(it, &ev), LEDGER89_END);
-        ledger89_iter_close(it);
-        fx_close(&e);
-    }
-
+    test_read();
+    test_iteration();
+    test_truncate_invalidates();
+    test_prune_gone();
     TEST_END;
 }

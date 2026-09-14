@@ -101,6 +101,25 @@ stress: build
 adapters: build
 	just _run adapters
 
+# Optional cross-repo fixture composing libraft89 and libledger89.
+adapters-raft: build
+	@if [ ! -d ../libraft89/src ]; then \
+	    echo "adapters-raft: SKIPPED: sibling libraft89 absent"; \
+	    exit 0; \
+	fi; \
+	mkdir -p build/raft/obj; \
+	for f in ../libraft89/src/*.c; do \
+	    [ -e "$f" ] || continue; \
+	    name=$(basename "$f" .c); \
+	    {{CC}} {{STRICT}} {{POSIX}} -I../libraft89/include -I../libraft89/src -c "$f" -o "build/raft/obj/$name.o" || exit 1; \
+	done; \
+	rm -f build/raft/libraft89.a; \
+	ar rcs build/raft/libraft89.a build/raft/obj/*.o; \
+	{{CC}} {{STRICT}} {{POSIX}} {{TESTFLAGS}} {{INC}} -I../libraft89/include \
+	    -o build/raft_adapter test/adapters/raft_adapter_main.c test/support/*.c \
+	    build/raft/libraft89.a {{LIB}} || exit 1; \
+	./build/raft_adapter
+
 # Multi-million-operation model run plus a heavy many-segment sweep.
 long: build
 	{{CC}} {{STRICT}} {{POSIX}} {{TESTFLAGS}} {{INC}} -o build/test_random_model \
@@ -163,6 +182,12 @@ green:
 	sh scripts/gen_compile_db gcc build/gcc/compile_commands.json
 	sh scripts/gen_compile_db clang build/clang/compile_commands.json
 	cd . && {{GREEN}} check
+
+# Apply the green tool's safe, semantics-preserving fix-its.
+green-fix:
+	sh scripts/gen_compile_db gcc build/gcc/compile_commands.json
+	sh scripts/gen_compile_db clang build/clang/compile_commands.json
+	cd . && {{GREEN}} fix
 
 # Full local gate: green profile, lint, and the fast suite.
 check: green lint test

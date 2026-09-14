@@ -1,24 +1,18 @@
-/* gen_golden.c - regenerate the frozen on-disk byte fixtures under
- * test/golden/ from a deterministic public-API sequence. Run via
- * `just golden-gen`; the fixtures are committed and verified by
- * test/golden/test_golden.c. Not part of the library. */
+/* gen_golden.c - regenerate the committed golden byte fixtures.
+ *
+ * Builds a deterministic ledger through the POSIX backend with fixed
+ * identity entropy and copies the resulting files into test/golden/. */
 
-#include <errno.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
 
-#include "fixture.h"
+#include "real_io.h"
+#include "tmpdir.h"
 
-#define SEALED_NAME "00000000000000000001.seg"
-#define ACTIVE_NAME "active.seg"
-#define SEALED_DST "test/golden/golden-sealed.seg"
-#define ACTIVE_DST "test/golden/golden-active.seg"
-
-static const unsigned char payload_alpha[5] = {'a', 'l', 'p', 'h', 'a'};
-static const unsigned char payload_binary[4] = {0xDE, 0xAD, 0xBE, 0xEF};
-static const unsigned char payload_delta[5] = {'d', 'e', 'l', 't', 'a'};
-static const unsigned char payload_zero[1] = {0x00};
+static const unsigned char fixed_id[16] = {
+    0x89u, 0x01u, 0x23u, 0x45u, 0x67u, 0x89u, 0xABu, 0xCDu,
+    0xEFu, 0x10u, 0x32u, 0x54u, 0x76u, 0x98u, 0xBAu, 0xDCu};
 
 static int copy_file(const char *src, const char *dst)
 {
@@ -26,143 +20,122 @@ static int copy_file(const char *src, const char *dst)
     FILE *out;
     unsigned char buf[4096];
     size_t n;
-    int ok;
 
     in = fopen(src, "rb");
     if (in == NULL)
     {
-        return -1;
+        return 0;
     }
     out = fopen(dst, "wb");
     if (out == NULL)
     {
         fclose(in);
-        return -1;
+        return 0;
     }
-    ok = 0;
-    for (;;)
+    while ((n = fread(buf, 1u, sizeof buf, in)) > 0u)
     {
-        n = fread(buf, 1u, sizeof buf, in);
-        if (n > 0u)
+        if (fwrite(buf, 1u, n, out) != n)
         {
-            if (fwrite(buf, 1u, n, out) != n)
-            {
-                break;
-            }
-        }
-        if (n < sizeof buf)
-        {
-            if (ferror(in) == 0)
-            {
-                ok = 1;
-            }
-            break;
+            fclose(in);
+            fclose(out);
+            return 0;
         }
     }
     fclose(in);
     if (fclose(out) != 0)
     {
-        ok = 0;
-    }
-    return ok != 0 ? 0 : -1;
-}
-
-static int copy_from_dir(const char *dir, const char *name, const char *dst)
-{
-    char src[128];
-    size_t n;
-    size_t m;
-
-    n = strlen(dir);
-    m = strlen(name);
-    if (n + m + 2u > sizeof src)
-    {
-        return -1;
-    }
-    memcpy(src, dir, n);
-    src[n] = '/';
-    memcpy(src + n + 1u, name, m + 1u);
-    return copy_file(src, dst);
-}
-
-static int ensure_dir(const char *path)
-{
-    if (mkdir(path, 0777) == 0)
-    {
         return 0;
     }
-    if (errno == EEXIST)
-    {
-        return 0;
-    }
-    return -1;
+    return 1;
 }
 
-static int build_ledger(fx *f)
+static void copy_from(const char *dir, const char *name, const char *dst)
 {
-    ledger89_record batch[3];
-    int rc;
+    char src[160];
 
-    rc = fx_open(f);
-    if (rc != LEDGER89_OK)
+    sprintf(src, "%s/%s", dir, name);
+    if (copy_file(src, dst) == 0)
     {
-        return rc;
+        fprintf(stderr, "copy failed: %s\n", src);
     }
-    fx_record(&batch[0], 1ul, 1001ul, payload_alpha, sizeof payload_alpha);
-    fx_record(&batch[1], 2ul, 0x01020304ul, payload_binary,
-              sizeof payload_binary);
-    fx_record(&batch[2], 3ul, 0ul, NULL, 0u);
-    rc = ledger89_append(f->l, batch, 3u);
-    if (rc == LEDGER89_OK)
-    {
-        rc = ledger89_sync(f->l);
-    }
-    if (rc == LEDGER89_OK)
-    {
-        rc = ledger89_rotate(f->l);
-    }
-    if (rc != LEDGER89_OK)
-    {
-        return rc;
-    }
-    fx_record(&batch[0], 4ul, 0xCAFEBABEul, payload_delta,
-              sizeof payload_delta);
-    fx_record(&batch[1], 5ul, 2ul, payload_zero, sizeof payload_zero);
-    rc = ledger89_append(f->l, batch, 2u);
-    if (rc == LEDGER89_OK)
-    {
-        rc = ledger89_sync(f->l);
-    }
-    fx_close(f);
-    return rc;
 }
 
 int main(void)
 {
-    fx f;
-    int rc;
+    char dir[64];
+    real_io r;
+    ledger89 *l;
+    unsigned char bin[3];
+    ledger89_slice s;
 
-    if (ensure_dir("test/golden") != 0)
+    if (tmpdir_create(dir, sizeof dir) != 0)
     {
-        fprintf(stderr, "gen_golden: cannot create test/golden\n");
         return 1;
     }
-    rc = build_ledger(&f);
-    if (rc != LEDGER89_OK)
+    real_io_init(&r);
+    real_io_fix_entropy(&r, fixed_id);
+    l = NULL;
+    if (led89_open_io(&l, dir,
+                      LEDGER89_OPEN_RDWR | LEDGER89_OPEN_CREATE |
+                          LEDGER89_OPEN_EXCL,
+                      real_io_api(&r)) != LEDGER89_OK)
     {
-        fprintf(stderr, "gen_golden: ledger build failed (%d)\n", rc);
         return 1;
     }
-    if (copy_from_dir(f.path, SEALED_NAME, SEALED_DST) != 0)
+    s.data = "alpha";
+    s.size = 5u;
+    if (ledger89_appendv(l, &s, 1u, NULL) != LEDGER89_OK)
     {
-        fprintf(stderr, "gen_golden: cannot copy sealed fixture\n");
         return 1;
     }
-    if (copy_from_dir(f.path, ACTIVE_NAME, ACTIVE_DST) != 0)
+    bin[0] = 0x01u;
+    bin[1] = 0x02u;
+    bin[2] = 0x03u;
+    s.data = bin;
+    s.size = 3u;
+    if (ledger89_appendv(l, &s, 1u, NULL) != LEDGER89_OK)
     {
-        fprintf(stderr, "gen_golden: cannot copy active fixture\n");
         return 1;
     }
-    printf("golden fixtures written\n");
+    s.data = NULL;
+    s.size = 0u;
+    if (ledger89_appendv(l, &s, 1u, NULL) != LEDGER89_OK)
+    {
+        return 1;
+    }
+    if (ledger89_sync(l, NULL) != LEDGER89_OK)
+    {
+        return 1;
+    }
+    if (ledger89_rotate(l) != LEDGER89_OK)
+    {
+        return 1;
+    }
+    s.data = "delta";
+    s.size = 5u;
+    if (ledger89_appendv(l, &s, 1u, NULL) != LEDGER89_OK)
+    {
+        return 1;
+    }
+    s.data = "zz";
+    s.size = 2u;
+    if (ledger89_appendv(l, &s, 1u, NULL) != LEDGER89_OK)
+    {
+        return 1;
+    }
+    if (ledger89_sync(l, NULL) != LEDGER89_OK)
+    {
+        return 1;
+    }
+    ledger89_close(l);
+
+    copy_from(dir, "CURRENT", "test/golden/golden-current.bin");
+    copy_from(dir, "MANIFEST.0000000000000001",
+              "test/golden/golden-manifest1.bin");
+    copy_from(dir, "MANIFEST.0000000000000002",
+              "test/golden/golden-manifest2.bin");
+    copy_from(dir, "part.0000000000000001", "test/golden/golden-part1.bin");
+    copy_from(dir, "part.0000000000000002", "test/golden/golden-part2.bin");
+    printf("golden fixtures regenerated\n");
     return 0;
 }

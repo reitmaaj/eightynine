@@ -22,6 +22,8 @@ struct led89_dir
     DIR *dirp;
 };
 
+static void led89_close_fd(int fd);
+
 static int led89_off_ok(led89_u64 v)
 {
     led89_u64 max;
@@ -83,9 +85,13 @@ static int led89_posix_open(void *ctx, const char *path, int flags,
         {
             break;
         }
+        if (errno == ENOENT)
+        {
+            return LEDGER89_ENOENT;
+        }
         if (errno != EINTR)
         {
-            return LEDGER89_ERR_IO;
+            return LEDGER89_EIO;
         }
     }
     *fd = rc;
@@ -100,7 +106,7 @@ static int led89_posix_close(void *ctx, led89_fd fd)
     rc = close(fd);
     if (rc != 0)
     {
-        return LEDGER89_ERR_IO;
+        return LEDGER89_EIO;
     }
     return LEDGER89_OK;
 }
@@ -116,7 +122,7 @@ static int led89_pread_once(led89_fd fd, unsigned char *p, size_t len,
     rc = led89_off_ok(at);
     if (rc == 0)
     {
-        return LEDGER89_ERR_RANGE;
+        return LEDGER89_ERANGE;
     }
     n = pread(fd, p + *done, len - *done, (off_t)at);
     if (n < 0)
@@ -125,11 +131,11 @@ static int led89_pread_once(led89_fd fd, unsigned char *p, size_t len,
         {
             return LEDGER89_OK;
         }
-        return LEDGER89_ERR_IO;
+        return LEDGER89_EIO;
     }
     if (n == 0)
     {
-        return LEDGER89_ERR_IO;
+        return LEDGER89_EIO;
     }
     *done += (size_t)n;
     return LEDGER89_OK;
@@ -167,7 +173,7 @@ static int led89_pwrite_once(led89_fd fd, const unsigned char *p, size_t len,
     rc = led89_off_ok(at);
     if (rc == 0)
     {
-        return LEDGER89_ERR_RANGE;
+        return LEDGER89_ERANGE;
     }
     n = pwrite(fd, p + *done, len - *done, (off_t)at);
     if (n < 0)
@@ -176,11 +182,11 @@ static int led89_pwrite_once(led89_fd fd, const unsigned char *p, size_t len,
         {
             return LEDGER89_OK;
         }
-        return LEDGER89_ERR_IO;
+        return LEDGER89_EIO;
     }
     if (n == 0)
     {
-        return LEDGER89_ERR_IO;
+        return LEDGER89_EIO;
     }
     *done += (size_t)n;
     return LEDGER89_OK;
@@ -222,12 +228,12 @@ static int led89_posix_size(void *ctx, led89_fd fd, led89_u64 *out)
         }
         if (errno != EINTR)
         {
-            return LEDGER89_ERR_IO;
+            return LEDGER89_EIO;
         }
     }
     if (st.st_size < 0)
     {
-        return LEDGER89_ERR_IO;
+        return LEDGER89_EIO;
     }
     *out = (led89_u64)st.st_size;
     return LEDGER89_OK;
@@ -240,7 +246,7 @@ static int led89_posix_truncate(void *ctx, led89_fd fd, led89_u64 size)
     (void)ctx;
     if (led89_off_ok(size) == 0)
     {
-        return LEDGER89_ERR_RANGE;
+        return LEDGER89_ERANGE;
     }
     for (;;)
     {
@@ -251,7 +257,7 @@ static int led89_posix_truncate(void *ctx, led89_fd fd, led89_u64 size)
         }
         if (errno != EINTR)
         {
-            return LEDGER89_ERR_IO;
+            return LEDGER89_EIO;
         }
     }
     return LEDGER89_OK;
@@ -271,7 +277,7 @@ static int led89_posix_sync(void *ctx, led89_fd fd)
         }
         if (errno != EINTR)
         {
-            return LEDGER89_ERR_IO;
+            return LEDGER89_EIO;
         }
     }
     return LEDGER89_OK;
@@ -290,7 +296,7 @@ static int led89_posix_fsync(int fd)
         }
         if (errno != EINTR)
         {
-            return LEDGER89_ERR_IO;
+            return LEDGER89_EIO;
         }
     }
     return LEDGER89_OK;
@@ -310,7 +316,7 @@ static int led89_posix_rename(void *ctx, const char *from, const char *to)
         }
         if (errno != EINTR)
         {
-            return LEDGER89_ERR_IO;
+            return LEDGER89_EIO;
         }
     }
 }
@@ -333,7 +339,7 @@ static int led89_posix_unlink(void *ctx, const char *path)
         }
         if (errno != EINTR)
         {
-            return LEDGER89_ERR_IO;
+            return LEDGER89_EIO;
         }
     }
 }
@@ -356,7 +362,7 @@ static int led89_posix_mkdir(void *ctx, const char *path)
         }
         if (errno != EINTR)
         {
-            return LEDGER89_ERR_IO;
+            return LEDGER89_EIO;
         }
     }
 }
@@ -370,10 +376,10 @@ static int led89_posix_sync_dir(void *ctx, const char *path)
     fd = open(path, O_RDONLY);
     if (fd < 0)
     {
-        return LEDGER89_ERR_IO;
+        return LEDGER89_EIO;
     }
     rc = led89_posix_fsync(fd);
-    (void)close(fd);
+    led89_close_fd(fd);
     return rc;
 }
 
@@ -382,32 +388,115 @@ static int led89_posix_lock_fail(int fd)
     int err;
 
     err = errno;
-    (void)close(fd);
+    led89_close_fd(fd);
     if (err == EWOULDBLOCK)
     {
-        return LEDGER89_ERR_BUSY;
+        return LEDGER89_EBUSY;
     }
-    return LEDGER89_ERR_IO;
+    return LEDGER89_EIO;
 }
 
-static int led89_posix_lock(void *ctx, const char *path, led89_fd *fd)
+static int led89_lock_oflags(void)
+{
+    return O_RDWR | O_CREAT;
+}
+
+static unsigned char *led89_buf_at(unsigned char *buf, size_t off)
+{
+    return buf + off;
+}
+
+static int led89_posix_lock(void *ctx, const char *path, int exclusive,
+                            int create, led89_fd *fd)
 {
     int f;
     int rc;
+    int mode;
+    int oflags;
 
     (void)ctx;
-    f = open(path, O_RDWR | O_CREAT, 0666);
+    mode = LOCK_SH;
+    if (exclusive != 0)
+    {
+        mode = LOCK_EX;
+    }
+    oflags = O_RDONLY;
+    if (create != 0)
+    {
+        oflags = led89_lock_oflags();
+    }
+    f = open(path, oflags, 0666);
     if (f < 0)
     {
-        return LEDGER89_ERR_IO;
+        if (errno == ENOENT)
+        {
+            return LEDGER89_ENOENT;
+        }
+        return LEDGER89_EIO;
     }
-    rc = flock(f, LOCK_EX | LOCK_NB);
+    rc = flock(f, mode | LOCK_NB);
     if (rc != 0)
     {
         rc = led89_posix_lock_fail(f);
         return rc;
     }
     *fd = f;
+    return LEDGER89_OK;
+}
+
+static size_t led89_size_add(size_t a, size_t b)
+{
+    return a + b;
+}
+
+static size_t led89_size_left(size_t total, size_t done)
+{
+    return total - done;
+}
+
+static size_t led89_ssize_to_size(ssize_t n)
+{
+    return (size_t)n;
+}
+
+static void led89_close_fd(int fd)
+{
+    (void)close(fd);
+}
+
+static int led89_posix_entropy(void *ctx, unsigned char *out, size_t len)
+{
+    int fd;
+    size_t done;
+    ssize_t n;
+
+    (void)ctx;
+    fd = open("/dev/urandom", O_RDONLY);
+    if (fd < 0)
+    {
+        return LEDGER89_EIO;
+    }
+    done = 0u;
+    while (done < len)
+    {
+        n = read(fd, led89_buf_at(out, done), led89_size_left(len, done));
+        if (n < 0)
+        {
+            if (errno == EINTR)
+            {
+                continue;
+            }
+            led89_close_fd(fd);
+            return LEDGER89_EIO;
+        }
+        if (n == 0)
+        {
+            led89_close_fd(fd);
+            return LEDGER89_EIO;
+        }
+        done = led89_size_add(done, led89_ssize_to_size(n));
+    }
+    led89_close_fd(fd);
     return LEDGER89_OK;
 }
 
@@ -420,13 +509,13 @@ static int led89_posix_list_open(void *ctx, const char *path, led89_dir **out)
     d = opendir(path);
     if (d == NULL)
     {
-        return LEDGER89_ERR_IO;
+        return LEDGER89_EIO;
     }
     dir = (led89_dir *)malloc(sizeof *dir);
     if (dir == NULL)
     {
         closedir(d);
-        return LEDGER89_ERR_NOMEM;
+        return LEDGER89_ENOMEM;
     }
     dir->dirp = d;
     *out = dir;
@@ -456,7 +545,7 @@ static int led89_posix_take_name(const char *src, char *name, size_t cap)
     n = strlen(src);
     if (n + 1u > cap)
     {
-        return LEDGER89_ERR_RANGE;
+        return LEDGER89_ERANGE;
     }
     memcpy(name, src, n + 1u);
     return LEDGER89_OK;
@@ -497,7 +586,7 @@ static int led89_posix_list_close(void *ctx, led89_dir *dir)
     free(dir);
     if (rc != 0)
     {
-        return LEDGER89_ERR_IO;
+        return LEDGER89_EIO;
     }
     return LEDGER89_OK;
 }
@@ -517,7 +606,8 @@ static const led89_io led89_posix_impl = {NULL,
                                           led89_posix_lock,
                                           led89_posix_list_open,
                                           led89_posix_list_next,
-                                          led89_posix_list_close};
+                                          led89_posix_list_close,
+                                          led89_posix_entropy};
 
 const led89_io *led89_io_posix(void)
 {

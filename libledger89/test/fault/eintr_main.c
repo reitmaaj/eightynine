@@ -2,7 +2,7 @@
  *
  * Linked with -Wl,--wrap=pread,pwrite,fsync,fdatasync,ftruncate,rename,
  * unlink. Every injected EINTR must be retried transparently: the operation
- * succeeds and the handle is never faulted. */
+ * succeeds and the handle is never poisoned. */
 
 #include <string.h>
 
@@ -11,44 +11,49 @@
 #include "eintr_shim.h"
 #include "tmpdir.h"
 
-static int open_path(const char *path, unsigned long records, ledger89 **l)
+static int open_ledger(const char *path, ledger89 **l)
 {
-    ledger89_config cfg;
-
-    memset(&cfg, 0, sizeof cfg);
-    cfg.path = path;
-    cfg.max_segment_bytes = 0ul;
-    cfg.max_segment_records = records;
     *l = NULL;
-    return ledger89_open(l, &cfg);
+    return ledger89_open(l, path, LEDGER89_OPEN_RDWR | LEDGER89_OPEN_CREATE);
 }
 
-static int make_ledger(const char *path, unsigned long records,
-                       ledger89_index count)
+static int make_ledger(const char *path, unsigned long count, int rotate_after)
 {
     ledger89 *l;
-    ledger89_record r;
-    unsigned char v;
-    ledger89_index i;
+    unsigned long i;
 
-    if (open_path(path, records, &l) != LEDGER89_OK)
+    if (open_ledger(path, &l) != LEDGER89_OK)
     {
         return 0;
     }
     for (i = 1ul; i <= count; ++i)
     {
+        unsigned char v;
+        ledger89_slice s;
+
         v = (unsigned char)('a' + (int)(i % 26ul));
-        r.index = i;
-        r.tag = (unsigned long)i;
-        r.data = &v;
-        r.size = 1u;
-        if (ledger89_append(l, &r, 1u) != LEDGER89_OK)
+        s.data = &v;
+        s.size = 1u;
+        if (ledger89_appendv(l, &s, 1u, NULL) != LEDGER89_OK)
         {
             ledger89_close(l);
             return 0;
         }
+        if (rotate_after != 0 && i == (count / 2ul))
+        {
+            if (ledger89_sync(l, NULL) != LEDGER89_OK)
+            {
+                ledger89_close(l);
+                return 0;
+            }
+            if (ledger89_rotate(l) != LEDGER89_OK)
+            {
+                ledger89_close(l);
+                return 0;
+            }
+        }
     }
-    if (ledger89_sync(l) != LEDGER89_OK)
+    if (ledger89_sync(l, NULL) != LEDGER89_OK)
     {
         ledger89_close(l);
         return 0;
@@ -61,24 +66,24 @@ static void case_append(void)
 {
     char path[64];
     ledger89 *l;
-    ledger89_record r;
+    ledger89_slice s;
+    ledger89_state st;
     unsigned char v;
 
     v = 'z';
+    s.data = &v;
+    s.size = 1u;
     CHECK(tmpdir_create(path, sizeof path) == 0);
-    CHECK(make_ledger(path, 0ul, 3ul) != 0);
-    CHECK_EQ(open_path(path, 0ul, &l), LEDGER89_OK);
-    r.index = 4ul;
-    r.tag = 4ul;
-    r.data = &v;
-    r.size = 1u;
+    CHECK(make_ledger(path, 3ul, 0) != 0);
+    CHECK_EQ(open_ledger(path, &l), LEDGER89_OK);
     eintr_arm(EINTR_PWRITE, 0);
-    CHECK_EQ(ledger89_append(l, &r, 1u), LEDGER89_OK);
+    CHECK_EQ(ledger89_appendv(l, &s, 1u, NULL), LEDGER89_OK);
     CHECK(eintr_fired() != 0);
-    CHECK_EQ(ledger89_sync(l), LEDGER89_OK);
+    CHECK_EQ(ledger89_sync(l, NULL), LEDGER89_OK);
     ledger89_close(l);
-    CHECK_EQ(open_path(path, 0ul, &l), LEDGER89_OK);
-    CHECK_EQ(ledger89_last_index(l), 4ul);
+    CHECK_EQ(open_ledger(path, &l), LEDGER89_OK);
+    CHECK_EQ(ledger89_get_state(l, &st), LEDGER89_OK);
+    CHECK_U64(st.end, test_u64(5));
     ledger89_close(l);
 }
 
@@ -86,24 +91,19 @@ static void case_sync(void)
 {
     char path[64];
     ledger89 *l;
-    ledger89_record r;
+    ledger89_slice s;
     unsigned char v;
 
     v = 'z';
+    s.data = &v;
+    s.size = 1u;
     CHECK(tmpdir_create(path, sizeof path) == 0);
-    CHECK(make_ledger(path, 0ul, 3ul) != 0);
-    CHECK_EQ(open_path(path, 0ul, &l), LEDGER89_OK);
-    r.index = 4ul;
-    r.tag = 4ul;
-    r.data = &v;
-    r.size = 1u;
-    CHECK_EQ(ledger89_append(l, &r, 1u), LEDGER89_OK);
+    CHECK(make_ledger(path, 3ul, 0) != 0);
+    CHECK_EQ(open_ledger(path, &l), LEDGER89_OK);
+    CHECK_EQ(ledger89_appendv(l, &s, 1u, NULL), LEDGER89_OK);
     eintr_arm(EINTR_FDATASYNC, 0);
-    CHECK_EQ(ledger89_sync(l), LEDGER89_OK);
+    CHECK_EQ(ledger89_sync(l, NULL), LEDGER89_OK);
     CHECK(eintr_fired() != 0);
-    ledger89_close(l);
-    CHECK_EQ(open_path(path, 0ul, &l), LEDGER89_OK);
-    CHECK_EQ(ledger89_last_index(l), 4ul);
     ledger89_close(l);
 }
 
@@ -111,16 +111,18 @@ static void case_rotate(int op)
 {
     char path[64];
     ledger89 *l;
+    ledger89_state st;
 
     CHECK(tmpdir_create(path, sizeof path) == 0);
-    CHECK(make_ledger(path, 0ul, 3ul) != 0);
-    CHECK_EQ(open_path(path, 0ul, &l), LEDGER89_OK);
+    CHECK(make_ledger(path, 3ul, 0) != 0);
+    CHECK_EQ(open_ledger(path, &l), LEDGER89_OK);
     eintr_arm(op, 0);
     CHECK_EQ(ledger89_rotate(l), LEDGER89_OK);
     CHECK(eintr_fired() != 0);
     ledger89_close(l);
-    CHECK_EQ(open_path(path, 0ul, &l), LEDGER89_OK);
-    CHECK_EQ(ledger89_last_index(l), 3ul);
+    CHECK_EQ(open_ledger(path, &l), LEDGER89_OK);
+    CHECK_EQ(ledger89_get_state(l, &st), LEDGER89_OK);
+    CHECK_U64(st.end, test_u64(4));
     ledger89_close(l);
 }
 
@@ -128,33 +130,34 @@ static void case_truncate(int op)
 {
     char path[64];
     ledger89 *l;
+    ledger89_state st;
 
     CHECK(tmpdir_create(path, sizeof path) == 0);
-    CHECK(make_ledger(path, 2ul, 4ul) != 0);
-    CHECK_EQ(open_path(path, 2ul, &l), LEDGER89_OK);
+    CHECK(make_ledger(path, 6ul, 1) != 0);
+    CHECK_EQ(open_ledger(path, &l), LEDGER89_OK);
     eintr_arm(op, 0);
-    CHECK_EQ(ledger89_truncate_after(l, 1ul), LEDGER89_OK);
+    CHECK_EQ(ledger89_truncate_from(l, test_u64(3)), LEDGER89_OK);
     CHECK(eintr_fired() != 0);
     ledger89_close(l);
-    CHECK_EQ(open_path(path, 2ul, &l), LEDGER89_OK);
-    CHECK_EQ(ledger89_last_index(l), 1ul);
+    CHECK_EQ(open_ledger(path, &l), LEDGER89_OK);
+    CHECK_EQ(ledger89_get_state(l, &st), LEDGER89_OK);
+    CHECK_U64(st.end, test_u64(3));
     ledger89_close(l);
 }
 
-static void case_discard(void)
+static void case_prune(void)
 {
     char path[64];
     ledger89 *l;
+    ledger89_index actual;
 
     CHECK(tmpdir_create(path, sizeof path) == 0);
-    CHECK(make_ledger(path, 2ul, 6ul) != 0);
-    CHECK_EQ(open_path(path, 2ul, &l), LEDGER89_OK);
+    CHECK(make_ledger(path, 6ul, 1) != 0);
+    CHECK_EQ(open_ledger(path, &l), LEDGER89_OK);
     eintr_arm(EINTR_UNLINK, 0);
-    CHECK_EQ(ledger89_discard_before(l, 4ul), LEDGER89_OK);
+    CHECK_EQ(ledger89_prune_before(l, test_u64(4), &actual), LEDGER89_OK);
     CHECK(eintr_fired() != 0);
-    ledger89_close(l);
-    CHECK_EQ(open_path(path, 2ul, &l), LEDGER89_OK);
-    CHECK_EQ(ledger89_first_index(l), 4ul);
+    CHECK_U64(actual, test_u64(4));
     ledger89_close(l);
 }
 
@@ -164,9 +167,9 @@ static void case_open(void)
     ledger89 *l;
 
     CHECK(tmpdir_create(path, sizeof path) == 0);
-    CHECK(make_ledger(path, 2ul, 4ul) != 0);
+    CHECK(make_ledger(path, 4ul, 0) != 0);
     eintr_arm(EINTR_PREAD, 0);
-    CHECK_EQ(open_path(path, 2ul, &l), LEDGER89_OK);
+    CHECK_EQ(open_ledger(path, &l), LEDGER89_OK);
     CHECK(eintr_fired() != 0);
     ledger89_close(l);
 }
@@ -175,13 +178,15 @@ static void case_read(void)
 {
     char path[64];
     ledger89 *l;
-    ledger89_view v;
+    unsigned char buf[2];
+    size_t size;
 
     CHECK(tmpdir_create(path, sizeof path) == 0);
-    CHECK(make_ledger(path, 2ul, 4ul) != 0);
-    CHECK_EQ(open_path(path, 2ul, &l), LEDGER89_OK);
+    CHECK(make_ledger(path, 4ul, 0) != 0);
+    CHECK_EQ(open_ledger(path, &l), LEDGER89_OK);
     eintr_arm(EINTR_PREAD, 0);
-    CHECK_EQ(ledger89_read(l, 1ul, &v), LEDGER89_OK);
+    CHECK_EQ(ledger89_read(l, test_u64(1), buf, sizeof buf, &size),
+             LEDGER89_OK);
     CHECK(eintr_fired() != 0);
     ledger89_close(l);
 }
@@ -195,7 +200,7 @@ int main(void)
     case_rotate(EINTR_RENAME);
     case_truncate(EINTR_UNLINK);
     case_truncate(EINTR_PWRITE);
-    case_discard();
+    case_prune();
     case_open();
     case_read();
 

@@ -12,9 +12,14 @@ typedef struct real_io
     int crash_op;
     int crash_skip;
     int crash_armed;
+    int fixed_entropy;
+    unsigned char entropy[16];
 } real_io;
 
 void real_io_init(real_io *r);
+
+/* Supply deterministic ledger identity bytes instead of /dev/urandom. */
+void real_io_fix_entropy(real_io *r, const unsigned char bytes[16]);
 
 /* Terminate the process (exit 99) at the (skip+1)-th call of op. */
 void real_io_arm(real_io *r, int op, int skip);

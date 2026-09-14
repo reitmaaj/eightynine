@@ -1,8 +1,8 @@
 /* nomem_main.c - allocation failure sweep over the public API.
  *
  * Linked with -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc. Every
- * operation that allocates must fail with NOMEM, leave the logical ledger
- * unchanged (or fault the handle), and succeed on a later attempt. */
+ * operation that allocates must fail cleanly, leave the ledger recoverable,
+ * and succeed on a later attempt. */
 
 #include <string.h>
 
@@ -11,56 +11,78 @@
 #include "nomem_shim.h"
 #include "tmpdir.h"
 
-static int open_ledger_records(const char *path, unsigned long records,
-                               ledger89 **l)
-{
-    ledger89_config cfg;
-
-    memset(&cfg, 0, sizeof cfg);
-    cfg.path = path;
-    cfg.max_segment_bytes = 4096ul;
-    cfg.max_segment_records = records;
-    *l = NULL;
-    return ledger89_open(l, &cfg);
-}
-
 static int open_ledger(const char *path, ledger89 **l)
 {
-    return open_ledger_records(path, 2ul, l);
+    *l = NULL;
+    return ledger89_open(l, path, LEDGER89_OPEN_RDWR | LEDGER89_OPEN_CREATE);
 }
 
-static int make_ledger(const char *path, unsigned long records,
-                       ledger89_index count)
+static int make_ledger(const char *path, unsigned long count, int rotate_after)
 {
     ledger89 *l;
-    ledger89_record r;
-    unsigned char v;
-    ledger89_index i;
+    unsigned long i;
 
-    if (open_ledger_records(path, records, &l) != LEDGER89_OK)
+    if (open_ledger(path, &l) != LEDGER89_OK)
     {
         return 0;
     }
     for (i = 1ul; i <= count; ++i)
     {
+        unsigned char v;
+        ledger89_slice s;
+
         v = (unsigned char)('a' + (int)(i % 26ul));
-        r.index = i;
-        r.tag = (unsigned long)i;
-        r.data = &v;
-        r.size = 1u;
-        if (ledger89_append(l, &r, 1u) != LEDGER89_OK)
+        s.data = &v;
+        s.size = 1u;
+        if (ledger89_appendv(l, &s, 1u, NULL) != LEDGER89_OK)
         {
             ledger89_close(l);
             return 0;
         }
+        if (rotate_after != 0 && i == (count / 2ul))
+        {
+            if (ledger89_sync(l, NULL) != LEDGER89_OK)
+            {
+                ledger89_close(l);
+                return 0;
+            }
+            if (ledger89_rotate(l) != LEDGER89_OK)
+            {
+                ledger89_close(l);
+                return 0;
+            }
+        }
     }
-    if (ledger89_sync(l) != LEDGER89_OK)
+    if (ledger89_sync(l, NULL) != LEDGER89_OK)
     {
         ledger89_close(l);
         return 0;
     }
     ledger89_close(l);
     return 1;
+}
+
+static void check_recoverable(const char *path)
+{
+    ledger89 *l;
+    ledger89_state st;
+    ledger89_slice s;
+    unsigned char v;
+
+    v = 'q';
+    s.data = &v;
+    s.size = 1u;
+    l = NULL;
+    CHECK_EQ(open_ledger(path, &l), LEDGER89_OK);
+    if (l == NULL)
+    {
+        return;
+    }
+    CHECK_EQ(ledger89_get_state(l, &st), LEDGER89_OK);
+    CHECK_U64(st.stable_end, st.end);
+    CHECK_EQ(ledger89_appendv(l, &s, 1u, NULL), LEDGER89_OK);
+    CHECK_EQ(ledger89_sync(l, NULL), LEDGER89_OK);
+    ledger89_close(l);
 }
 
 static void sweep_open(const char *path)
@@ -72,12 +94,20 @@ static void sweep_open(const char *path)
         ledger89 *l;
         int rc;
 
+        int fired;
+
         l = NULL;
         nomem_arm(i);
         rc = open_ledger(path, &l);
+        fired = nomem_fired();
         nomem_disarm();
-        if (rc == LEDGER89_ERR_NOMEM)
+        if (fired != 0)
         {
+            if (rc != LEDGER89_ENOMEM)
+            {
+                fprintf(stderr, "probe open i=%d rc=%d\n", i, rc);
+            }
+            CHECK_EQ(rc, LEDGER89_ENOMEM);
             CHECK(l == NULL);
             continue;
         }
@@ -92,7 +122,7 @@ static void sweep_open(const char *path)
     CHECK(i > 0);
 }
 
-static void sweep_read(void)
+static void sweep_append(void)
 {
     int i;
 
@@ -100,28 +130,42 @@ static void sweep_read(void)
     {
         char path[64];
         ledger89 *l;
-        ledger89_view v;
+        ledger89_slice s;
+        unsigned char v;
         int rc;
 
+        v = 'z';
+        s.data = &v;
+        s.size = 1u;
         CHECK(tmpdir_create(path, sizeof path) == 0);
-        CHECK(make_ledger(path, 2ul, 3ul) != 0);
+        CHECK(make_ledger(path, 64ul, 0) != 0);
         CHECK_EQ(open_ledger(path, &l), LEDGER89_OK);
         nomem_arm(i);
-        rc = ledger89_read(l, 1ul, &v);
-        nomem_disarm();
-        if (rc == LEDGER89_ERR_NOMEM)
+        rc = ledger89_appendv(l, &s, 1u, NULL);
         {
+            int fired;
+
+            fired = nomem_fired();
+            nomem_disarm();
             ledger89_close(l);
-            continue;
+            if (fired == 0)
+            {
+                CHECK_EQ(rc, LEDGER89_OK);
+                break;
+            }
+            if (rc != LEDGER89_ENOMEM && rc != LEDGER89_EPOISONED)
+            {
+                fprintf(stderr, "probe append i=%d rc=%d\n", i, rc);
+            }
+            CHECK(rc == LEDGER89_ENOMEM || rc == LEDGER89_EPOISONED);
         }
-        CHECK_EQ(rc, LEDGER89_OK);
-        ledger89_close(l);
-        break;
+        check_recoverable(path);
+        continue;
     }
     CHECK(i > 0);
 }
 
-static void sweep_iter_open(void)
+static void sweep_truncate(void)
 {
     int i;
 
@@ -129,31 +173,37 @@ static void sweep_iter_open(void)
     {
         char path[64];
         ledger89 *l;
-        ledger89_iter *it;
         int rc;
 
         CHECK(tmpdir_create(path, sizeof path) == 0);
-        CHECK(make_ledger(path, 2ul, 3ul) != 0);
+        CHECK(make_ledger(path, 6ul, 1) != 0);
         CHECK_EQ(open_ledger(path, &l), LEDGER89_OK);
-        it = NULL;
         nomem_arm(i);
-        rc = ledger89_iter_open(l, 0ul, 0ul, &it);
-        nomem_disarm();
-        if (rc == LEDGER89_ERR_NOMEM)
+        rc = ledger89_truncate_from(l, test_u64(3));
         {
-            CHECK(it == NULL);
+            int fired;
+
+            fired = nomem_fired();
+            nomem_disarm();
             ledger89_close(l);
-            continue;
+            if (fired == 0)
+            {
+                CHECK_EQ(rc, LEDGER89_OK);
+                break;
+            }
+            if (rc != LEDGER89_ENOMEM && rc != LEDGER89_EPOISONED)
+            {
+                fprintf(stderr, "probe truncate i=%d rc=%d\n", i, rc);
+            }
+            CHECK(rc == LEDGER89_ENOMEM || rc == LEDGER89_EPOISONED);
         }
-        CHECK_EQ(rc, LEDGER89_OK);
-        ledger89_iter_close(it);
-        ledger89_close(l);
-        break;
+        check_recoverable(path);
+        continue;
     }
     CHECK(i > 0);
 }
 
-static void sweep_iter_next(void)
+static void sweep_prune(void)
 {
     int i;
 
@@ -161,28 +211,33 @@ static void sweep_iter_next(void)
     {
         char path[64];
         ledger89 *l;
-        ledger89_iter *it;
-        ledger89_view v;
+        ledger89_index actual;
         int rc;
 
         CHECK(tmpdir_create(path, sizeof path) == 0);
-        CHECK(make_ledger(path, 2ul, 3ul) != 0);
+        CHECK(make_ledger(path, 6ul, 1) != 0);
         CHECK_EQ(open_ledger(path, &l), LEDGER89_OK);
-        it = NULL;
-        CHECK_EQ(ledger89_iter_open(l, 0ul, 0ul, &it), LEDGER89_OK);
         nomem_arm(i);
-        rc = ledger89_iter_next(it, &v);
-        nomem_disarm();
-        if (rc == LEDGER89_ERR_NOMEM)
+        rc = ledger89_prune_before(l, test_u64(4), &actual);
         {
-            ledger89_iter_close(it);
+            int fired;
+
+            fired = nomem_fired();
+            nomem_disarm();
             ledger89_close(l);
-            continue;
+            if (fired == 0)
+            {
+                CHECK_EQ(rc, LEDGER89_OK);
+                break;
+            }
+            if (rc != LEDGER89_ENOMEM && rc != LEDGER89_EPOISONED)
+            {
+                fprintf(stderr, "probe prune i=%d rc=%d\n", i, rc);
+            }
+            CHECK(rc == LEDGER89_ENOMEM || rc == LEDGER89_EPOISONED);
         }
-        CHECK_EQ(rc, LEDGER89_OK);
-        ledger89_iter_close(it);
-        ledger89_close(l);
-        break;
+        check_recoverable(path);
+        continue;
     }
     CHECK(i > 0);
 }
@@ -198,20 +253,29 @@ static void sweep_rotate(void)
         int rc;
 
         CHECK(tmpdir_create(path, sizeof path) == 0);
-        CHECK(make_ledger(path, 0ul, 4ul) != 0);
+        CHECK(make_ledger(path, 4ul, 0) != 0);
         CHECK_EQ(open_ledger(path, &l), LEDGER89_OK);
         nomem_arm(i);
         rc = ledger89_rotate(l);
-        nomem_disarm();
-        if (rc == LEDGER89_ERR_NOMEM)
         {
-            CHECK_EQ(ledger89_sync(l), LEDGER89_ERR_FAULTED);
+            int fired;
+
+            fired = nomem_fired();
+            nomem_disarm();
             ledger89_close(l);
-            continue;
+            if (fired == 0)
+            {
+                CHECK_EQ(rc, LEDGER89_OK);
+                break;
+            }
+            if (rc != LEDGER89_ENOMEM && rc != LEDGER89_EPOISONED)
+            {
+                fprintf(stderr, "probe rotate i=%d rc=%d\n", i, rc);
+            }
+            CHECK(rc == LEDGER89_ENOMEM || rc == LEDGER89_EPOISONED);
         }
-        CHECK_EQ(rc, LEDGER89_OK);
-        ledger89_close(l);
-        break;
+        check_recoverable(path);
+        continue;
     }
     CHECK(i > 0);
 }
@@ -222,9 +286,9 @@ int main(void)
 
     CHECK(tmpdir_create(path, sizeof path) == 0);
     sweep_open(path);
-    sweep_read();
-    sweep_iter_open();
-    sweep_iter_next();
+    sweep_append();
+    sweep_truncate();
+    sweep_prune();
     sweep_rotate();
 
     TEST_END;

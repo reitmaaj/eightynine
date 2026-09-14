@@ -2,36 +2,50 @@
 #define LEDGER89_H
 
 /*
- * ledger89.h - durable, append-only segmented record sequence (ISO C89).
+ * ledger89.h - durable ordered sequence of opaque byte records (ISO C89).
  *
- * libledger89 owns exactly one thing: a local, durable, append-only
- * sequence of opaque records stored in immutable rotated segments, with
- * crash recovery and deterministic iteration. It knows nothing about Raft
- * terms, leaders, agents, SQL, indexes, queries, capabilities, or
- * application semantics, and it never interprets record payloads.
+ * libledger89 owns exactly one thing:
  *
- * Model:
+ *   a locally durable, ordered, rewindable sequence of opaque byte
+ *   records, addressed by stable logical positions.
  *
- *   - indices are caller-supplied unsigned longs starting at 1;
- *   - an append batch is atomic: all records or none;
- *   - ledger89_sync() is the crash-durability barrier for appends;
- *   - sealed segments are immutable; only active.seg changes;
- *   - truncate_after removes a suffix; discard_before removes a prefix;
- *   - iteration is always ascending by ledger index.
+ * It is not a WAL, message log, or Raft log. Those are interpretations
+ * supplied by higher layers. The ledger never interprets payload bytes.
  *
- * Durability contract (normative):
+ * Logical state:
  *
- *   After a successful ledger89_sync(), every preceding successful append
- *   remains recoverable after process crash, OS crash, or power loss,
- *   subject to the filesystem honoring the required durability primitives.
+ *     [first, stable_end)  locally durable records
+ *     [stable_end, end)    appended but not yet durable
+ *
+ * Indices are contiguous within [first, end). A freshly created ledger has
+ * first == stable_end == end == 1; position 0 is never a record position.
+ *
+ * Structural operations:
+ *
+ *     appendv        moves end right
+ *     sync           moves stable_end right
+ *     truncate_from  moves end/stable_end left
+ *     prune_before   moves first right
+ *     rotate         seals the active part and starts a new one
+ *
+ * Suffix truncation increments revision because an index may subsequently
+ * refer to a different record. Prefix pruning does not change revision.
+ *
+ * Durability vocabulary:
+ *
+ *     stable_end is the exact local crash-recovery frontier. It means only
+ *     that the local storage contract guarantees recovery of this prefix
+ *     after a successful sync. It never means consensus commit, message
+ *     acknowledgement, or transaction commit.
  *
  * Threading:
  *
- *   A handle is not internally synchronized; the caller serializes calls
- *   on one handle. Independent handles on independent ledgers may be used
- *   concurrently.
+ *     A handle is not internally synchronized; the caller serializes calls
+ *     on one handle. A writable open owns the ledger exclusively; read-only
+ *     opens may coexist.
  */
 
+#include <limits.h>
 #include <stddef.h>
 
 #ifdef __cplusplus
@@ -39,206 +53,479 @@ extern "C"
 {
 #endif
 
-#define LEDGER89_VERSION_MAJOR 1
+#define LEDGER89_VERSION_MAJOR 2
 #define LEDGER89_VERSION_MINOR 0
 #define LEDGER89_VERSION_PATCH 0
 
-/* Maximum record payload accepted by ledger89_append. */
+/* Maximum record payload accepted by the append operations. */
 #define LEDGER89_MAX_RECORD_BYTES 16777216u
 
-/* Default segment byte target used when max_segment_bytes is zero. */
-#define LEDGER89_DEFAULT_SEGMENT_BYTES 67108864ul
+    /* -------------------------------------------------------------------------
+     * Portable 32/64-bit scalar types
+     *
+     * libledger89 requires an exact unsigned 32-bit C integer type. This
+     * remains valid strict C89 and works on ordinary ILP32 and LP64
+     * implementations.
+     * -------------------------------------------------------------------------
+     */
 
-    /* Record index. Index 0 is never a record index. */
-    typedef unsigned long ledger89_index;
+#if UINT_MAX == 4294967295U
+    typedef unsigned int ledger89_u32;
+#elif ULONG_MAX == 4294967295UL
+typedef unsigned long ledger89_u32;
+#else
+#error "libledger89 requires an exact 32-bit unsigned integer type"
+#endif
 
-    /* Opaque ledger handle and iterator. Representations are private. */
-    typedef struct ledger89 ledger89;
-    typedef struct ledger89_iter ledger89_iter;
+    typedef struct ledger89_u64
+    {
+        ledger89_u32 hi;
+        ledger89_u32 lo;
+    } ledger89_u64;
+
+    typedef ledger89_u64 ledger89_index;
+    typedef ledger89_u64 ledger89_revision;
 
     /*
-     * Result values. Positive values are states, negative values are
-     * errors, matching the sibling 89-series convention.
+     * Scalar helpers.
+     *
+     * cmp() returns <0, 0, >0 according to a < b, a == b, a > b.
      */
-    enum ledger89_status
+    int ledger89_u64_cmp(ledger89_u64 a, ledger89_u64 b);
+
+    int ledger89_u64_equal(ledger89_u64 a, ledger89_u64 b);
+
+    ledger89_u64 ledger89_u64_zero(void);
+
+    ledger89_u64 ledger89_u64_from_u32(ledger89_u32 value);
+
+    /* -------------------------------------------------------------------------
+     * Errors and statuses
+     * -------------------------------------------------------------------------
+     */
+
+    enum ledger89_result
     {
         LEDGER89_OK = 0,
 
-        /* Iteration finished normally. */
-        LEDGER89_END = 1,
+        /*
+         * Non-error status.
+         *
+         * Returned by ledger89_iter_next() when no record currently exists at
+         * the iterator position.
+         */
+        LEDGER89_DONE = 1,
 
-        /* Invalid argument or logical misuse. */
-        LEDGER89_ERR_ARG = -1,
-
-        /* I/O failure. */
-        LEDGER89_ERR_IO = -2,
-
-        /* Allocation failure. */
-        LEDGER89_ERR_NOMEM = -3,
-
-        /* Index outside the visible range. */
-        LEDGER89_ERR_NOTFOUND = -4,
-
-        /* Value not representable or outside structural limits. */
-        LEDGER89_ERR_RANGE = -5,
-
-        /* Non-contiguous append index. */
-        LEDGER89_ERR_SEQUENCE = -6,
-
-        /* Structural corruption or checksum failure. */
-        LEDGER89_ERR_CORRUPT = -7,
-
-        /* Another handle holds the ledger lock. */
-        LEDGER89_ERR_BUSY = -8,
-
-        /* Handle poisoned by an earlier I/O failure; reopen to recover. */
-        LEDGER89_ERR_FAULTED = -9,
-
-        /* Lifecycle or staleness violation. */
-        LEDGER89_ERR_STATE = -10
+        LEDGER89_EINVAL = -1,
+        LEDGER89_ENOMEM = -2,
+        LEDGER89_EIO = -3,
+        LEDGER89_ENOENT = -4,
+        LEDGER89_EEXIST = -5,
+        LEDGER89_EBUSY = -6,
+        LEDGER89_EROFS = -7,
+        LEDGER89_ECORRUPT = -8,
+        LEDGER89_EFORMAT = -9,
+        LEDGER89_ESTALE = -10,
+        LEDGER89_EGONE = -11,
+        LEDGER89_ERANGE = -12,
+        LEDGER89_EUNSTABLE = -13,
+        LEDGER89_ETOOSMALL = -14,
+        LEDGER89_EOVERFLOW = -15,
+        LEDGER89_EPOISONED = -16
     };
 
-    /*
-     * A record supplied to ledger89_append. data points to exactly size
-     * bytes and may be NULL only when size is zero. The caller owns the
-     * bytes, which need remain valid only for the duration of the call.
+    const char *ledger89_strerror(int result);
+
+    /* -------------------------------------------------------------------------
+     * Opaque ledger handle
+     * -------------------------------------------------------------------------
      */
-    typedef struct ledger89_record
-    {
-        ledger89_index index;
-        unsigned long tag;
-        const void *data;
-        size_t size;
-    } ledger89_record;
+
+    typedef struct ledger89 ledger89;
+
+    /* -------------------------------------------------------------------------
+     * Ledger identity and state
+     * -------------------------------------------------------------------------
+     */
 
     /*
-     * A record returned by ledger89_read or ledger89_iter_next. data
-     * points to exactly size bytes. The view remains valid until the next
-     * call on the same handle (read) or the same iterator (iteration).
-     */
-    typedef struct ledger89_view
-    {
-        ledger89_index index;
-        unsigned long tag;
-        const void *data;
-        size_t size;
-    } ledger89_view;
-
-    /*
-     * Configuration.
+     * Persistent identity of one ledger.
      *
-     * path names the ledger directory and is created when missing.
-     * max_segment_bytes and max_segment_records are rotation targets
-     * evaluated before an append. Zero means the default byte target or
-     * unlimited records respectively. The structure is read only during
-     * ledger89_open.
+     * Applications should treat bytes as opaque. The identity remains
+     * constant across close/open, append, truncate, and prune operations.
      */
-    typedef struct ledger89_config
+    typedef struct ledger89_id
     {
-        const char *path;
-        unsigned long max_segment_bytes;
-        unsigned long max_segment_records;
-    } ledger89_config;
+        unsigned char bytes[16];
+    } ledger89_id;
 
     /*
-     * Advisory observer called once per record of a successful append, in
-     * ascending index order, after logical visibility and before sync.
-     * The view is valid only for the duration of the callback, which must
-     * not call back into the ledger. Observers are never called for
-     * rejected appends or during recovery, and are advisory only: a
-     * consumer must be able to rebuild from iteration alone.
+     * All boundaries are exclusive on the right.
+     *
+     * Records currently available:
+     *
+     *     first <= index < end
+     *
+     * Records guaranteed locally durable:
+     *
+     *     first <= index < stable_end
+     *
+     * Invariants:
+     *
+     *     first <= stable_end <= end
      */
-    typedef void (*ledger89_observer_fn)(void *ctx, const ledger89_view *view);
+    typedef struct ledger89_state
+    {
+        ledger89_id id;
+        ledger89_revision revision;
+        ledger89_index first;
+        ledger89_index stable_end;
+        ledger89_index end;
+    } ledger89_state;
 
     /*
-     * Open or create a ledger. On success *out receives a handle. On every
-     * failure *out is NULL. A second open of the same path returns
-     * LEDGER89_ERR_BUSY. ledger89_open(NULL) and a NULL config or path
-     * return LEDGER89_ERR_ARG.
+     * Obtain one coherent snapshot of ledger state.
      */
-    int ledger89_open(ledger89 **out, const ledger89_config *config);
+    int ledger89_get_state(ledger89 *ledger, ledger89_state *state_out);
 
-    /* Close a handle. NULL is a no-op. Live iterators must be closed first. */
-    void ledger89_close(ledger89 *l);
+    /* -------------------------------------------------------------------------
+     * Open / close
+     * -------------------------------------------------------------------------
+     */
+
+#define LEDGER89_OPEN_RDONLY 0x0001UL
+#define LEDGER89_OPEN_RDWR 0x0002UL
+#define LEDGER89_OPEN_CREATE 0x0004UL
+#define LEDGER89_OPEN_EXCL 0x0008UL
 
     /*
-     * Append one atomic batch. The first record index must equal
-     * ledger89_last_index() + 1 and the rest must be consecutive. On
-     * success all records become logically visible; durability requires a
-     * later successful ledger89_sync. Logical rejection leaves the ledger
-     * unchanged. An I/O failure poisons the handle.
+     * Open a ledger identified by path.
+     *
+     * Exactly one of RDONLY and RDWR must be supplied.
+     *
+     * CREATE:
+     *     Create the ledger if it does not exist.
+     *     Valid only with RDWR.
+     *
+     * EXCL:
+     *     With CREATE, fail with EEXIST if the ledger already exists.
+     *
+     * Open performs recovery before returning.
+     *
+     * Corruption before the last durable frontier returns ECORRUPT.
+     * Incomplete/unstable tail data is discarded logically during recovery.
+     *
+     * A writable open obtains exclusive writer ownership and physically
+     * discards the unstable tail. Failure to obtain ownership returns EBUSY.
+     * A read-only open takes shared ownership and never mutates the ledger;
+     * mutating operations return EROFS.
+     *
+     * On every failure path *ledger_out is NULL.
      */
-    int ledger89_append(ledger89 *l, const ledger89_record *records,
-                        size_t count);
-
-    /* Make every preceding successful append crash-durable. */
-    int ledger89_sync(ledger89 *l);
+    int ledger89_open(ledger89 **ledger_out, const char *path,
+                      unsigned long flags);
 
     /*
-     * Seal the active segment and start a new one. Rotating an empty
-     * active segment is a no-op. Self-durable on success.
+     * Close the handle and release resources. NULL is a no-op.
+     *
+     * close() does NOT imply sync().
+     *
+     * Records in [stable_end, end) have no durability guarantee after close.
      */
-    int ledger89_rotate(ledger89 *l);
+    void ledger89_close(ledger89 *ledger);
+
+    /* -------------------------------------------------------------------------
+     * Append
+     * -------------------------------------------------------------------------
+     */
+
+    typedef struct ledger89_slice
+    {
+        const void *data;
+        size_t size;
+    } ledger89_slice;
 
     /*
-     * Keep exactly the records with index <= index and remove every record
-     * with index > index. index >= last_index is a no-op; index ==
-     * first_index - 1 empties the ledger; smaller values return
-     * LEDGER89_ERR_RANGE. Self-durable on success.
+     * Append one or more records atomically as one append batch.
+     *
+     * count must be > 0.
+     *
+     * For each slice:
+     *
+     *     size > 0  => data must not be NULL
+     *     size == 0 => data may be NULL
+     *
+     * On success:
+     *
+     *     *first_out = index assigned to records[0]
+     *
+     * and records receive consecutive indices. first_out may be NULL.
+     *
+     * Example:
+     *
+     *     old end = 42
+     *     count   = 3
+     *
+     * creates records 42, 43, 44 and sets new end = 45.
+     *
+     * The records become visible immediately through this handle but are not
+     * promised durable until sync() succeeds.
+     *
+     * An append failure does not expose a partial logical batch.
      */
-    int ledger89_truncate_after(ledger89 *l, ledger89_index index);
+    int ledger89_appendv(ledger89 *ledger, const ledger89_slice *records,
+                         size_t count, ledger89_index *first_out);
 
     /*
-     * Keep exactly the records with index >= index and remove every record
-     * with index < index. index <= first_index is a no-op; values above
-     * last_index clamp to last_index + 1. Self-durable on success.
+     * Compare-and-append variant.
+     *
+     * The append occurs only if BOTH:
+     *
+     *     current revision == expected_revision
+     *     current end      == expected_end
+     *
+     * Otherwise returns LEDGER89_ESTALE and performs no append.
+     *
+     * Comparing revision prevents the ABA case:
+     *
+     *     end = 100
+     *     truncate
+     *     append replacements
+     *     end = 100 again
+     *
+     * expected_end alone could not detect that history changed.
      */
-    int ledger89_discard_before(ledger89 *l, ledger89_index index);
+    int ledger89_appendv_at(ledger89 *ledger,
+                            ledger89_revision expected_revision,
+                            ledger89_index expected_end,
+                            const ledger89_slice *records, size_t count,
+                            ledger89_index *first_out);
 
     /*
-     * Install or clear (fn == NULL) the advisory observer. Returns
-     * LEDGER89_ERR_ARG for a NULL handle.
+     * Convenience operation for one record.
      */
-    int ledger89_set_observer(ledger89 *l, ledger89_observer_fn fn, void *ctx);
+    int ledger89_append(ledger89 *ledger, const void *data, size_t size,
+                        ledger89_index *index_out);
 
-    /* Smallest present record index; the base index when the ledger is empty.
+    /* -------------------------------------------------------------------------
+     * Durability
+     * -------------------------------------------------------------------------
      */
-    ledger89_index ledger89_first_index(const ledger89 *l);
-
-    /* Largest present record index; first_index - 1 when the ledger is empty.
-     */
-    ledger89_index ledger89_last_index(const ledger89 *l);
 
     /*
-     * Read one record by index. Returns LEDGER89_ERR_NOTFOUND when the
-     * index is outside [first_index, last_index]. The view is valid until
-     * the next call on the same handle.
+     * Stabilize every successfully appended record currently visible through
+     * this handle.
+     *
+     * On success:
+     *
+     *     stable_end == end
+     *
+     * and the prefix [first, stable_end) is guaranteed recoverable according
+     * to the storage contract. Sync on a clean ledger is a no-op.
+     *
+     * stable_end_out may be NULL.
+     *
+     * A failure for which the implementation cannot determine the resulting
+     * durable frontier poisons the writable handle. Subsequent mutating
+     * operations return EPOISONED. Close and reopen performs recovery and
+     * discovers the authoritative state.
      */
-    int ledger89_read(ledger89 *l, ledger89_index index, ledger89_view *out);
+    int ledger89_sync(ledger89 *ledger, ledger89_index *stable_end_out);
+
+    /* -------------------------------------------------------------------------
+     * Random read
+     * -------------------------------------------------------------------------
+     */
 
     /*
-     * Open an ascending iterator over the inclusive range. first == 0
-     * means from the first record; last == 0 means to the last record;
-     * out-of-range bounds clamp; an explicit reversed range returns
-     * LEDGER89_ERR_ARG. On success *out receives a handle that must be
-     * released with ledger89_iter_close.
+     * Read one record.
+     *
+     * If index < first:
+     *     returns EGONE
+     *
+     * If index >= end:
+     *     returns ENOENT
+     *
+     * size_out is required and receives the complete record size.
+     *
+     * If data_out == NULL:
+     *     no bytes are copied;
+     *     returns OK after reporting the record size.
+     *
+     * If data_out != NULL and capacity < record size:
+     *     returns ETOOSMALL;
+     *     copies nothing;
+     *     size_out still receives the required size.
+     *
+     * Reading an unstable record in [stable_end, end) is permitted. Such a
+     * record may disappear after crash/reopen.
      */
-    int ledger89_iter_open(ledger89 *l, ledger89_index first,
-                           ledger89_index last, ledger89_iter **out);
+    int ledger89_read(ledger89 *ledger, ledger89_index index, void *data_out,
+                      size_t capacity, size_t *size_out);
+
+    /* -------------------------------------------------------------------------
+     * Sequential iteration
+     * -------------------------------------------------------------------------
+     */
 
     /*
-     * Advance the iterator. Returns LEDGER89_OK with *out filled,
-     * LEDGER89_END when finished, LEDGER89_ERR_STATE when the ledger was
-     * structurally mutated after the iterator was opened, or a negative
-     * error. The view is valid until the next iterator call.
+     * Iterator state deliberately remains small and caller-owned.
+     *
+     * Applications must initialize it only through ledger89_iter_init().
+     * An iterator must not outlive its ledger handle.
      */
-    int ledger89_iter_next(ledger89_iter *it, ledger89_view *out);
+    typedef struct ledger89_iter
+    {
+        ledger89 *ledger;
+        ledger89_index next;
+        ledger89_revision revision;
+    } ledger89_iter;
 
-    /* Release an iterator. NULL is a no-op. */
-    void ledger89_iter_close(ledger89_iter *it);
+    /*
+     * Begin iteration at `from`.
+     *
+     * from may equal end.
+     *
+     * from < first returns EGONE.
+     * from > end returns ERANGE.
+     */
+    int ledger89_iter_init(ledger89_iter *iter, ledger89 *ledger,
+                           ledger89_index from);
 
-    /* Static human-readable name of a status value. */
-    const char *ledger89_strerror(int status);
+    /*
+     * Return the record at iter->next and advance the iterator.
+     *
+     * index_out may be NULL.
+     * size_out is required.
+     *
+     * Payload buffer rules match ledger89_read().
+     *
+     * If data_out == NULL, the iterator reports metadata and advances without
+     * copying payload bytes. The caller may subsequently call ledger89_read()
+     * using index_out.
+     *
+     * If capacity is insufficient:
+     *     returns ETOOSMALL
+     *     reports required size
+     *     does NOT advance
+     *
+     * If iter->next >= current end:
+     *     returns DONE
+     *     does NOT advance
+     *
+     * DONE is not permanent. An append may extend end; a later call may then
+     * return another record.
+     *
+     * If suffix history changed since ledger89_iter_init():
+     *     returns ESTALE
+     *
+     * If prefix pruning moved first beyond iter->next:
+     *     returns EGONE
+     *
+     * Ordinary append and sync operations do not invalidate the iterator.
+     */
+    int ledger89_iter_next(ledger89_iter *iter, ledger89_index *index_out,
+                           void *data_out, size_t capacity, size_t *size_out);
+
+    /* -------------------------------------------------------------------------
+     * Suffix truncation
+     * -------------------------------------------------------------------------
+     */
+
+    /*
+     * Remove every record with index >= from.
+     *
+     * Preconditions:
+     *
+     *     ledger opened RDWR
+     *     end == stable_end
+     *     first <= from <= end
+     *
+     * If end != stable_end:
+     *     returns EUNSTABLE
+     *
+     * If from < first:
+     *     returns EGONE
+     *
+     * If from > end:
+     *     returns ERANGE
+     *
+     * If from == end:
+     *     succeeds as a no-op;
+     *     revision does not change.
+     *
+     * If records are removed:
+     *
+     *     end        = from
+     *     stable_end = from
+     *     revision   = revision + 1
+     *
+     * Successful truncation is durable before this function returns.
+     *
+     * Indices in the removed suffix may subsequently be reused by append.
+     */
+    int ledger89_truncate_from(ledger89 *ledger, ledger89_index from);
+
+    /* -------------------------------------------------------------------------
+     * Prefix pruning
+     * -------------------------------------------------------------------------
+     */
+
+    /*
+     * Forget old durable records before `requested_first`.
+     *
+     * This operation supplies the MECHANISM for retention, not retention
+     * policy.
+     *
+     * Preconditions:
+     *
+     *     ledger opened RDWR
+     *     requested_first <= stable_end
+     *
+     * If requested_first > stable_end:
+     *     returns EUNSTABLE
+     *
+     * Implementations may prune only at safe physical boundaries such as
+     * complete sealed parts. Therefore, on success:
+     *
+     *     old first <= actual_first <= requested_first
+     *
+     * and:
+     *
+     *     first = actual_first
+     *
+     * actual_first_out is required.
+     *
+     * Records with index < actual_first subsequently return EGONE.
+     *
+     * Prefix pruning does NOT change revision because no surviving index
+     * changes meaning.
+     *
+     * Successful pruning is durable before this function returns.
+     */
+    int ledger89_prune_before(ledger89 *ledger, ledger89_index requested_first,
+                              ledger89_index *actual_first_out);
+
+    /* -------------------------------------------------------------------------
+     * Rotation and verification (administrative)
+     * -------------------------------------------------------------------------
+     */
+
+    /*
+     * Seal the active part and start a new one. Rotating an active part that
+     * holds no records is a no-op. Rotation syncs first when the active part
+     * holds unstable records. Self-durable on success.
+     */
+    int ledger89_rotate(ledger89 *ledger);
+
+    /*
+     * Recompute every checksum in the ledger: sealed part digests, batch
+     * checksums, record payload checksums, and the recovered active prefix.
+     *
+     * Returns LEDGER89_OK when every checksum matches, LEDGER89_ECORRUPT
+     * when any does not, or a negative I/O error.
+     */
+    int ledger89_verify(ledger89 *ledger);
 
 #ifdef __cplusplus
 }

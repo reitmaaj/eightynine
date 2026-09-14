@@ -1,216 +1,172 @@
-/* test_fault_matrix.c - I/O failure matrix over the model filesystem.
- *
- * Mirrors the crash sweeps, but injects a single failing call instead of a
- * power loss: the process survives, the handle faults, and reopening sees
- * the live (partially modified) state. Recovery must expose a legal
- * contiguous state, and the ledger must remain usable afterwards. */
-
-#include <string.h>
-
-#include "test.h"
+/* test_fault_matrix.c - single-call I/O failures poison mutating handles and
+ * every reopen recovers a legal state. */
 
 #include "crash_util.h"
+#include "test.h"
 
-enum
+typedef int (*mut_fn)(ledger89 *l);
+
+enum kind
 {
-    OP_APPEND = 0,
-    OP_ROTATE,
-    OP_TRUNCATE,
-    OP_DISCARD,
-    OP_DISCARD_ALL
+    KIND_APPEND = 0,
+    KIND_TRUNCATE = 1,
+    KIND_PRUNE = 2,
+    KIND_ROTATE = 3
 };
 
-static int fired_count;
-
-static unsigned long records_for(int op)
+static int do_append(ledger89 *l)
 {
-    if (op == OP_APPEND)
+    if (cu_append(l, 7ul) != LEDGER89_OK)
     {
-        return 0ul;
+        return LEDGER89_EIO;
     }
-    if (op == OP_ROTATE)
-    {
-        return 0ul;
-    }
-    return 2ul;
+    return ledger89_sync(l, NULL);
 }
 
-static int run_case(const mfs *base, int op, int fail_op, int skip)
+static int do_truncate(ledger89 *l)
 {
-    mfs fs;
-    led89_io io;
-    ledger89 *l;
-    ledger89_index first;
-    ledger89_index last;
-    ledger89_index next;
-    int fired;
+    return ledger89_truncate_from(l, test_u64(2));
+}
 
-    mfs_init(&fs);
-    mfs_clone(&fs, base);
-    CHECK_EQ(cu_open(&fs, &io, &l, records_for(op)), LEDGER89_OK);
-    mfs_fail_at(&fs, fail_op, skip);
-    if (op == OP_APPEND)
+static int do_prune(ledger89 *l)
+{
+    ledger89_index actual;
+
+    return ledger89_prune_before(l, test_u64(4), &actual);
+}
+
+static int do_rotate(ledger89 *l)
+{
+    return ledger89_rotate(l);
+}
+
+static void prestate(mfs *fs, led89_io *io, ledger89 **l)
+{
+    CHECK_EQ(cu_open(fs, io, l), LEDGER89_OK);
+    CHECK(cu_fill_range(*l, 1ul, 3ul));
+    CHECK_EQ(ledger89_sync(*l, NULL), LEDGER89_OK);
+    CHECK_EQ(ledger89_rotate(*l), LEDGER89_OK);
+    CHECK(cu_fill_range(*l, 4ul, 6ul));
+    CHECK_EQ(ledger89_sync(*l, NULL), LEDGER89_OK);
+}
+
+static void validate(int kind, ledger89 *l, const ledger89_state *st)
+{
+    CHECK_U64(st->stable_end, st->end);
+    if (kind == KIND_APPEND)
     {
-        (void)cu_append(l, 4ul);
+        CHECK(st->end.lo >= 7u && st->end.lo <= 8u);
+        if (st->end.lo == 8u)
+        {
+            CHECK(cu_check_range(l, 1ul, 7ul));
+        }
+        else
+        {
+            CHECK(cu_check_range(l, 1ul, 6ul));
+        }
     }
-    else if (op == OP_ROTATE)
+    else if (kind == KIND_TRUNCATE)
     {
-        (void)ledger89_rotate(l);
+        if (st->revision.lo == 0u)
+        {
+            CHECK_U64(st->end, test_u64(7));
+            CHECK(cu_check_range(l, 1ul, 6ul));
+        }
+        else
+        {
+            CHECK_EQ(st->revision.lo, 1u);
+            CHECK_U64(st->end, test_u64(2));
+            CHECK(cu_check_range(l, 1ul, 1ul));
+        }
     }
-    else if (op == OP_TRUNCATE)
+    else if (kind == KIND_PRUNE)
     {
-        (void)ledger89_truncate_after(l, 3ul);
-    }
-    else if (op == OP_DISCARD)
-    {
-        (void)ledger89_discard_before(l, 4ul);
+        CHECK_U64(st->end, test_u64(7));
+        CHECK_EQ(st->revision.lo, 0u);
+        CHECK(st->first.lo == 1u || st->first.lo == 4u);
+        CHECK(cu_check_range(l, st->first.lo, 6ul));
     }
     else
     {
-        (void)ledger89_discard_before(l, 99ul);
+        CHECK_U64(st->first, test_u64(1));
+        CHECK_U64(st->end, test_u64(7));
+        CHECK_EQ(st->revision.lo, 0u);
+        CHECK(cu_check_range(l, 1ul, 6ul));
     }
-    fired = mfs_fail_fired(&fs);
-    if (fired == 0)
-    {
-        ledger89_close(l);
-        mfs_destroy(&fs);
-        return 0;
-    }
-    ++fired_count;
-    ledger89_close(l);
-    CHECK_EQ(cu_open(&fs, &io, &l, records_for(op)), LEDGER89_OK);
-    if (l == NULL)
-    {
-        mfs_destroy(&fs);
-        return 1;
-    }
-    first = ledger89_first_index(l);
-    last = ledger89_last_index(l);
-    if (op == OP_APPEND)
-    {
-        CHECK(last >= 3ul);
-        CHECK(last <= 4ul);
-        CHECK(cu_check_range(l, 1ul, last) != 0);
-        next = last + 1ul;
-    }
-    else if (op == OP_ROTATE)
-    {
-        CHECK_EQ(last, 6ul);
-        CHECK(cu_check_range(l, 1ul, 6ul) != 0);
-        next = 7ul;
-    }
-    else if (op == OP_TRUNCATE)
-    {
-        CHECK_EQ(first, 1ul);
-        CHECK(last >= 3ul);
-        CHECK(last <= 8ul);
-        CHECK(cu_check_range(l, 1ul, last) != 0);
-        next = last + 1ul;
-    }
-    else if (op == OP_DISCARD)
-    {
-        CHECK(first >= 1ul);
-        CHECK(first <= 4ul);
-        CHECK_EQ(last, 8ul);
-        CHECK(cu_check_range(l, first, last) != 0);
-        next = 9ul;
-    }
-    else
-    {
-        CHECK(first >= 1ul);
-        CHECK(first <= 9ul);
-        CHECK_EQ(last, 8ul);
-        CHECK(cu_check_range(l, first, last) != 0);
-        next = 9ul;
-    }
-    CHECK_EQ(cu_append(l, next), LEDGER89_OK);
-    CHECK_EQ(ledger89_sync(l), LEDGER89_OK);
-    ledger89_close(l);
-    mfs_destroy(&fs);
-    return 1;
+    CHECK_EQ(cu_append(l, 9ul), LEDGER89_OK);
+    CHECK_EQ(ledger89_sync(l, NULL), LEDGER89_OK);
 }
 
-static void run_sweep(const mfs *base, int op, int fail_op)
+static void sweep(int kind, int op, mut_fn fn)
 {
     int skip;
 
-    for (skip = 0;; ++skip)
+    for (skip = 0; skip < 200; ++skip)
     {
-        if (run_case(base, op, fail_op, skip) == 0)
+        mfs fs;
+        led89_io io;
+        ledger89 *l;
+        ledger89_state st;
+
+        mfs_init(&fs);
+        prestate(&fs, &io, &l);
+        mfs_fail_at(&fs, op, skip);
         {
-            break;
+            int oprc;
+
+            oprc = fn(l);
+            if (mfs_fail_fired(&fs) == 0)
+            {
+                CHECK_EQ(oprc, LEDGER89_OK);
+                ledger89_close(l);
+                mfs_destroy(&fs);
+                return;
+            }
+            if (oprc == LEDGER89_OK)
+            {
+                /* A harmless failure such as post-publication garbage
+                 * collection leaves the handle usable. */
+                CHECK_EQ(cu_append(l, 9ul), LEDGER89_OK);
+            }
+            else
+            {
+                CHECK_EQ(cu_append(l, 9ul), LEDGER89_EPOISONED);
+            }
         }
+        ledger89_close(l);
+        if (cu_reopen(&fs, &io, &l, &st) == 0)
+        {
+            CHECK(0);
+            mfs_destroy(&fs);
+            return;
+        }
+        validate(kind, l, &st);
+        ledger89_close(l);
+        mfs_destroy(&fs);
     }
+    CHECK(0);
 }
 
-static void run_ops(const mfs *base, int op)
+static void sweep_all(int kind, mut_fn fn)
 {
-    run_sweep(base, op, MFS_OP_PWRITE);
-    run_sweep(base, op, MFS_OP_SYNC);
-    run_sweep(base, op, MFS_OP_RENAME);
-    run_sweep(base, op, MFS_OP_UNLINK);
-    run_sweep(base, op, MFS_OP_SYNC_DIR);
-    run_sweep(base, op, MFS_OP_TRUNCATE);
-    run_sweep(base, op, MFS_OP_PREAD);
-    run_sweep(base, op, MFS_OP_SIZE);
-}
-
-static int build_base(mfs *base, int op)
-{
-    led89_io io;
-    ledger89 *l;
-
-    mfs_init(base);
-    CHECK_EQ(cu_open(base, &io, &l, records_for(op)), LEDGER89_OK);
-    if (l == NULL)
-    {
-        return 0;
-    }
-    if (op == OP_ROTATE)
-    {
-        CHECK(cu_fill(l, 3ul) != 0);
-        CHECK_EQ(ledger89_sync(l), LEDGER89_OK);
-        CHECK_EQ(ledger89_rotate(l), LEDGER89_OK);
-        CHECK(cu_fill_range(l, 4ul, 6ul) != 0);
-    }
-    else if (op == OP_APPEND)
-    {
-        CHECK(cu_fill(l, 3ul) != 0);
-    }
-    else
-    {
-        CHECK(cu_fill(l, 8ul) != 0);
-    }
-    CHECK_EQ(ledger89_sync(l), LEDGER89_OK);
-    ledger89_close(l);
-    return 1;
+    sweep(kind, MFS_OP_PWRITE, fn);
+    sweep(kind, MFS_OP_SYNC, fn);
+    sweep(kind, MFS_OP_RENAME, fn);
+    sweep(kind, MFS_OP_UNLINK, fn);
+    sweep(kind, MFS_OP_TRUNCATE, fn);
+    sweep(kind, MFS_OP_OPEN, fn);
+    sweep(kind, MFS_OP_SYNC_DIR, fn);
+    sweep(kind, MFS_OP_LIST_OPEN, fn);
+    sweep(kind, MFS_OP_LIST_NEXT, fn);
+    sweep(kind, MFS_OP_LIST_CLOSE, fn);
+    sweep(kind, MFS_OP_PREAD, fn);
 }
 
 int main(void)
 {
-    mfs base;
-
-    CHECK(build_base(&base, OP_APPEND) != 0);
-    run_ops(&base, OP_APPEND);
-    mfs_destroy(&base);
-
-    CHECK(build_base(&base, OP_ROTATE) != 0);
-    run_ops(&base, OP_ROTATE);
-    mfs_destroy(&base);
-
-    CHECK(build_base(&base, OP_TRUNCATE) != 0);
-    run_ops(&base, OP_TRUNCATE);
-    mfs_destroy(&base);
-
-    CHECK(build_base(&base, OP_DISCARD) != 0);
-    run_ops(&base, OP_DISCARD);
-    mfs_destroy(&base);
-
-    CHECK(build_base(&base, OP_DISCARD_ALL) != 0);
-    run_ops(&base, OP_DISCARD_ALL);
-    mfs_destroy(&base);
-
-    CHECK(fired_count >= 30);
-
+    sweep_all(KIND_APPEND, do_append);
+    sweep_all(KIND_TRUNCATE, do_truncate);
+    sweep_all(KIND_PRUNE, do_prune);
+    sweep_all(KIND_ROTATE, do_rotate);
     TEST_END;
 }

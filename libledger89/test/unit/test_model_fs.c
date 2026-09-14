@@ -44,11 +44,11 @@ int main(void)
     CHECK_EQ(io.open(io.ctx, "ledger/a", LED89_OPEN_READ, &fd), LEDGER89_OK);
     CHECK_EQ(io.pread(io.ctx, fd, buf, 3u, 0u), LEDGER89_OK);
     CHECK(memcmp(buf, "abc", 3u) == 0);
-    CHECK_EQ(io.pread(io.ctx, fd, buf, 4u, 0u), LEDGER89_ERR_IO);
+    CHECK_EQ(io.pread(io.ctx, fd, buf, 4u, 0u), LEDGER89_EIO);
 
     /* MR03: a torn write persists only its prefix and fails. */
     fs.torn_bytes = 2;
-    CHECK_EQ(io.pwrite(io.ctx, fd, "XYZ", 3u, 3u), LEDGER89_ERR_IO);
+    CHECK_EQ(io.pwrite(io.ctx, fd, "XYZ", 3u, 3u), LEDGER89_EIO);
     CHECK_EQ(mfs_live_size(&fs, "ledger/a"), 5u);
     CHECK_EQ(io.pread(io.ctx, fd, buf, 2u, 3u), LEDGER89_OK);
     CHECK(memcmp(buf, "XY", 2u) == 0);

@@ -1,71 +1,95 @@
-/* test_stress_huge.c - ST02: a 1 MiB binary payload and a large batch in one
- * segment; boundary bytes and tags stay exact. */
+/* test_stress_huge.c - large payloads and large batches. */
 
 #include <stdlib.h>
 #include <string.h>
 
+#include "fixture.h"
 #include "test.h"
 
-#include "fixture.h"
-
-#define BIG_BYTES 1048576u
-#define BATCH_COUNT 4096u
-#define CHUNK 64u
+#define HUGE_BYTES 1048576u
+#define BATCH_RECORDS 4096u
 
 int main(void)
 {
     fx f;
-    unsigned char *big;
-    ledger89_record batch[CHUNK];
-    ledger89_view v;
-    ledger89_index base;
-    size_t i;
-    size_t k;
-    size_t n;
+    unsigned char *huge;
+    unsigned char *batch;
+    ledger89_slice *slices;
+    ledger89_index first;
+    ledger89_state st;
+    size_t size;
+    unsigned long i;
+    int rc;
 
-    big = (unsigned char *)malloc(BIG_BYTES);
-    CHECK(big != NULL);
-    if (big == NULL)
+    huge = (unsigned char *)malloc(HUGE_BYTES);
+    batch = (unsigned char *)malloc(BATCH_RECORDS);
+    slices = (ledger89_slice *)malloc(BATCH_RECORDS * sizeof(ledger89_slice));
+    CHECK(huge != NULL && batch != NULL && slices != NULL);
+    if (huge == NULL || batch == NULL || slices == NULL)
     {
-        TEST_END;
+        return 1;
     }
-    for (i = 0u; i < (size_t)BIG_BYTES; ++i)
+    for (i = 0ul; i < HUGE_BYTES; ++i)
     {
-        big[i] = (unsigned char)(i * 31u + 7u);
+        huge[i] = (unsigned char)(i & 0xFFul);
+    }
+    for (i = 0ul; i < BATCH_RECORDS; ++i)
+    {
+        batch[i] = (unsigned char)(i & 0xFFul);
+        slices[i].data = &batch[i];
+        slices[i].size = 1u;
     }
 
     CHECK_EQ(fx_open(&f), LEDGER89_OK);
-    CHECK_EQ(fx_append(&f, 1ul, 77ul, big, (size_t)BIG_BYTES), LEDGER89_OK);
-
-    base = 2ul;
-    k = 0u;
-    while (k < (size_t)BATCH_COUNT)
     {
-        n = 0u;
-        while (n < (size_t)CHUNK && k < (size_t)BATCH_COUNT)
-        {
-            fx_record(&batch[n], base + (ledger89_index)k, (unsigned long)k,
-                      big, (size_t)CHUNK);
-            ++n;
-            ++k;
-        }
-        CHECK_EQ(ledger89_append(f.l, batch, n), LEDGER89_OK);
+        ledger89_slice s;
+
+        s.data = huge;
+        s.size = HUGE_BYTES;
+        rc = ledger89_appendv(f.l, &s, 1u, &first);
+        CHECK_EQ(rc, LEDGER89_OK);
+        CHECK_U64(first, test_u64(1));
     }
-    CHECK_EQ(ledger89_sync(f.l), LEDGER89_OK);
-    CHECK_EQ(ledger89_last_index(f.l), 1ul + (ledger89_index)BATCH_COUNT);
+    rc = ledger89_appendv(f.l, slices, BATCH_RECORDS, &first);
+    CHECK_EQ(rc, LEDGER89_OK);
+    CHECK_U64(first, test_u64(2));
+    CHECK_EQ(ledger89_sync(f.l, NULL), LEDGER89_OK);
 
-    CHECK_EQ(fx_read(&f, 1ul, &v), LEDGER89_OK);
-    CHECK_EQ(v.size, (size_t)BIG_BYTES);
-    CHECK_EQ(((const unsigned char *)v.data)[0], (unsigned char)7);
-    CHECK_EQ(((const unsigned char *)v.data)[(size_t)BIG_BYTES - 1u],
-             (unsigned char)(((size_t)BIG_BYTES - 1u) * 31u + 7u));
-    CHECK_EQ(fx_read(&f, 1ul + (ledger89_index)BATCH_COUNT, &v), LEDGER89_OK);
-    CHECK_EQ(v.tag, (unsigned long)((size_t)BATCH_COUNT - 1u));
-    CHECK_EQ(v.size, (size_t)CHUNK);
-    CHECK_EQ(memcmp(v.data, big, (size_t)CHUNK), 0);
+    rc = ledger89_get_state(f.l, &st);
+    CHECK_EQ(rc, LEDGER89_OK);
+    CHECK_U64(st.end, test_u64(BATCH_RECORDS + 2ul));
 
-    free(big);
+    /* Verify the huge payload through a read. */
+    {
+        unsigned char *out;
+
+        out = (unsigned char *)malloc(HUGE_BYTES);
+        CHECK(out != NULL);
+        if (out != NULL)
+        {
+            rc = ledger89_read(f.l, test_u64(1), out, HUGE_BYTES, &size);
+            CHECK_EQ(rc, LEDGER89_OK);
+            CHECK_EQ(size, HUGE_BYTES);
+            CHECK(memcmp(out, huge, HUGE_BYTES) == 0);
+            free(out);
+        }
+    }
+    /* Spot-check the large batch. */
+    {
+        unsigned char out[1];
+
+        rc = ledger89_read(f.l, test_u64(2), out, sizeof out, &size);
+        CHECK_EQ(rc, LEDGER89_OK);
+        CHECK_EQ(out[0], 0u);
+        rc = ledger89_read(f.l, test_u64(BATCH_RECORDS + 1ul), out, sizeof out,
+                           &size);
+        CHECK_EQ(rc, LEDGER89_OK);
+        CHECK_EQ(out[0], (unsigned char)((BATCH_RECORDS - 1u) & 0xFFu));
+    }
     fx_close(&f);
 
+    free(slices);
+    free(batch);
+    free(huge);
     TEST_END;
 }

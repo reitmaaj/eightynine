@@ -34,6 +34,7 @@ enum
     MFS_OP_LIST_OPEN,
     MFS_OP_LIST_NEXT,
     MFS_OP_LIST_CLOSE,
+    MFS_OP_ENTROPY,
     MFS_OP_COUNT
 };
 
@@ -68,6 +69,7 @@ typedef struct mfs
     int fail_sync_dir;
     int fail_lock;
     int fail_list;
+    int fail_entropy;
 
     /* Torn write: when >= 0, the next pwrite persists only this many bytes
      * and reports failure; MFS_TORN_HALF persists half. Consumed by that

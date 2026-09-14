@@ -1,195 +1,218 @@
-/* test_real_kill.c - real-filesystem process-kill suite.
- *
- * The parent builds a durable pre-state, forks a child that opens the
- * ledger through a process-kill I/O wrapper, and terminates the child at an
- * armed syscall boundary. The parent then reopens the ledger and checks that
- * the recovered state is legal. */
+/* test_real_kill.c - real-filesystem process kills at armed syscalls. */
 
-#include <stdlib.h>
-#include <string.h>
+#include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
-#include "test.h"
-
-#include "crash_util.h"
 #include "real_io.h"
+#include "test.h"
 #include "tmpdir.h"
 
-enum
+static int open_plain(const char *path, ledger89 **l)
 {
-    K_APPEND = 0,
-    K_ROTATE,
-    K_TRUNCATE
-};
-
-static unsigned long records_for(int kind)
-{
-    if (kind == K_TRUNCATE)
-    {
-        return 2ul;
-    }
-    return 0ul;
+    *l = NULL;
+    return ledger89_open(l, path, LEDGER89_OPEN_RDWR | LEDGER89_OPEN_CREATE);
 }
 
-static int build_pre(const char *path, int kind)
+static int make_ledger(const char *path, unsigned long count, int rotate_after)
 {
-    ledger89_config cfg;
     ledger89 *l;
-    int ok;
+    unsigned long i;
 
-    memset(&cfg, 0, sizeof cfg);
-    cfg.path = path;
-    cfg.max_segment_records = records_for(kind);
-    l = NULL;
-    if (ledger89_open(&l, &cfg) != LEDGER89_OK)
+    if (open_plain(path, &l) != LEDGER89_OK)
     {
         return 0;
     }
-    ok = 1;
-    if (kind == K_ROTATE)
+    for (i = 1ul; i <= count; ++i)
     {
-        if (cu_fill(l, 3ul) == 0)
+        unsigned char v;
+        ledger89_slice s;
+
+        v = (unsigned char)('a' + (int)(i % 26ul));
+        s.data = &v;
+        s.size = 1u;
+        if (ledger89_appendv(l, &s, 1u, NULL) != LEDGER89_OK)
         {
-            ok = 0;
+            ledger89_close(l);
+            return 0;
         }
-        if (ok != 0 && ledger89_sync(l) != LEDGER89_OK)
+        if (rotate_after != 0 && i == (count / 2ul))
         {
-            ok = 0;
-        }
-        if (ok != 0 && ledger89_rotate(l) != LEDGER89_OK)
-        {
-            ok = 0;
-        }
-        if (ok != 0 && cu_fill_range(l, 4ul, 6ul) == 0)
-        {
-            ok = 0;
+            if (ledger89_sync(l, NULL) != LEDGER89_OK ||
+                ledger89_rotate(l) != LEDGER89_OK)
+            {
+                ledger89_close(l);
+                return 0;
+            }
         }
     }
-    else if (kind == K_TRUNCATE)
+    if (ledger89_sync(l, NULL) != LEDGER89_OK)
     {
-        if (cu_fill(l, 8ul) == 0)
-        {
-            ok = 0;
-        }
-    }
-    else
-    {
-        if (cu_fill(l, 3ul) == 0)
-        {
-            ok = 0;
-        }
-    }
-    if (ok != 0 && ledger89_sync(l) != LEDGER89_OK)
-    {
-        ok = 0;
+        ledger89_close(l);
+        return 0;
     }
     ledger89_close(l);
-    return ok;
+    return 1;
 }
 
-static void child_run(const char *path, int kind, int op, int skip)
+enum kill_kind
 {
-    real_io ri;
-    ledger89_config cfg;
-    ledger89 *l;
+    KILL_APPEND = 0,
+    KILL_TRUNCATE = 1,
+    KILL_PRUNE = 2
+};
 
-    real_io_init(&ri);
-    memset(&cfg, 0, sizeof cfg);
-    cfg.path = path;
-    cfg.max_segment_records = records_for(kind);
+static void child_run(const char *path, int op, int skip, int kind)
+{
+    real_io r;
+    ledger89 *l;
+    unsigned char v;
+    ledger89_slice s;
+
+    real_io_init(&r);
+    real_io_arm(&r, op, skip);
     l = NULL;
-    if (led89_open_io(&l, &cfg, real_io_api(&ri)) != LEDGER89_OK)
+    if (led89_open_io(&l, path, LEDGER89_OPEN_RDWR, real_io_api(&r)) !=
+        LEDGER89_OK)
     {
-        _exit(1);
+        _exit(0);
     }
-    real_io_arm(&ri, op, skip);
-    if (kind == K_APPEND)
+    v = 'z';
+    s.data = &v;
+    s.size = 1u;
+    if (kind == KILL_APPEND)
     {
-        (void)cu_append(l, 4ul);
-        (void)ledger89_sync(l);
+        (void)ledger89_appendv(l, &s, 1u, NULL);
+        (void)ledger89_sync(l, NULL);
     }
-    else if (kind == K_ROTATE)
+    else if (kind == KILL_TRUNCATE)
     {
-        (void)ledger89_rotate(l);
+        (void)ledger89_truncate_from(l, test_u64(2));
     }
     else
     {
-        (void)ledger89_truncate_after(l, 3ul);
+        ledger89_index actual;
+
+        (void)ledger89_prune_before(l, test_u64(4), &actual);
     }
-    ledger89_close(l);
     _exit(0);
 }
 
-static void run_case(int kind, int op, int skip)
+static void check_append_state(ledger89 *l)
 {
-    char path[64];
-    pid_t pid;
-    int status;
-    ledger89_config cfg;
-    ledger89 *l;
-    ledger89_index first;
-    ledger89_index last;
+    ledger89_state st;
+    unsigned long end;
 
-    CHECK(tmpdir_create(path, sizeof path) == 0);
-    CHECK(build_pre(path, kind) != 0);
+    CHECK_EQ(ledger89_get_state(l, &st), LEDGER89_OK);
+    end = st.end.lo;
+    CHECK(end >= 4ul && end <= 5ul);
+    CHECK_U64(st.stable_end, st.end);
+    if (end == 5ul)
+    {
+        unsigned char buf[2];
+        size_t size;
 
-    pid = fork();
-    CHECK(pid >= 0);
-    if (pid == 0)
-    {
-        child_run(path, kind, op, skip);
-        _exit(1);
+        CHECK_EQ(ledger89_read(l, test_u64(4), buf, sizeof buf, &size),
+                 LEDGER89_OK);
+        CHECK_EQ(size, 1u);
+        CHECK_EQ(buf[0], (unsigned char)'z');
     }
-    CHECK(waitpid(pid, &status, 0) == pid);
-    CHECK(WIFEXITED(status) != 0);
-    if (WIFEXITED(status) != 0)
-    {
-        CHECK(WEXITSTATUS(status) == 0 || WEXITSTATUS(status) == 99);
-    }
+}
 
-    memset(&cfg, 0, sizeof cfg);
-    cfg.path = path;
-    cfg.max_segment_records = records_for(kind);
-    l = NULL;
-    CHECK_EQ(ledger89_open(&l, &cfg), LEDGER89_OK);
-    if (l == NULL)
+static void check_truncate_state(ledger89 *l)
+{
+    ledger89_state st;
+    unsigned char buf[2];
+    size_t size;
+
+    CHECK_EQ(ledger89_get_state(l, &st), LEDGER89_OK);
+    CHECK_U64(st.stable_end, st.end);
+    if (st.revision.lo == 0u)
     {
-        return;
-    }
-    first = ledger89_first_index(l);
-    last = ledger89_last_index(l);
-    if (kind == K_TRUNCATE)
-    {
-        CHECK_EQ(first, 1ul);
-        CHECK(last >= 3ul);
-        CHECK(last <= 8ul);
-        CHECK(cu_check_range(l, 1ul, last) != 0);
-    }
-    else if (kind == K_ROTATE)
-    {
-        CHECK_EQ(last, 6ul);
-        CHECK(cu_check_range(l, 1ul, 6ul) != 0);
+        CHECK_U64(st.end, test_u64(7));
     }
     else
     {
-        CHECK(last >= 3ul);
-        CHECK(last <= 4ul);
-        CHECK(cu_check_range(l, 1ul, last) != 0);
+        CHECK_EQ(st.revision.lo, 1u);
+        CHECK_U64(st.end, test_u64(2));
+        CHECK_EQ(ledger89_read(l, test_u64(1), buf, sizeof buf, &size),
+                 LEDGER89_OK);
     }
-    ledger89_close(l);
+}
+
+static void check_prune_state(ledger89 *l)
+{
+    ledger89_state st;
+    unsigned char buf[2];
+    size_t size;
+
+    CHECK_EQ(ledger89_get_state(l, &st), LEDGER89_OK);
+    CHECK_U64(st.end, test_u64(7));
+    CHECK_EQ(st.revision.lo, 0u);
+    CHECK(st.first.lo == 1u || st.first.lo == 4u);
+    CHECK_EQ(ledger89_read(l, st.first, buf, sizeof buf, &size), LEDGER89_OK);
+}
+
+static void sweep(int op, int kind, int pre_rotate)
+{
+    int skip;
+
+    for (skip = 0; skip < 200; ++skip)
+    {
+        char path[64];
+        ledger89 *l;
+        pid_t pid;
+        int status;
+
+        CHECK(tmpdir_create(path, sizeof path) == 0);
+        CHECK(make_ledger(path, pre_rotate ? 6ul : 3ul, pre_rotate) != 0);
+        pid = fork();
+        if (pid == 0)
+        {
+            child_run(path, op, skip, kind);
+            _exit(0);
+        }
+        CHECK(pid > 0);
+        if (pid <= 0)
+        {
+            return;
+        }
+        CHECK(waitpid(pid, &status, 0) == pid);
+        if (!(WIFEXITED(status) && WEXITSTATUS(status) == 99))
+        {
+            /* The armed syscall never fired during this iteration. */
+            return;
+        }
+        CHECK_EQ(open_plain(path, &l), LEDGER89_OK);
+        if (l == NULL)
+        {
+            return;
+        }
+        if (kind == KILL_APPEND)
+        {
+            check_append_state(l);
+        }
+        else if (kind == KILL_TRUNCATE)
+        {
+            check_truncate_state(l);
+        }
+        else
+        {
+            check_prune_state(l);
+        }
+        ledger89_close(l);
+    }
+    CHECK(0);
 }
 
 int main(void)
 {
-    run_case(K_APPEND, MFS_OP_PWRITE, 1);
-    run_case(K_APPEND, MFS_OP_PWRITE, 3);
-    run_case(K_APPEND, MFS_OP_SYNC, 0);
-    run_case(K_ROTATE, MFS_OP_PWRITE, 0);
-    run_case(K_ROTATE, MFS_OP_SYNC_DIR, 0);
-    run_case(K_TRUNCATE, MFS_OP_UNLINK, 0);
-    run_case(K_TRUNCATE, MFS_OP_UNLINK, 1);
-    run_case(K_TRUNCATE, MFS_OP_RENAME, 0);
-
+    sweep(MFS_OP_PWRITE, KILL_APPEND, 0);
+    sweep(MFS_OP_SYNC, KILL_APPEND, 0);
+    sweep(MFS_OP_PWRITE, KILL_TRUNCATE, 1);
+    sweep(MFS_OP_RENAME, KILL_TRUNCATE, 1);
+    sweep(MFS_OP_UNLINK, KILL_TRUNCATE, 1);
+    sweep(MFS_OP_RENAME, KILL_PRUNE, 1);
+    sweep(MFS_OP_UNLINK, KILL_PRUNE, 1);
     TEST_END;
 }

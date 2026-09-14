@@ -1,301 +1,287 @@
-/* test_golden.c - GF01..GF03: frozen on-disk bytes encode and decode. */
+/* test_golden.c - frozen byte fixtures for format version 2. */
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+#include "real_io.h"
 #include "test.h"
-
-#include "fixture.h"
 #include "tmpdir.h"
 
-#define SEALED_NAME "00000000000000000001.seg"
-#define ACTIVE_NAME "active.seg"
-#define SEALED_FIX "test/golden/golden-sealed.seg"
-#define ACTIVE_FIX "test/golden/golden-active.seg"
+static const unsigned char fixed_id[16] = {
+    0x89u, 0x01u, 0x23u, 0x45u, 0x67u, 0x89u, 0xABu, 0xCDu,
+    0xEFu, 0x10u, 0x32u, 0x54u, 0x76u, 0x98u, 0xBAu, 0xDCu};
 
-static const unsigned char payload_alpha[5] = {'a', 'l', 'p', 'h', 'a'};
-static const unsigned char payload_binary[4] = {0xDE, 0xAD, 0xBE, 0xEF};
-static const unsigned char payload_delta[5] = {'d', 'e', 'l', 't', 'a'};
-static const unsigned char payload_zero[1] = {0x00};
+static const char *golden_files[5] = {
+    "golden-current.bin", "golden-manifest1.bin", "golden-manifest2.bin",
+    "golden-part1.bin", "golden-part2.bin"};
 
-static unsigned char *read_all(const char *path, size_t *size)
-{
-    FILE *in;
-    long len;
-    unsigned char *buf;
-    size_t n;
-
-    in = fopen(path, "rb");
-    if (in == NULL)
-    {
-        return NULL;
-    }
-    if (fseek(in, 0L, SEEK_END) != 0)
-    {
-        fclose(in);
-        return NULL;
-    }
-    len = ftell(in);
-    if (len < 0L)
-    {
-        fclose(in);
-        return NULL;
-    }
-    if (fseek(in, 0L, SEEK_SET) != 0)
-    {
-        fclose(in);
-        return NULL;
-    }
-    buf = (unsigned char *)malloc((size_t)len + 1u);
-    if (buf == NULL)
-    {
-        fclose(in);
-        return NULL;
-    }
-    n = fread(buf, 1u, (size_t)len, in);
-    fclose(in);
-    if (n != (size_t)len)
-    {
-        free(buf);
-        return NULL;
-    }
-    *size = n;
-    return buf;
-}
-
-static int write_all(const char *path, const unsigned char *buf, size_t size)
-{
-    FILE *out;
-    size_t n;
-
-    out = fopen(path, "wb");
-    if (out == NULL)
-    {
-        return -1;
-    }
-    n = fwrite(buf, 1u, size, out);
-    if (fclose(out) != 0)
-    {
-        return -1;
-    }
-    return n == size ? 0 : -1;
-}
+static const char *ledger_names[5] = {
+    "CURRENT", "MANIFEST.0000000000000001", "MANIFEST.0000000000000002",
+    "part.0000000000000001", "part.0000000000000002"};
 
 static int copy_file(const char *src, const char *dst)
 {
-    unsigned char *buf;
-    size_t size;
-    int rc;
-
-    buf = read_all(src, &size);
-    if (buf == NULL)
-    {
-        return -1;
-    }
-    rc = write_all(dst, buf, size);
-    free(buf);
-    return rc;
-}
-
-static int join_path(char *out, size_t cap, const char *dir, const char *name)
-{
+    FILE *in;
+    FILE *out;
+    unsigned char buf[4096];
     size_t n;
-    size_t m;
 
-    n = strlen(dir);
-    m = strlen(name);
-    if (n + m + 2u > cap)
+    in = fopen(src, "rb");
+    if (in == NULL)
     {
-        return -1;
+        return 0;
     }
-    memcpy(out, dir, n);
-    out[n] = '/';
-    memcpy(out + n + 1u, name, m + 1u);
-    return 0;
+    out = fopen(dst, "wb");
+    if (out == NULL)
+    {
+        fclose(in);
+        return 0;
+    }
+    while ((n = fread(buf, 1u, sizeof buf, in)) > 0u)
+    {
+        if (fwrite(buf, 1u, n, out) != n)
+        {
+            fclose(in);
+            fclose(out);
+            return 0;
+        }
+    }
+    fclose(in);
+    if (fclose(out) != 0)
+    {
+        return 0;
+    }
+    return 1;
 }
 
-static int copy_into(const char *src, const char *dir, const char *name)
+static int file_equal(const char *a, const char *b)
 {
-    char dst[128];
-
-    if (join_path(dst, sizeof dst, dir, name) != 0)
-    {
-        return -1;
-    }
-    return copy_file(src, dst);
-}
-
-static int same_file(const char *a, const char *b)
-{
-    unsigned char *ba;
-    unsigned char *bb;
+    FILE *fa;
+    FILE *fb;
+    unsigned char ba[4096];
+    unsigned char bb[4096];
     size_t na;
     size_t nb;
-    int same;
 
-    ba = read_all(a, &na);
-    bb = read_all(b, &nb);
-    same = 0;
-    if (ba != NULL && bb != NULL && na == nb)
+    fa = fopen(a, "rb");
+    fb = fopen(b, "rb");
+    if (fa == NULL || fb == NULL)
     {
-        if (memcmp(ba, bb, na) == 0)
+        if (fa != NULL)
         {
-            same = 1;
+            fclose(fa);
+        }
+        if (fb != NULL)
+        {
+            fclose(fb);
+        }
+        return 0;
+    }
+    for (;;)
+    {
+        na = fread(ba, 1u, sizeof ba, fa);
+        nb = fread(bb, 1u, sizeof bb, fb);
+        if (na != nb || memcmp(ba, bb, na) != 0)
+        {
+            fclose(fa);
+            fclose(fb);
+            return 0;
+        }
+        if (na < sizeof ba)
+        {
+            break;
         }
     }
-    free(ba);
-    free(bb);
-    return same;
+    fclose(fa);
+    fclose(fb);
+    return 1;
 }
 
-static long find_bytes(const unsigned char *hay, size_t n,
-                       const unsigned char *needle, size_t m)
+static void build_ledger(const char *dir, real_io *r)
 {
+    ledger89 *l;
+    unsigned char bin[3];
+    ledger89_slice s;
+
+    real_io_init(r);
+    real_io_fix_entropy(r, fixed_id);
+    l = NULL;
+    CHECK_EQ(led89_open_io(&l, dir,
+                           LEDGER89_OPEN_RDWR | LEDGER89_OPEN_CREATE |
+                               LEDGER89_OPEN_EXCL,
+                           real_io_api(r)),
+             LEDGER89_OK);
+    if (l == NULL)
+    {
+        return;
+    }
+    s.data = "alpha";
+    s.size = 5u;
+    CHECK_EQ(ledger89_appendv(l, &s, 1u, NULL), LEDGER89_OK);
+    bin[0] = 0x01u;
+    bin[1] = 0x02u;
+    bin[2] = 0x03u;
+    s.data = bin;
+    s.size = 3u;
+    CHECK_EQ(ledger89_appendv(l, &s, 1u, NULL), LEDGER89_OK);
+    s.data = NULL;
+    s.size = 0u;
+    CHECK_EQ(ledger89_appendv(l, &s, 1u, NULL), LEDGER89_OK);
+    CHECK_EQ(ledger89_sync(l, NULL), LEDGER89_OK);
+    CHECK_EQ(ledger89_rotate(l), LEDGER89_OK);
+    s.data = "delta";
+    s.size = 5u;
+    CHECK_EQ(ledger89_appendv(l, &s, 1u, NULL), LEDGER89_OK);
+    s.data = "zz";
+    s.size = 2u;
+    CHECK_EQ(ledger89_appendv(l, &s, 1u, NULL), LEDGER89_OK);
+    CHECK_EQ(ledger89_sync(l, NULL), LEDGER89_OK);
+    ledger89_close(l);
+}
+
+static void test_encode_freeze(void)
+{
+    char dir[64];
+    real_io r;
     size_t i;
-    size_t j;
 
-    if (m == 0u)
+    CHECK(tmpdir_create(dir, sizeof dir) == 0);
+    build_ledger(dir, &r);
+    for (i = 0u; i < 5u; ++i)
     {
-        return -1L;
+        char generated[160];
+        char fixture[160];
+
+        sprintf(generated, "%s/%s", dir, ledger_names[i]);
+        sprintf(fixture, "test/golden/%s", golden_files[i]);
+        CHECK(file_equal(generated, fixture) != 0);
     }
-    for (i = 0u; i + m <= n; ++i)
-    {
-        j = 0u;
-        while (j < m && hay[i + j] == needle[j])
-        {
-            ++j;
-        }
-        if (j == m)
-        {
-            return (long)i;
-        }
-    }
-    return -1L;
 }
 
-static int build_ledger(fx *f)
+static void test_decode_freeze(void)
 {
-    ledger89_record batch[3];
+    char dir[64];
+    ledger89 *l;
+    ledger89_state st;
+    unsigned char buf[8];
+    size_t size;
+    size_t i;
     int rc;
 
-    rc = fx_open(f);
-    if (rc != LEDGER89_OK)
+    CHECK(tmpdir_create(dir, sizeof dir) == 0);
+    for (i = 0u; i < 5u; ++i)
     {
-        return rc;
+        char src[160];
+        char dst[160];
+
+        sprintf(src, "test/golden/%s", golden_files[i]);
+        sprintf(dst, "%s/%s", dir, ledger_names[i]);
+        CHECK(copy_file(src, dst) != 0);
     }
-    fx_record(&batch[0], 1ul, 1001ul, payload_alpha, sizeof payload_alpha);
-    fx_record(&batch[1], 2ul, 0x01020304ul, payload_binary,
-              sizeof payload_binary);
-    fx_record(&batch[2], 3ul, 0ul, NULL, 0u);
-    rc = ledger89_append(f->l, batch, 3u);
-    if (rc == LEDGER89_OK)
+    l = NULL;
+    rc = ledger89_open(&l, dir, LEDGER89_OPEN_RDWR);
+    CHECK_EQ(rc, LEDGER89_OK);
+    if (l == NULL)
     {
-        rc = ledger89_sync(f->l);
+        return;
     }
-    if (rc == LEDGER89_OK)
-    {
-        rc = ledger89_rotate(f->l);
-    }
-    if (rc != LEDGER89_OK)
-    {
-        return rc;
-    }
-    fx_record(&batch[0], 4ul, 0xCAFEBABEul, payload_delta,
-              sizeof payload_delta);
-    fx_record(&batch[1], 5ul, 2ul, payload_zero, sizeof payload_zero);
-    rc = ledger89_append(f->l, batch, 2u);
-    if (rc == LEDGER89_OK)
-    {
-        rc = ledger89_sync(f->l);
-    }
-    fx_close(f);
-    return rc;
+    CHECK_EQ(ledger89_get_state(l, &st), LEDGER89_OK);
+    CHECK_U64(st.first, test_u64(1));
+    CHECK_U64(st.end, test_u64(6));
+    CHECK_U64(st.stable_end, test_u64(6));
+    CHECK_EQ(st.revision.lo, 0u);
+    CHECK_EQ(ledger89_read(l, test_u64(1), buf, sizeof buf, &size),
+             LEDGER89_OK);
+    CHECK_EQ(size, 5u);
+    CHECK(memcmp(buf, "alpha", 5u) == 0);
+    CHECK_EQ(ledger89_read(l, test_u64(2), buf, sizeof buf, &size),
+             LEDGER89_OK);
+    CHECK_EQ(size, 3u);
+    CHECK_EQ(buf[0], 0x01u);
+    CHECK_EQ(ledger89_read(l, test_u64(3), buf, sizeof buf, &size),
+             LEDGER89_OK);
+    CHECK_EQ(size, 0u);
+    CHECK_EQ(ledger89_read(l, test_u64(4), buf, sizeof buf, &size),
+             LEDGER89_OK);
+    CHECK_EQ(size, 5u);
+    CHECK(memcmp(buf, "delta", 5u) == 0);
+    CHECK_EQ(ledger89_read(l, test_u64(5), buf, sizeof buf, &size),
+             LEDGER89_OK);
+    CHECK_EQ(size, 2u);
+    CHECK(memcmp(buf, "zz", 2u) == 0);
+    ledger89_close(l);
 }
 
-static void check_record(ledger89 *l, ledger89_index index, unsigned long tag,
-                         const void *data, size_t size)
+static void test_corrupt_fixture(void)
 {
-    ledger89_view v;
+    char dir[64];
+    char path[160];
+    FILE *f;
+    unsigned char data[512];
+    size_t size;
+    size_t i;
+    int flipped;
+    ledger89 *l;
+    unsigned char buf[8];
+    size_t out_size;
+    int rc;
 
-    CHECK_EQ(ledger89_read(l, index, &v), LEDGER89_OK);
-    CHECK_EQ(v.index, index);
-    CHECK_EQ(v.tag, tag);
-    CHECK_EQ(v.size, size);
-    if (size > 0u)
+    CHECK(tmpdir_create(dir, sizeof dir) == 0);
+    for (i = 0u; i < 5u; ++i)
     {
-        CHECK_EQ(memcmp(v.data, data, size), 0);
+        char src[160];
+        char dst[160];
+
+        sprintf(src, "test/golden/%s", golden_files[i]);
+        sprintf(dst, "%s/%s", dir, ledger_names[i]);
+        CHECK(copy_file(src, dst) != 0);
     }
+    sprintf(path, "%s/%s", dir, "part.0000000000000002");
+    f = fopen(path, "rb");
+    CHECK(f != NULL);
+    if (f == NULL)
+    {
+        return;
+    }
+    size = fread(data, 1u, sizeof data, f);
+    fclose(f);
+    flipped = 0;
+    for (i = 0u; i + 5u <= size; ++i)
+    {
+        if (memcmp(data + i, "delta", 5u) == 0)
+        {
+            data[i] = (unsigned char)'D';
+            flipped = 1;
+            break;
+        }
+    }
+    CHECK_EQ(flipped, 1);
+    f = fopen(path, "wb");
+    CHECK(f != NULL);
+    if (f == NULL)
+    {
+        return;
+    }
+    CHECK_EQ(fwrite(data, 1u, size, f), size);
+    fclose(f);
+
+    l = NULL;
+    rc = ledger89_open(&l, dir, LEDGER89_OPEN_RDWR);
+    CHECK_EQ(rc, LEDGER89_OK);
+    if (l == NULL)
+    {
+        return;
+    }
+    rc = ledger89_read(l, test_u64(4), buf, sizeof buf, &out_size);
+    CHECK_EQ(rc, LEDGER89_ECORRUPT);
+    ledger89_close(l);
 }
 
 int main(void)
 {
-    fx f;
-    ledger89 *l;
-    ledger89_config config;
-    ledger89_iter *it;
-    ledger89_view v;
-    unsigned char *buf;
-    size_t size;
-    long at;
-    char path[128];
-    char dir[64];
-    size_t i;
-
-    /* GF01: encode freeze. */
-    CHECK_EQ(build_ledger(&f), LEDGER89_OK);
-    CHECK_EQ(join_path(path, sizeof path, f.path, SEALED_NAME), 0);
-    CHECK_EQ(same_file(path, SEALED_FIX), 1);
-    CHECK_EQ(join_path(path, sizeof path, f.path, ACTIVE_NAME), 0);
-    CHECK_EQ(same_file(path, ACTIVE_FIX), 1);
-
-    /* GF02: decode freeze. */
-    CHECK_EQ(tmpdir_create(dir, sizeof dir), 0);
-    CHECK_EQ(copy_into(SEALED_FIX, dir, SEALED_NAME), 0);
-    CHECK_EQ(copy_into(ACTIVE_FIX, dir, ACTIVE_NAME), 0);
-    memset(&config, 0, sizeof config);
-    config.path = dir;
-    l = NULL;
-    CHECK_EQ(ledger89_open(&l, &config), LEDGER89_OK);
-    CHECK_EQ(ledger89_first_index(l), 1ul);
-    CHECK_EQ(ledger89_last_index(l), 5ul);
-    check_record(l, 1ul, 1001ul, payload_alpha, sizeof payload_alpha);
-    check_record(l, 2ul, 0x01020304ul, payload_binary, sizeof payload_binary);
-    check_record(l, 3ul, 0ul, NULL, 0u);
-    check_record(l, 4ul, 0xCAFEBABEul, payload_delta, sizeof payload_delta);
-    check_record(l, 5ul, 2ul, payload_zero, sizeof payload_zero);
-    it = NULL;
-    CHECK_EQ(ledger89_iter_open(l, 0ul, 0ul, &it), LEDGER89_OK);
-    for (i = 0u; i < 5u; ++i)
-    {
-        CHECK_EQ(ledger89_iter_next(it, &v), LEDGER89_OK);
-        CHECK_EQ(v.index, (ledger89_index)(i + 1u));
-    }
-    CHECK_EQ(ledger89_iter_next(it, &v), LEDGER89_END);
-    ledger89_iter_close(it);
-    ledger89_close(l);
-
-    /* GF03: a byte-flipped fixture must not decode. */
-    CHECK_EQ(tmpdir_create(dir, sizeof dir), 0);
-    CHECK_EQ(copy_into(SEALED_FIX, dir, SEALED_NAME), 0);
-    CHECK_EQ(copy_into(ACTIVE_FIX, dir, ACTIVE_NAME), 0);
-    CHECK_EQ(join_path(path, sizeof path, dir, SEALED_NAME), 0);
-    buf = read_all(path, &size);
-    CHECK(buf != NULL);
-    at = find_bytes(buf, size, payload_binary, sizeof payload_binary);
-    CHECK(at >= 0L);
-    if (at >= 0L)
-    {
-        buf[(size_t)at] = (unsigned char)(buf[(size_t)at] ^ 0xFFu);
-        CHECK_EQ(write_all(path, buf, size), 0);
-    }
-    free(buf);
-    memset(&config, 0, sizeof config);
-    config.path = dir;
-    l = NULL;
-    CHECK_EQ(ledger89_open(&l, &config), LEDGER89_OK);
-    CHECK_EQ(ledger89_read(l, 2ul, &v), LEDGER89_ERR_CORRUPT);
-    ledger89_close(l);
-
+    test_encode_freeze();
+    test_decode_freeze();
+    test_corrupt_fixture();
     TEST_END;
 }

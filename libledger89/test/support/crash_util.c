@@ -4,54 +4,57 @@
 
 #include "crash_util.h"
 
-static unsigned char cu_byte(ledger89_index index)
+static unsigned char cu_byte(unsigned long index)
 {
     return (unsigned char)('a' + (int)(index % 26ul));
 }
 
-int cu_open(mfs *fs, led89_io *io, ledger89 **l, unsigned long records)
+int cu_open(mfs *fs, led89_io *io, ledger89 **l)
 {
-    ledger89_config cfg;
-
     mfs_bind(io, fs);
-    memset(&cfg, 0, sizeof cfg);
-    cfg.path = "ledger";
-    cfg.max_segment_bytes = 0ul;
-    cfg.max_segment_records = records;
     *l = NULL;
-    return led89_open_io(l, &cfg, io);
+    return led89_open_io(l, "ledger", LEDGER89_OPEN_RDWR | LEDGER89_OPEN_CREATE,
+                         io);
 }
 
-int cu_append(ledger89 *l, ledger89_index index)
+int cu_reopen(mfs *fs, led89_io *io, ledger89 **l, ledger89_state *st)
 {
-    ledger89_record r;
-    unsigned char value;
-
-    value = cu_byte(index);
-    r.index = index;
-    r.tag = (unsigned long)index;
-    r.data = &value;
-    r.size = 1u;
-    return ledger89_append(l, &r, 1u);
-}
-
-int cu_fill(ledger89 *l, ledger89_index count)
-{
-    ledger89_index i;
-
-    for (i = 1ul; i <= count; ++i)
+    *l = NULL;
+    if (cu_open(fs, io, l) != LEDGER89_OK)
     {
-        if (cu_append(l, i) != LEDGER89_OK)
-        {
-            return 0;
-        }
+        return 0;
+    }
+    if (ledger89_get_state(*l, st) != LEDGER89_OK)
+    {
+        return 0;
     }
     return 1;
 }
 
-int cu_fill_range(ledger89 *l, ledger89_index first, ledger89_index last)
+void cu_set_target(ledger89 *l, unsigned long bytes)
 {
-    ledger89_index i;
+    l->part_target = (led89_u64)bytes;
+}
+
+int cu_append(ledger89 *l, unsigned long value)
+{
+    unsigned char byte;
+    ledger89_slice s;
+
+    byte = cu_byte(value);
+    s.data = &byte;
+    s.size = 1u;
+    return ledger89_appendv(l, &s, 1u, NULL);
+}
+
+int cu_fill(ledger89 *l, unsigned long count)
+{
+    return cu_fill_range(l, 1ul, count);
+}
+
+int cu_fill_range(ledger89 *l, unsigned long first, unsigned long last)
+{
+    unsigned long i;
 
     for (i = first; i <= last; ++i)
     {
@@ -63,31 +66,26 @@ int cu_fill_range(ledger89 *l, ledger89_index first, ledger89_index last)
     return 1;
 }
 
-int cu_check_range(ledger89 *l, ledger89_index first, ledger89_index last)
+int cu_check_range(ledger89 *l, unsigned long first, unsigned long last)
 {
-    ledger89_index i;
+    unsigned long i;
 
-    if (first > last)
-    {
-        return 1;
-    }
     for (i = first; i <= last; ++i)
     {
-        ledger89_view v;
+        unsigned char buf[1];
+        size_t size;
+        ledger89_index index;
 
-        if (ledger89_read(l, i, &v) != LEDGER89_OK)
+        index = ledger89_u64_from_u32((ledger89_u32)i);
+        if (ledger89_read(l, index, buf, sizeof buf, &size) != LEDGER89_OK)
         {
             return 0;
         }
-        if (v.tag != (unsigned long)i)
+        if (size != 1u)
         {
             return 0;
         }
-        if (v.size != 1u)
-        {
-            return 0;
-        }
-        if (((const unsigned char *)v.data)[0] != cu_byte(i))
+        if (buf[0] != cu_byte(i))
         {
             return 0;
         }

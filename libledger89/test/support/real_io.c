@@ -93,10 +93,30 @@ static int real_sync_dir(void *ctx, const char *path)
     return led89_io_posix()->sync_dir(NULL, path);
 }
 
-static int real_lock(void *ctx, const char *path, led89_fd *fd)
+static int real_lock(void *ctx, const char *path, int exclusive, int create,
+                     led89_fd *fd)
 {
     real_maybe_crash((real_io *)ctx, MFS_OP_LOCK);
-    return led89_io_posix()->lock(NULL, path, fd);
+    return led89_io_posix()->lock(NULL, path, exclusive, create, fd);
+}
+
+static int real_entropy(void *ctx, unsigned char *out, size_t len)
+{
+    real_io *r;
+
+    r = (real_io *)ctx;
+    real_maybe_crash(r, MFS_OP_ENTROPY);
+    if (r->fixed_entropy != 0)
+    {
+        size_t i;
+
+        for (i = 0u; i < len; ++i)
+        {
+            out[i] = r->entropy[i % 16u];
+        }
+        return LEDGER89_OK;
+    }
+    return led89_io_posix()->entropy(NULL, out, len);
 }
 
 static int real_list_open(void *ctx, const char *path, led89_dir **out)
@@ -123,6 +143,7 @@ void real_io_init(real_io *r)
     r->crash_op = 0;
     r->crash_skip = 0;
     r->crash_armed = 0;
+    r->fixed_entropy = 0;
     r->api.ctx = r;
     r->api.open = real_open;
     r->api.close = real_close;
@@ -139,6 +160,18 @@ void real_io_init(real_io *r)
     r->api.list_open = real_list_open;
     r->api.list_next = real_list_next;
     r->api.list_close = real_list_close;
+    r->api.entropy = real_entropy;
+}
+
+void real_io_fix_entropy(real_io *r, const unsigned char bytes[16])
+{
+    size_t i;
+
+    r->fixed_entropy = 1;
+    for (i = 0u; i < 16u; ++i)
+    {
+        r->entropy[i] = bytes[i];
+    }
 }
 
 void real_io_arm(real_io *r, int op, int skip)

@@ -16,32 +16,86 @@ compatibility_paths: []
 pure_functions:
     - strlen
     - strcmp
+    - memcmp
     - led89_io_posix
-    - led89_lo_bound
-    - led89_hi_bound
-    - led89_next_slot
-    - led89_add_record_bytes
-    - led89_batch_bytes
-    - led89_should_rotate
-    - led89_last_plus_one
-    - led89_body_size
-    - led89_add_footer
-    - led89_or_one
-    - led89_bytes_equal
-    - led89_is_batch_header
+    - led89_from_public
+    - led89_to_public
+    - led89_u64_add
+    - led89_u64_inc
+    - led89_u64_dec
+    - led89_u64_cmp
+    - led89_u64_is_zero
+    - led89_u64_to_u32
+    - led89_u64_to_size
+    - led89_size_to_u64
     - led89_crc32c
     - led89_crc_byte
     - led89_crc_nibble
     - led89_get_u16
     - led89_get_u32
     - led89_get_u64
+    - led89_bytes_equal
+    - led89_is_batch_header
+    - led89_is_batch_footer
+    - led89_is_marker
+    - led89_check_writable
+    - led89_check_mutable
+    - led89_hex_value
+    - led89_hex_digit
+    - led89_hex_accum
+    - led89_double_size
+    - led89_max_size
+    - led89_next_cap
+    - led89_size_add
+    - led89_size_left
+    - led89_lock_oflags
+    - led89_buf_at
+    - led89_ssize_to_size
+    - led89_off_inc
+    - led89_alloc_descs
+    - led89_encode_desc
+    - led89_decode_desc
+    - led89_mid
+    - led89_inc_size
+    - led89_dir_probe
+    - led89_part_take
+    - led89_skip_one
+    - led89_alloc_bytes
+    - led89_manifest_has_part
+    - led89_desc_id
+    - led89_slice_size
+    - led89_record_bytes
+    - led89_at_add
+    - led89_u64_left
+    - led89_chunk_of
+    - led89_t_desc_id
+    - led89_t_inc
+    - led89_t_slice_data
+    - led89_dir_rebase
+    - led89_r_min
+    - led89_scan_error
+    - led89_marker_matches
+    - led89_create_name_kind
+    - led89_window_lo
+    - led89_window_read_lo
+    - led89_trailer_moff
+    - led89_scan_hit
+    - led89_marker_step
+    - led89_scan_sealed
+    - led89_rw_flags
+    - led89_max_id
+    - led89_max_ref_id
+    - led89_bad_args
+    - led89_flag_set
+    - led89_verify_step
+    - led89_verify_sealed_step
+    - led89_hex16_parse
+    - led89_part_name_parse
+    - led89_manifest_name_parse
+    - led89_manifest_bytes
+    - led89_find_trailer
+    - led89_kept_entries
     - led89_off_ok
     - led89_dot_name
-    - led89_add_flag
     - led89_open_oflags
-    - led89_chunk_size
-    - led89_double
-    - led89_grow_cap
-    - led89_segment_next
-    - led89_base_of
-    - led89_is_empty
+    - led89_add_flag

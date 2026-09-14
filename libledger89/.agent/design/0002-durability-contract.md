@@ -1,7 +1,6 @@
-# libledger89 durability contract
+# libledger89 durability contract (v2)
 
-This document is normative for the library's durability guarantees and for
-the test oracle that validates them.
+This document is normative for the durability guarantees and the test oracle.
 
 ## 1. Durability states
 
@@ -10,106 +9,70 @@ logical   records visible through the public API in this process
 durable   records recoverable after process crash, OS crash, or power loss
 ```
 
-`ledger89_append` makes a batch logically visible on success. `ledger89_sync`
-establishes the durable boundary: after a successful sync, every preceding
-successful append and every completed structural operation remains
-recoverable, subject to the filesystem honoring the required primitives.
+`appendv` makes a batch logically visible on success. `sync` writes a stable
+marker and flushes it; after success `stable_end == end` and the prefix
+`[first, stable_end)` is recoverable, subject to the filesystem honoring the
+required primitives.
 
-## 2. Durability primitives
+## 2. Primitives
 
 | Operation | File sync | Directory sync |
 | --- | --- | --- |
-| append | deferred to `sync` (`fdatasync`) | no |
-| `sync` | `fdatasync(active)` when dirty | no |
-| rotate | footer `fsync`, new active header `fsync` | after rename, after create |
-| truncate/discard | rewrite `fsync` | after every unlink and rename |
+| appendv | none (deferred) | no |
+| sync | write marker, then fdatasync(active) | no |
+| rotate | footer fsync, new part fsync, manifest fsync | before CURRENT rename and after |
+| truncate/prune | new part fsyncs, manifest fsync | before CURRENT rename, after GC unlink |
 
-`rotate`, `truncate_after`, and `discard_before` are **self-durable**: each
-step is individually crash-safe and synced before the next, and the operation
-returns only when its result is durable. `sync` is the barrier for appends.
+Structural operations are self-durable: each step is crash-safe and returns
+only when its result is durable.
 
 ## 3. Crash-state rule
 
-For any operation and any crash point, the recovered ledger must be one of
-the states explicitly permitted for that operation. No crash may expose:
+For any operation and crash point the recovered ledger is one of the states
+explicitly permitted for that operation. No crash exposes a partial batch, a
+gap or duplicate, a mutated sealed part, a record absent from both pre- and
+post-states, or silently skipped stable history.
 
-- a partial batch (some records of a batch but not all);
-- a gap or duplicate in the index sequence;
-- a mutated sealed segment;
-- a record not present in the pre-state or in the completed post-state;
-- silently skipped damaged history.
+## 4. Sync crash outcomes
 
-## 4. Append
+| Crash point | Durable state | Recovered `stable_end` |
+| --- | --- | --- |
+| before marker write | old marker | old end |
+| mid-marker write (torn) | partial marker | old end |
+| marker written, flush incomplete | marker maybe present | old or new, by marker validity |
+| flush returned, sync not returned | marker durable | new end |
+| after sync returns | marker durable | new end guaranteed |
+| I/O error | unknown | reopen decides; handle poisoned meanwhile |
 
-Append pre-validates the whole batch before writing. On success the batch is
-logically visible. A crash before `sync` may recover the pre-state or the
-complete batch, never a prefix of it: the batch footer CRC distinguishes a
-complete batch from a torn one.
+A failed `sync()` may still have reached storage completely; recovery accepts
+`STABLE(end)` only if its prefix validates.
 
 ## 5. Torn tail versus corruption
 
-Recovery parses the active segment batch by batch. At the first invalid
-position `O`:
-
-- if a fully valid batch exists later in the file, the damage is inside
-  history: `LEDGER89_ERR_CORRUPT`;
-- otherwise the bytes from `O` to end of file are a torn tail: they are
-  truncated and recovery continues.
-
-The region after the last complete valid batch is always the recoverable
-tail; record CRC failures there are treated as torn, not as corruption.
+Recovery finds the latest syntactically valid stable marker and validates the
+active prefix forward from the part header to that marker. Bytes after it are
+disposable. Any framing corruption before or at the chosen marker is
+`ECORRUPT` and is never repaired. Payload corruption in stable history is
+detected at `read` or `verify` and is also `ECORRUPT`.
 
 ## 6. Faulted handles
 
-Any I/O failure during a mutating operation marks the handle faulted.
-Subsequent mutations return `LEDGER89_ERR_FAULTED`; reads may still be
-attempted. The caller frees space or repairs the environment, then closes and
-reopens: recovery truncates any torn tail and the ledger is usable again.
-`EINTR` is retried transparently and never faults the handle.
+Any I/O failure whose durable outcome is uncertain poisons a writable handle.
+Subsequent mutations return `EPOISONED`; reads may still be attempted. Close
+and reopen recovers. `EINTR` is retried transparently.
 
-## 7. Rotation
-
-```text
-flush active
-write sealed footer
-fsync file
-rename active.seg -> NNNN.seg
-fsync directory
-create new active.seg (header)
-fsync file
-fsync directory
-```
-
-Every prefix of these steps is recoverable: old active, or sealed segment
-with or without a new active, or sealed segment plus new active. Recovery
-creates a missing active and treats an empty active with a stale
-`first_index` as canonical `last sealed + 1`.
-
-## 8. Truncation and discard
-
-Tail segments are removed from the end backward, one unlink plus directory
-fsync at a time; the boundary segment is rewritten atomically through a
-`.tmp` file, fsync, rename, and directory fsync. Prefix discard removes
-wholly discarded segments from the front the same way, then rewrites the
-boundary segment under its new `first_index` (sealed segments are renamed to
-the new first index). Discard-all keeps the last segment as the base anchor
-until the new empty active exists, then removes it. Every intermediate
-durable state is a contiguous range.
-
-## 9. Named crash properties
+## 7. Named crash properties
 
 ```text
 CR01 no partial batch is ever visible after recovery
 CR02 a successful sync makes all preceding appends durable
-CR03 recovery never skips corruption before the recoverable tail
-CR04 sealed segment bytes never change after sealing
+CR03 recovery never skips corruption before the stable frontier
+CR04 sealed parts and published manifests never change
 CR05 rotation preserves the exact logical sequence
 CR06 truncation never creates a gap and never resurrects a discarded index
-CR07 discard never creates a gap and never removes a retained index
+CR07 pruning never removes a retained record and never changes revision
 CR08 repeated recovery is idempotent
-CR09 a faulted handle never reports success for a mutation
-CR10 on-disk parsing never trusts unchecked lengths, offsets, or counts
+CR09 a poisoned handle never reports success for a mutation
+CR10 parsing never trusts unchecked lengths, offsets, or counts
+CR11 every crash resolves to one published topology plus one stable prefix
 ```
-
-Each property maps to tests under `test/crash/` and to rows in
-`.agent/testing/0006-crash-fixtures.md`.
