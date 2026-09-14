@@ -1,0 +1,115 @@
+# libsyntax89
+
+Typed ordered syntax DAGs for strict ISO C89. `libsyntax89` stores nodes
+(stable id, client kind, optional source span) and ordered structural edges
+(parent, client role, child) and nothing else. It never interprets kinds or
+roles, owns source text, resolves names, types, evaluates, or prescribes a
+grammar.
+
+```text
+syntax
+ ├─ nodes
+ │   ├─ stable id
+ │   ├─ client-defined kind
+ │   └─ optional source span
+ └─ edges
+     ├─ client-defined role
+     ├─ source node
+     ├─ destination node
+     └─ insertion order
+```
+
+A call expression is just a shape:
+
+```text
+CALL
+ ├─ CALLEE ──> NAME
+ ├─ ARG    ──> INT
+ └─ ARG    ──> NAME
+```
+
+The library understands ordering and structure, not what `CALL` means.
+
+## Lifecycle
+
+```text
+UNINITIALIZED --init--> BUILDING --freeze--> FROZEN --destroy--> end
+```
+
+- BUILDING admits `syntax89_add_node`, `syntax89_add_child`, and
+  `syntax89_set_root`.
+- FROZEN rejects structural mutation with `SYNTAX89_ESTATE` and admits
+  queries, iteration, traversal, and validation.
+- There is no deletion and no in-place surgery. A transformation builds a new
+  graph from a frozen source graph.
+
+## Types
+
+| Type | Meaning |
+|---|---|
+| `syntax89_id`, `syntax89_kind`, `syntax89_role` | abstract `unsigned long` names |
+| `syntax89_span` | half-open byte range `[begin, end)` in external source |
+| `syntax89_node_info` | kind and span of one node |
+| `syntax89_allocator` | injectable `alloc`/`realloc`/`free`; NULL selects libc |
+| `syntax89_graph` | caller-owned graph handle; fields are private state |
+| `syntax89_child_iter` | allocation-free child iterator |
+| `syntax89_validation` | error status plus offending node pair |
+
+Node id `0` is the only reserved value and never names a node. Kind and role
+values are opaque; `0` is an ordinary kind and an ordinary role.
+
+## Semantics
+
+- `syntax89_add_node` appends a node, returns a fresh nonzero id, preserves
+  kind and span exactly, and never changes earlier ids.
+- `syntax89_add_child` appends after the parent's existing edges. Absolute
+  child order and role-filtered relative order both follow insertion order.
+- Shared children are ordinary: one node, several incoming edges. Node count
+  counts it once; edge count counts every edge.
+- `syntax89_validate` proves that a root exists and names a node, the root has
+  no incoming edge, the structural edges are acyclic, and every node is
+  reachable from the root. Errors, in precedence order: `EINVAL`, `ESTATE`,
+  `EGRAPH` (root), `ECYCLE`, `EGRAPH` (unreachable), `ENOMEM`.
+- `syntax89_freeze` validates and then marks the graph FROZEN. Freezing twice
+  is an idempotent `SYNTAX89_OK`. Any failure leaves the graph BUILDING and
+  logically unchanged.
+- `syntax89_walk_nodes_pre/post` visit each node once; `syntax89_walk_edges_
+  pre/post` visit each structural occurrence. All four are iterative, detect
+  cycles, and follow insertion order.
+- Every operation completes fully or changes nothing observable. IDs are
+  nonzero, stable for the graph lifetime, and never reused.
+
+## Build and test
+
+- `just build` — build `build/libsyntax89.a`.
+- `just smoke` — one end-to-end path.
+- `just unit` — unit programs, one per concern.
+- `just model` — differential tests against an independent reference model.
+- `just generated` — generated mutation sequences.
+- `just fault` — allocation failure at every allocation point.
+- `just stress` — deep, wide, and highly shared graphs.
+- `just deep-test` — the 100,000-deep chain.
+- `just cpp-check` — C++23 header compile checks.
+- `just test` — smoke, unit, model, generated, fault.
+- `just matrix` — gcc/clang x C89/C23 plus optimization levels.
+- `just sanitize` — ASan + UBSan run of the fast suite.
+- `just valgrind` — memcheck run of the fast suite.
+- `just coverage` — 100% line and branch coverage gate on `src/`.
+- `just audit` — symbol audit: exact export set, documented libc references.
+- `just api-coverage` — every public function is named by a test.
+- `just shell-selftest` — scripts abort on failure under `sh` invocation.
+- `just coverage-selftest` — the coverage gate rejects incomplete reports.
+- `just build-selftest` — no stale objects survive a deleted source.
+- `just check` — green gate, lint, tests, probes, audits, coverage, and the
+  gate self-checks.
+- `just release` — check plus matrix, sanitizers, stress, deep, valgrind.
+
+## Non-goals
+
+Lexing, parsing, grammar definitions, parser generation, token storage, source
+text ownership, symbol tables, scopes, name resolution, type systems,
+evaluation, interpretation, bytecode, generic IR, arbitrary graph databases,
+generic annotations, schemas, serialization, pretty printing, syntax
+formatting, diffing, incremental parsing, deletion, and in-place rewrite. A
+lossless CST layer, references/annotations, and declarative schemas are
+separate future libraries.
