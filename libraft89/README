@@ -42,6 +42,11 @@ an acknowledged action.
 - `just example` — build and run `examples/host_loop.c`.
 - `just exhaustive-sanitize` — the model checker under ASan and UBSan.
 - `just sanitize` — the fast suite under ASan and UBSan.
+- `just build32` — best-effort ILP32 build of `build/32/libraft89.a`; skips
+  cleanly when 32-bit multilib is absent.
+- `just test32` — the fast suite under `-m32` against `build/32/libraft89.a`.
+- `just sanitize32` — the fast suite under 32-bit ASan and UBSan; skips
+  cleanly when the i686 sanitizer runtimes are absent.
 - `just check` — the full green profile gate (C89 ∩ C23, GCC and Clang,
   green semantic checks, canonical Allman format).
 
