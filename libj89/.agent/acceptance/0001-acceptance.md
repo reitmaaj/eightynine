@@ -9,6 +9,9 @@ the reported length; a string may still contain embedded NUL bytes, which
 require the length accessors to read exactly.
 ACCEPT: integers (including negative and zero) parse to their exact value,
 including the full exact `double` range |n| <= 2^53.
+ACCEPT: the parser builds warning-free on ILP32 and accepts/rejects the same
+integer range as LP64, because the accumulator is a fixed 64-bit type rather
+than a host `long`.
 ACCEPT: `true`, `false`, `null`, arrays, and nested objects parse.
 ACCEPT: a fractional or exponent number (`1.5`, `1e3`, `-0.5`, `123e65`) parses
 to a FLOAT node whose double value is correct.

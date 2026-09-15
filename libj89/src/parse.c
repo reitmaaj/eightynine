@@ -10,9 +10,12 @@
 
 /* Exact integer representability limit for `double`: every integer |n| <= 2^53
  * is exact. Integer tokens beyond this range are rejected (not approximated).
- * 2^53 = 9007199254740992, which fits a 64-bit `long` accumulator. */
-#define J89_INT_MAX 9007199254740992L
-#define J89_INT_MIN (-9007199254740992L)
+ * The accumulator is a fixed 64-bit type because 2^53 does not fit a 32-bit
+ * `long` on ILP32. */
+__extension__ typedef long long j89_i64;
+
+#define J89_INT_MAX (((j89_i64)1) << 53)
+#define J89_INT_MIN (-(((j89_i64)1) << 53))
 
 struct j89_parser
 {
@@ -847,9 +850,9 @@ static int j89_take_neg(struct j89_parser *p)
 }
 
 /* Accumulate a positive integer digit into *ival, detecting overflow. */
-static void j89_acc_pos(long *ival, int *iover, int digit)
+static void j89_acc_pos(j89_i64 *ival, int *iover, int digit)
 {
-    long lim;
+    j89_i64 lim;
     lim = (J89_INT_MAX - digit) / 10;
     if (*ival > lim)
     {
@@ -860,9 +863,9 @@ static void j89_acc_pos(long *ival, int *iover, int digit)
 }
 
 /* Accumulate a negative integer digit into *ival, detecting overflow. */
-static void j89_acc_neg(long *ival, int *iover, int digit)
+static void j89_acc_neg(j89_i64 *ival, int *iover, int digit)
 {
-    long lim;
+    j89_i64 lim;
     lim = (J89_INT_MIN + digit) / 10;
     if (*ival < lim)
     {
@@ -875,7 +878,8 @@ static void j89_acc_neg(long *ival, int *iover, int digit)
 /* Consume one integer digit at the current position (neg gives the sign for
  * the running accumulator). Returns 1 when a digit was consumed, 0 when the
  * current character is not a digit. */
-static int j89_int_digit(struct j89_parser *p, long *ival, int *iover, int neg)
+static int j89_int_digit(struct j89_parser *p, j89_i64 *ival, int *iover,
+                         int neg)
 {
     int c;
     int d;
@@ -905,7 +909,7 @@ static int j89_int_digit(struct j89_parser *p, long *ival, int *iover, int neg)
 }
 
 /* Consume all leading integer digits (the mantissa's integer part). */
-static void j89_scan_int_digits(struct j89_parser *p, long *ival, int *iover,
+static void j89_scan_int_digits(struct j89_parser *p, j89_i64 *ival, int *iover,
                                 int neg)
 {
     int cont;
@@ -919,7 +923,7 @@ static void j89_scan_int_digits(struct j89_parser *p, long *ival, int *iover,
 /* Consume the integer part of a number at the current position. Returns 1
  * when a valid integer part (a single '0' or a nonzero-leading digit run)
  * was present, 0 otherwise. Accumulates the value into *ival. */
-static int j89_read_int_part(struct j89_parser *p, int neg, long *ival,
+static int j89_read_int_part(struct j89_parser *p, int neg, j89_i64 *ival,
                              int *iover)
 {
     int c;
@@ -1060,7 +1064,7 @@ static j89_len j89_float_node(struct j89_parser *p, j89_arena *a, j89_len tok0,
     return node;
 }
 
-static j89_len j89_int_node(struct j89_parser *p, j89_arena *a, long ival)
+static j89_len j89_int_node(struct j89_parser *p, j89_arena *a, j89_i64 ival)
 {
     double dv;
     j89_len node;
@@ -1076,7 +1080,7 @@ static j89_len j89_parse_number(struct j89_parser *p)
     j89_len tok0;
     j89_len sigend;
     j89_len node;
-    long ival;
+    j89_i64 ival;
     long e;
     int iover;
     int neg;

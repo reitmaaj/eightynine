@@ -44,6 +44,10 @@ Build and test via `just`.
 - `just deps` — build the sibling `libu89` dependency
 - `just build` — compile the library and `j89` CLI
 - `just test` — run unit + e2e tests
+- `just lib32` — best-effort 32-bit archive `build/32/libj89.a` (SSE2 math);
+  skips cleanly when 32-bit multilib is absent
+- `just build32` — compile the 32-bit `j89` CLI
+- `just test32` — unit + e2e + alg + bridge tests under `-m32`
 - `just check` — unicode-audit + green gate (matrix + tidy + format)
 - `just green` — green `check` (matrix + tidy + format; needs `green.yaml`)
 - `just unicode-audit` — tripwire: no UTF-8/UTF-16 algorithm in `src/`
