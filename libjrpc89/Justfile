@@ -16,6 +16,10 @@ TOOL := "tool/jrpc89.c"
 LIB := "src/jrpc89_internal.c src/id.c src/request.c src/response.c src/error.c src/io.c src/io_posix.c"
 LIB_NO_POSIX := "src/jrpc89_internal.c src/id.c src/request.c src/response.c src/error.c src/io.c"
 LIBJ89LIB := LIBJ89 + "/build/libj89.a"
+LIBJ89LIB32 := LIBJ89 + "/build/32/libj89.a"
+U89LIB32 := U89 + "/build/32/libu89.a"
+STR89LIB32 := STR89 + "/build/32/libstr89.a"
+SSE32 := "-msse2 -mfpmath=sse"
 
 default: build
 
@@ -30,6 +34,20 @@ build: deps
 	mkdir -p build
 	{{CC}} {{STRICT}} -Iinclude -I{{LIBJ89}}/include -I{{U89}}/include -I{{STR89INC}} -o build/jrpc89 {{TOOL}} {{SRC}} {{LIBJ89LIB}} {{STR89LIB}} {{U89LIB}} -lm
 
+# Build the sibling dependencies for ILP32 (libstr89 builds libu89).
+deps32:
+	cd {{STR89}} && just build32
+	cd {{LIBJ89}} && just lib32
+
+# Compile the 32-bit CLI demo (SSE2 math keeps binary64 semantics).
+build32: deps32
+	@mkdir -p build/32; \
+	if ! printf '#include <stdio.h>\nint main(void){return 0;}\n' | {{CC}} -m32 {{SSE32}} -x c - -o build/32/probe 2>/dev/null; then \
+	    echo "build32: SKIPPED: no 32-bit SSE2 toolchain (install gcc multilib)"; \
+	    exit 0; \
+	fi; \
+	{{CC}} {{STRICT}} -m32 {{SSE32}} -Iinclude -I{{LIBJ89}}/include -I{{U89}}/include -I{{STR89INC}} -o build/32/jrpc89 {{TOOL}} {{SRC}} {{LIBJ89LIB32}} {{STR89LIB32}} {{U89LIB32}} -lm
+
 # Static archive of the library for downstream consumers.
 lib: deps
 	mkdir -p build/lib
@@ -38,6 +56,20 @@ lib: deps
 	    {{CC}} {{STRICT}} -Iinclude -I{{LIBJ89}}/include -I{{U89}}/include -I{{STR89INC}} -c "$f" -o "$o" || exit 1; \
 	done
 	ar rcs build/libjrpc89.a build/lib/*.o
+
+# Static archive of the library for downstream consumers on ILP32.
+lib32: deps32
+	@mkdir -p build/32; \
+	if ! printf '#include <stdio.h>\nint main(void){return 0;}\n' | {{CC}} -m32 {{SSE32}} -x c - -o build/32/probe 2>/dev/null; then \
+	    echo "lib32: SKIPPED: no 32-bit SSE2 toolchain (install gcc multilib)"; \
+	    exit 0; \
+	fi; \
+	mkdir -p build/32/lib; \
+	for f in {{LIB}}; do \
+	    o=build/32/lib/$(basename "$f" .c).o; \
+	    {{CC}} {{STRICT}} -m32 {{SSE32}} -Iinclude -I{{LIBJ89}}/include -I{{U89}}/include -I{{STR89INC}} -c "$f" -o "$o" || exit 1; \
+	done; \
+	ar rcs build/32/libjrpc89.a build/32/lib/*.o
 
 # Unit tests, each linked with the library sources (real POSIX adapter).
 unit: build
@@ -79,6 +111,29 @@ smoke: build
 # Run every test (smoke runs first, then unit and fault, then e2e).
 test: smoke unit fault fault-alloc e2e e2e-suite
 
+# Run every test on ILP32 when the toolchain supports it.
+test32: build32 lib32
+	@if [ ! -f build/32/jrpc89 ]; then exit 0; fi; \
+	sh test/e2e/smoke.sh ./build/32/jrpc89 || exit 1; \
+	for t in test/unit/test_*.c; do \
+	    [ -e "$t" ] || continue; \
+	    name=$(basename "$t" .c); \
+	    {{CC}} {{STRICT}} -m32 {{SSE32}} -Iinclude -I{{LIBJ89}}/include -I{{U89}}/include -I{{STR89INC}} -Itest/unit -o "build/32/$name" "$t" {{LIB}} {{LIBJ89LIB32}} {{STR89LIB32}} {{U89LIB32}} -lm || exit 1; \
+	    ./build/32/$name || exit 1; \
+	done; \
+	for t in test/fault/test_*.c; do \
+	    [ -e "$t" ] || continue; \
+	    name=$(basename "$t" .c); \
+	    {{CC}} {{STRICT}} -m32 {{SSE32}} -Iinclude -Isrc -I{{LIBJ89}}/include -I{{U89}}/include -I{{STR89INC}} -Itest/fault -o "build/32/$name" "$t" {{LIB_NO_POSIX}} {{LIBJ89LIB32}} {{STR89LIB32}} {{U89LIB32}} -lm || exit 1; \
+	    ./build/32/$name || exit 1; \
+	done; \
+	{{CC}} {{STRICT}} -m32 {{SSE32}} -Iinclude -Isrc -I{{LIBJ89}}/include -I{{U89}}/include -I{{STR89INC}} -Itest/fault -o build/32/alloc_main test/fault/alloc_main.c test/fault/alloc_shim.c {{LIB}} {{LIBJ89LIB32}} {{STR89LIB32}} {{U89LIB32}} -lm -Wl,--wrap=malloc -Wl,--wrap=calloc -Wl,--wrap=realloc || exit 1; \
+	./build/32/alloc_main || exit 1; \
+	for s in test/e2e/smoke.sh test/e2e/error.sh test/e2e/mismatch.sh test/e2e/sigpipe.sh; do \
+	    sh "$s" ./build/32/jrpc89 || exit 1; \
+	done; \
+	sh test/e2e/suite.sh ./build/32/jrpc89
+
 # Generate the GCC and Clang compilation databases, then run the seven-cell
 # green matrix from this project root.
 green:
@@ -115,6 +170,36 @@ sanitize: deps
 	    {{LIB}} {{LIBJ89LIB}} {{STR89LIB}} {{U89LIB}} -lm \
 	    -Wl,--wrap=malloc -Wl,--wrap=calloc -Wl,--wrap=realloc || exit 1
 	ASAN_OPTIONS=detect_leaks=1 build/asan/alloc_main
+
+# ASan + UBSan build of the library and tests on ILP32 (clang runtime; not C89).
+sanitize32: deps32
+	@mkdir -p build/asan32; \
+	if ! printf '#include <stdio.h>\nint main(void){return 0;}\n' | clang -m32 {{SSE32}} -fsanitize=address,undefined -x c - -o build/asan32/probe 2>/dev/null; then \
+	    echo "sanitize32: SKIPPED: no 32-bit clang ASan/UBSan runtime"; \
+	    exit 0; \
+	fi; \
+	for t in test/unit/test_*.c; do \
+	    [ -e "$t" ] || continue; \
+	    name=$(basename "$t" .c); \
+	    clang -std=c99 -m32 {{SSE32}} -fsanitize=address,undefined -fno-omit-frame-pointer -g \
+	        -Iinclude -I{{LIBJ89}}/include -I{{U89}}/include -I{{STR89INC}} -Itest/unit \
+	        -o "build/asan32/$name" "$t" {{LIB}} {{LIBJ89LIB32}} {{STR89LIB32}} {{U89LIB32}} -lm || exit 1; \
+	    ASAN_OPTIONS=detect_leaks=1 "build/asan32/$name" || exit 1; \
+	done; \
+	for t in test/fault/test_*.c; do \
+	    [ -e "$t" ] || continue; \
+	    name=$(basename "$t" .c); \
+	    clang -std=c99 -m32 {{SSE32}} -fsanitize=address,undefined -fno-omit-frame-pointer -g \
+	        -Iinclude -Isrc -I{{LIBJ89}}/include -I{{U89}}/include -I{{STR89INC}} -Itest/fault \
+	        -o "build/asan32/$name" "$t" {{LIB_NO_POSIX}} {{LIBJ89LIB32}} {{STR89LIB32}} {{U89LIB32}} -lm || exit 1; \
+	    ASAN_OPTIONS=detect_leaks=1 "build/asan32/$name" || exit 1; \
+	done; \
+	clang -std=c99 -m32 {{SSE32}} -fsanitize=address,undefined -fno-omit-frame-pointer -g \
+	    -Iinclude -Isrc -I{{LIBJ89}}/include -I{{U89}}/include -I{{STR89INC}} -Itest/fault \
+	    -o build/asan32/alloc_main test/fault/alloc_main.c test/fault/alloc_shim.c \
+	    {{LIB}} {{LIBJ89LIB32}} {{STR89LIB32}} {{U89LIB32}} -lm \
+	    -Wl,--wrap=malloc -Wl,--wrap=calloc -Wl,--wrap=realloc || exit 1; \
+	ASAN_OPTIONS=detect_leaks=1 build/asan32/alloc_main
 
 # Full local gate: tests, green conformance, and sanitizers.
 ci: test check sanitize

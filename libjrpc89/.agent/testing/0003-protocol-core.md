@@ -108,3 +108,11 @@ SCENARIO: error round trip
 GIVEN jrpc89_response_error_new output
 WHEN it is rendered, parsed, and decoded with jrpc89_response_decode
 THEN code, message bytes, message length, data, and id are identical.
+
+## ILP32 portability
+
+SCENARIO: full suite on a 32-bit target
+GIVEN the same sources and the strict C89 flag set
+WHEN built and tested with `-m32` against the 32-bit libj89 archive
+THEN the CLI builds warning-free and the smoke, unit, fault,
+    allocation-failure, and e2e suites all pass.
