@@ -128,13 +128,12 @@ int main(void)
     fixture_init(&f, 3u, 1u);
     f.store.override_last = 1;
     f.store.last_index_override = RAFT89_INDEX_NONE;
-    f.store.last_term_override = 5u;
+    f.store.last_term_override = test_u64(5u);
     expect_create(&f, RAFT89_ERR_CORRUPT);
 
     /* C22: nonempty log with term zero is corrupt. */
     fixture_init(&f, 3u, 1u);
-    CHECK_EQ(fake_store_append(&f.store, RAFT89_TERM_NONE, 1u, NULL, 0u),
-             RAFT89_OK);
+    CHECK_EQ(fake_store_append(&f.store, 0ul, 1u, NULL, 0u), RAFT89_OK);
     expect_create(&f, RAFT89_ERR_CORRUPT);
 
     /* C29: store read failures. */

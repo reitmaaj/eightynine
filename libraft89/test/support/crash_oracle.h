@@ -46,7 +46,7 @@ int oracle_effect_full(crash_oracle *o, fake_store *store, fake_app *app);
 int oracle_effect_append_partial(crash_oracle *o, fake_store *store,
                                  unsigned long count);
 int oracle_effect_truncate_partial(crash_oracle *o, fake_store *store,
-                                   raft89_index boundary);
+                                   unsigned long boundary);
 int oracle_effect_hard_partial(crash_oracle *o, fake_store *store, int use_new);
 int oracle_effect_apply_partial(crash_oracle *o, fake_app *app, int apply);
 

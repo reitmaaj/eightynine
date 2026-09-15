@@ -1,6 +1,8 @@
 #ifndef RAFT89_H
 #define RAFT89_H
 
+#include <limits.h>
+
 /*
  * raft89.h - deterministic Raft protocol core (ISO C89).
  *
@@ -39,25 +41,60 @@ extern "C"
 {
 #endif
 
-#define RAFT89_VERSION_MAJOR 1
+#define RAFT89_VERSION_MAJOR 2
 #define RAFT89_VERSION_MINOR 0
 #define RAFT89_VERSION_PATCH 0
 
     /*
-     * Scalar types. Node id 0 means "none". Term 0 is the initial term.
-     * Log index 0 denotes the position immediately before the first entry.
-     * The library uses unsigned long to retain strict C89 portability.
+     * Portable 32/64-bit scalar types.
+     *
+     * libraft89 requires an exact unsigned 32-bit C integer type. Terms and
+     * log indices are persistent, globally growing 64-bit quantities and are
+     * represented portably as {hi, lo} word pairs, independent of the host
+     * data model. Arithmetic on them is a private implementation concern.
+     */
+
+#if UINT_MAX == 4294967295U
+    typedef unsigned int raft89_u32;
+#elif ULONG_MAX == 4294967295UL
+typedef unsigned long raft89_u32;
+#else
+#error "libraft89 requires an exact 32-bit unsigned integer type"
+#endif
+
+    typedef struct raft89_u64
+    {
+        raft89_u32 hi;
+        raft89_u32 lo;
+    } raft89_u64;
+
+    typedef raft89_u64 raft89_term;
+    typedef raft89_u64 raft89_index;
+
+    /*
+     * Scalar helpers. cmp() returns <0, 0, >0 according to a < b, a == b,
+     * a > b.
+     */
+    int raft89_u64_cmp(raft89_u64 a, raft89_u64 b);
+
+    int raft89_u64_equal(raft89_u64 a, raft89_u64 b);
+
+    raft89_u64 raft89_u64_zero(void);
+
+    raft89_u64 raft89_u64_from_u32(raft89_u32 value);
+
+    /*
+     * Scalar types that are not persistent globally growing sequence
+     * numbers remain unsigned long.
      */
     typedef unsigned long raft89_id;
-    typedef unsigned long raft89_term;
-    typedef unsigned long raft89_index;
     typedef unsigned long raft89_size;
     typedef unsigned long raft89_time;
     typedef unsigned long raft89_action_id;
 
 #define RAFT89_ID_NONE ((raft89_id)0)
-#define RAFT89_TERM_NONE ((raft89_term)0)
-#define RAFT89_INDEX_NONE ((raft89_index)0)
+#define RAFT89_TERM_NONE (raft89_u64_zero())
+#define RAFT89_INDEX_NONE (raft89_u64_zero())
 #define RAFT89_ACTION_ID_NONE ((raft89_action_id)0)
 
     /* Opaque node object. Its representation is private. */

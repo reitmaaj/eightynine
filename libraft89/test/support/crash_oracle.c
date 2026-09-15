@@ -30,6 +30,11 @@ int oracle_peek(crash_oracle *o)
     return 1;
 }
 
+static unsigned long oracle_lo(raft89_u64 v)
+{
+    return (unsigned long)v.lo;
+}
+
 static int store_entries(fake_store *store, const raft89_entry *entries,
                          unsigned long count)
 {
@@ -38,7 +43,8 @@ static int store_entries(fake_store *store, const raft89_entry *entries,
     for (i = 0u; i < count; ++i)
     {
         entry = &entries[i];
-        if (fake_store_put(store, entry->term, entry->index, entry->data,
+        if (fake_store_put(store, oracle_lo(entry->term),
+                           oracle_lo(entry->index), entry->data,
                            entry->size) != RAFT89_OK)
         {
             return -1;
@@ -64,15 +70,17 @@ static int effect_append(crash_oracle *o, fake_store *store,
 }
 
 static int effect_truncate(crash_oracle *o, fake_store *store,
-                           raft89_index boundary)
+                           unsigned long boundary)
 {
     const raft89_action *action;
+    unsigned long first;
     action = o->action;
     if (action->type != RAFT89_ACT_LOG_TRUNCATE)
     {
         return -1;
     }
-    if (boundary < action->u.log_truncate.first_index - 1u)
+    first = oracle_lo(action->u.log_truncate.first_index);
+    if (boundary < first - 1u)
     {
         return -1;
     }
@@ -138,8 +146,8 @@ int oracle_effect_full(crash_oracle *o, fake_store *store, fake_app *app)
     }
     if (o->action->type == RAFT89_ACT_LOG_TRUNCATE)
     {
-        rc = effect_truncate(o, store,
-                             o->action->u.log_truncate.first_index - 1u);
+        rc = effect_truncate(
+            o, store, oracle_lo(o->action->u.log_truncate.first_index) - 1u);
     }
     if (o->action->type == RAFT89_ACT_APPLY)
     {
@@ -157,7 +165,7 @@ int oracle_effect_append_partial(crash_oracle *o, fake_store *store,
 }
 
 int oracle_effect_truncate_partial(crash_oracle *o, fake_store *store,
-                                   raft89_index boundary)
+                                   unsigned long boundary)
 {
     int rc;
     rc = effect_truncate(o, store, boundary);

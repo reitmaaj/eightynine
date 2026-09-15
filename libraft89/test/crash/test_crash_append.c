@@ -8,7 +8,7 @@
 #include "fixture.h"
 
 static void append_case(int mode, unsigned long expected_count,
-                        raft89_index expected_last)
+                        unsigned long expected_last)
 {
     fixture f;
     fake_app app;
@@ -29,12 +29,12 @@ static void append_case(int mode, unsigned long expected_count,
         return;
     }
     oracle_init(&o, node);
-    entries[0].index = 1u;
-    entries[0].term = 1u;
+    entries[0].index = test_u64(1u);
+    entries[0].term = test_u64(1u);
     entries[0].data = "a";
     entries[0].size = 1u;
-    entries[1].index = 2u;
-    entries[1].term = 1u;
+    entries[1].index = test_u64(2u);
+    entries[1].term = test_u64(1u);
     entries[1].data = "b";
     entries[1].size = 1u;
     driver_build_ae(2u, 1u, 1u, 0u, 0u, 0u, entries, 2u, &msg);
@@ -66,9 +66,9 @@ static void append_case(int mode, unsigned long expected_count,
     CHECK_EQ(f.store.entry_count, expected_count);
     CHECK_EQ(oracle_restart(&o, &f.config), RAFT89_OK);
     CHECK_EQ(raft89_status_get(o.raft, &status), RAFT89_OK);
-    CHECK_EQ(status.last_log_index, expected_last);
-    CHECK_EQ(status.commit_index, 0u);
-    CHECK_EQ(status.applied_index, 0u);
+    CHECK_U64(status.last_log_index, test_u64(expected_last));
+    CHECK_U64(status.commit_index, test_u64(0u));
+    CHECK_U64(status.applied_index, test_u64(0u));
     raft89_destroy(o.raft);
 }
 

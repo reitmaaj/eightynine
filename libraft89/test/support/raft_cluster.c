@@ -32,11 +32,13 @@ static void record_applied(cluster_node *n, const raft89_entry *entry)
     const unsigned char *data;
     unsigned long size;
     unsigned long i;
-    if (entry->index == 0u)
+    unsigned long index;
+    index = (unsigned long)entry->index.lo;
+    if (index == 0ul)
     {
         return;
     }
-    if (entry->index > (raft89_index)CLUSTER_INDEX_MAX)
+    if (index > (unsigned long)CLUSTER_INDEX_MAX)
     {
         return;
     }
@@ -48,11 +50,11 @@ static void record_applied(cluster_node *n, const raft89_entry *entry)
     data = (const unsigned char *)entry->data;
     for (i = 0u; i < size; ++i)
     {
-        n->applied[entry->index][i] = data[i];
+        n->applied[index][i] = data[i];
     }
-    n->applied[entry->index][size] = 0u;
-    n->applied_len[entry->index] = size;
-    n->applied_seen[entry->index] = 1;
+    n->applied[index][size] = 0u;
+    n->applied_len[index] = size;
+    n->applied_seen[index] = 1;
 }
 
 static void remove_packet(cluster *c, unsigned long index)
@@ -491,11 +493,11 @@ int cluster_linked(const cluster *c, raft89_id a, raft89_id b)
 }
 
 const unsigned char *cluster_applied(const cluster *c, raft89_id id,
-                                     raft89_index index)
+                                     unsigned long index)
 {
     const cluster_node *n;
     n = node_at_const(c, id);
-    if (index == 0u || index > (raft89_index)CLUSTER_INDEX_MAX)
+    if (index == 0ul || index > (unsigned long)CLUSTER_INDEX_MAX)
     {
         return NULL;
     }
@@ -507,11 +509,11 @@ const unsigned char *cluster_applied(const cluster *c, raft89_id id,
 }
 
 unsigned long cluster_applied_len(const cluster *c, raft89_id id,
-                                  raft89_index index)
+                                  unsigned long index)
 {
     const cluster_node *n;
     n = node_at_const(c, id);
-    if (index == 0u || index > (raft89_index)CLUSTER_INDEX_MAX)
+    if (index == 0ul || index > (unsigned long)CLUSTER_INDEX_MAX)
     {
         return 0u;
     }

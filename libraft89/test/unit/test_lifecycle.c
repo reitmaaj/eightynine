@@ -23,10 +23,10 @@ static void expect_fresh_follower(void)
     CHECK_EQ(status.self, 2u);
     CHECK_EQ(status.role, RAFT89_FOLLOWER);
     CHECK_EQ(status.leader_id, RAFT89_ID_NONE);
-    CHECK_EQ(status.current_term, RAFT89_TERM_NONE);
+    CHECK_U64(status.current_term, RAFT89_TERM_NONE);
     CHECK_EQ(status.voted_for, RAFT89_ID_NONE);
-    CHECK_EQ(status.commit_index, RAFT89_INDEX_NONE);
-    CHECK_EQ(status.applied_index, RAFT89_INDEX_NONE);
+    CHECK_U64(status.commit_index, RAFT89_INDEX_NONE);
+    CHECK_U64(status.applied_index, RAFT89_INDEX_NONE);
     CHECK_EQ(status.faulted, 0);
 
     /* C23: create emits no action. */
@@ -56,10 +56,10 @@ int main(void)
     if (node != NULL)
     {
         CHECK_EQ(raft89_status_get(node, &status), RAFT89_OK);
-        CHECK_EQ(status.current_term, 12u);
+        CHECK_U64(status.current_term, test_u64(12u));
         CHECK_EQ(status.voted_for, 3u);
-        CHECK_EQ(status.commit_index, RAFT89_INDEX_NONE);
-        CHECK_EQ(status.applied_index, RAFT89_INDEX_NONE);
+        CHECK_U64(status.commit_index, RAFT89_INDEX_NONE);
+        CHECK_U64(status.applied_index, RAFT89_INDEX_NONE);
         raft89_destroy(node);
     }
 
@@ -74,9 +74,9 @@ int main(void)
     if (node != NULL)
     {
         CHECK_EQ(raft89_status_get(node, &status), RAFT89_OK);
-        CHECK_EQ(status.last_log_index, 3u);
-        CHECK_EQ(status.commit_index, RAFT89_INDEX_NONE);
-        CHECK_EQ(status.applied_index, RAFT89_INDEX_NONE);
+        CHECK_U64(status.last_log_index, test_u64(3u));
+        CHECK_U64(status.commit_index, RAFT89_INDEX_NONE);
+        CHECK_U64(status.applied_index, RAFT89_INDEX_NONE);
         raft89_destroy(node);
     }
 

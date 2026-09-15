@@ -88,8 +88,8 @@ static void run_propose_failures(void)
         {
             CHECK_EQ(rc, RAFT89_ERR_NOMEM);
             CHECK_EQ(raft89_status_get(node, &st), RAFT89_OK);
-            CHECK_EQ(st.last_log_index, 0u);
-            CHECK_EQ(st.commit_index, 0u);
+            CHECK_U64(st.last_log_index, test_u64(0u));
+            CHECK_U64(st.commit_index, test_u64(0u));
             CHECK_EQ(st.role, RAFT89_LEADER);
         }
         raft89_destroy(node);
@@ -121,8 +121,8 @@ static void run_recv_failures(void)
         fake_random_push(&f.random, 0u);
         fail_alloc_disable();
         CHECK_EQ(raft89_create(&f.config, &node), RAFT89_OK);
-        entry.term = 1u;
-        entry.index = 1u;
+        entry.term = test_u64(1u);
+        entry.index = test_u64(1u);
         entry.data = "A";
         entry.size = 1u;
         driver_build_ae(2u, 1u, 1u, 0u, 0u, 0u, &entry, 1u, &msg);

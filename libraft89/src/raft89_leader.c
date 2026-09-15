@@ -12,30 +12,31 @@ static void out_entries_clear(raft89 *node)
     node->out_count = 0u;
 }
 
-static int out_entry_fill(raft89 *node, raft89_entry *dst, raft89_index index,
+static int out_entry_fill(raft89 *node, raft89_entry *dst, raft89__u64 index,
                           unsigned char *base, unsigned long *offset)
 {
     int rc;
-    raft89_term term;
+    raft89__u64 term;
     raft89_size size;
     rc = raft89__log_term_at(node, index, &term);
     if (rc != RAFT89_OK)
     {
         return rc;
     }
-    rc = node->store.log_size(node->store.ctx, index, &size);
+    rc = node->store.log_size(node->store.ctx, raft89__to_public(index), &size);
     if (rc != RAFT89_OK)
     {
         node->faulted = 1;
         return RAFT89_ERR_STORE;
     }
-    dst->term = term;
-    dst->index = index;
+    dst->term = raft89__to_public(term);
+    dst->index = raft89__to_public(index);
     dst->size = size;
     dst->data = base + *offset;
     if (size != 0u)
     {
-        rc = node->store.log_read(node->store.ctx, index, base + *offset, size);
+        rc = node->store.log_read(node->store.ctx, raft89__to_public(index),
+                                  base + *offset, size);
         if (rc != RAFT89_OK)
         {
             node->faulted = 1;
@@ -46,27 +47,34 @@ static int out_entry_fill(raft89 *node, raft89_entry *dst, raft89_index index,
     return RAFT89_OK;
 }
 
-static int out_entries_build(raft89 *node, raft89_index from,
-                             raft89_index count, unsigned long total)
+static int out_entries_build(raft89 *node, raft89__u64 from, raft89__u64 count,
+                             unsigned long total)
 {
     unsigned char *base;
     raft89_entry *entries;
+    raft89_size count_size;
     unsigned long offset;
-    raft89_index i;
+    raft89__u64 i;
+    int ok;
     int rc;
     out_entries_clear(node);
-    if (count == 0u)
+    if (raft89__u64_is_zero(count))
     {
         return RAFT89_OK;
     }
-    base = raft89__entries_buffer_alloc(count, total);
+    ok = raft89__u64_to_size(count, &count_size);
+    if (!ok)
+    {
+        return RAFT89_ERR_LIMIT;
+    }
+    base = raft89__entries_buffer_alloc(count_size, total);
     if (base == NULL)
     {
         return RAFT89_ERR_NOMEM;
     }
     entries = (raft89_entry *)base;
-    offset = count * sizeof(raft89_entry);
-    for (i = 0u; i < count; ++i)
+    offset = count_size * sizeof(raft89_entry);
+    for (i = (raft89__u64)0; i < count; i = raft89__u64_inc(i))
     {
         rc = out_entry_fill(node, &entries[i], from + i, base, &offset);
         if (rc != RAFT89_OK)
@@ -76,15 +84,15 @@ static int out_entries_build(raft89 *node, raft89_index from,
         }
     }
     node->out_entries = entries;
-    node->out_count = count;
+    node->out_count = count_size;
     return RAFT89_OK;
 }
 
-static int sum_one(raft89 *node, raft89_index index, unsigned long *sum)
+static int sum_one(raft89 *node, raft89__u64 index, unsigned long *sum)
 {
     int rc;
     raft89_size size;
-    rc = node->store.log_size(node->store.ctx, index, &size);
+    rc = node->store.log_size(node->store.ctx, raft89__to_public(index), &size);
     if (rc != RAFT89_OK)
     {
         node->faulted = 1;
@@ -94,14 +102,14 @@ static int sum_one(raft89 *node, raft89_index index, unsigned long *sum)
     return RAFT89_OK;
 }
 
-static int entry_sum(raft89 *node, raft89_index from, raft89_index count,
+static int entry_sum(raft89 *node, raft89__u64 from, raft89__u64 count,
                      unsigned long *total)
 {
     unsigned long sum;
-    raft89_index i;
+    raft89__u64 i;
     int rc;
     sum = 0u;
-    for (i = 0u; i < count; ++i)
+    for (i = (raft89__u64)0; i < count; i = raft89__u64_inc(i))
     {
         rc = sum_one(node, from + i, &sum);
         if (rc != RAFT89_OK)
@@ -113,7 +121,7 @@ static int entry_sum(raft89 *node, raft89_index from, raft89_index count,
     return RAFT89_OK;
 }
 
-static int shrink_step(raft89 *node, raft89_index from, raft89_index *count,
+static int shrink_step(raft89 *node, raft89__u64 from, raft89__u64 *count,
                        unsigned long *total)
 {
     int rc;
@@ -126,11 +134,11 @@ static int shrink_step(raft89 *node, raft89_index from, raft89_index *count,
     {
         return 1;
     }
-    --(*count);
+    *count = raft89__u64_dec(*count);
     return 0;
 }
 
-static int shrink_to_fit(raft89 *node, raft89_index from, raft89_index *count,
+static int shrink_to_fit(raft89 *node, raft89__u64 from, raft89__u64 *count,
                          unsigned long *total)
 {
     int status;
@@ -146,24 +154,25 @@ static int shrink_to_fit(raft89 *node, raft89_index from, raft89_index *count,
     return RAFT89_OK;
 }
 
-static void mark_empty_batch(raft89_index *count, unsigned long *total)
+static void mark_empty_batch(raft89__u64 *count, unsigned long *total)
 {
-    *count = 0u;
+    *count = (raft89__u64)0;
     *total = 0u;
 }
 
-static int plan_batch(raft89 *node, raft89_index from, raft89_index *count,
+static int plan_batch(raft89 *node, raft89__u64 from, raft89__u64 *count,
                       unsigned long *total)
 {
-    raft89_index avail;
+    raft89__u64 avail;
     int rc;
     if (from > node->last_log_index)
     {
         mark_empty_batch(count, total);
         return RAFT89_OK;
     }
-    avail = node->last_log_index - from + 1u;
-    avail = raft89__min_index(avail, node->max_append_entries);
+    avail = raft89__u64_inc(node->last_log_index - from);
+    avail =
+        raft89__min_index(avail, raft89__size_to_u64(node->max_append_entries));
     *count = avail;
     rc = shrink_to_fit(node, from, count, total);
     return rc;
@@ -172,15 +181,17 @@ static int plan_batch(raft89 *node, raft89_index from, raft89_index *count,
 static int build_leader_ae(raft89 *node, raft89_id peer, raft89_message *msg)
 {
     raft89_size idx;
-    raft89_index next;
-    raft89_index prev;
-    raft89_term prev_term;
-    raft89_index count;
+    raft89__u64 next;
+    raft89__u64 prev;
+    raft89__u64 prev_term;
+    raft89__u64 count;
+    raft89_size count_size;
     unsigned long total;
+    int ok;
     int rc;
     idx = raft89__member_index(node, peer);
     next = node->next_index[idx];
-    prev = next - 1u;
+    prev = raft89__u64_dec(next);
     rc = raft89__log_term_at(node, prev, &prev_term);
     if (rc != RAFT89_OK)
     {
@@ -196,15 +207,20 @@ static int build_leader_ae(raft89 *node, raft89_id peer, raft89_message *msg)
     {
         return rc;
     }
+    ok = raft89__u64_to_size(count, &count_size);
+    if (!ok)
+    {
+        return RAFT89_ERR_LIMIT;
+    }
     msg->type = RAFT89_MSG_APPEND_ENTRIES;
     msg->from = node->self;
     msg->to = peer;
-    msg->u.append_entries.term = node->current_term;
-    msg->u.append_entries.prev_log_index = prev;
-    msg->u.append_entries.prev_log_term = prev_term;
-    msg->u.append_entries.leader_commit = node->commit_index;
+    msg->u.append_entries.term = raft89__to_public(node->current_term);
+    msg->u.append_entries.prev_log_index = raft89__to_public(prev);
+    msg->u.append_entries.prev_log_term = raft89__to_public(prev_term);
+    msg->u.append_entries.leader_commit = raft89__to_public(node->commit_index);
     msg->u.append_entries.entries = node->out_entries;
-    msg->u.append_entries.entry_count = count;
+    msg->u.append_entries.entry_count = count_size;
     return RAFT89_OK;
 }
 
@@ -237,7 +253,7 @@ int raft89__leader_broadcast_next(raft89 *node)
     return rc;
 }
 
-static int peer_replicated(raft89 *node, raft89_size i, raft89_index index)
+static int peer_replicated(raft89 *node, raft89_size i, raft89__u64 index)
 {
     if (node->members[i] == node->self)
     {
@@ -250,7 +266,7 @@ static int peer_replicated(raft89 *node, raft89_size i, raft89_index index)
     return 0;
 }
 
-static unsigned long count_replicated(raft89 *node, raft89_index index)
+static unsigned long count_replicated(raft89 *node, raft89__u64 index)
 {
     unsigned long count;
     raft89_size i;
@@ -265,10 +281,10 @@ static unsigned long count_replicated(raft89 *node, raft89_index index)
     return count;
 }
 
-static raft89_index majority_search(raft89 *node, raft89_index from,
-                                    raft89_index stop, unsigned long need)
+static raft89__u64 majority_search(raft89 *node, raft89__u64 from,
+                                   raft89__u64 stop, unsigned long need)
 {
-    raft89_index index;
+    raft89__u64 index;
     index = from;
     while (index > stop)
     {
@@ -276,15 +292,15 @@ static raft89_index majority_search(raft89 *node, raft89_index from,
         {
             return index;
         }
-        --index;
+        index = raft89__u64_dec(index);
     }
     return stop;
 }
 
 int raft89__leader_maybe_commit(raft89 *node)
 {
-    raft89_index index;
-    raft89_term term;
+    raft89__u64 index;
+    raft89__u64 term;
     int rc;
     index = majority_search(node, node->last_log_index, node->commit_index,
                             raft89__quorum(node));
@@ -309,14 +325,14 @@ int raft89__leader_after_append(raft89 *node)
 {
     int rc;
     raft89_entry *entry;
-    entry = node->pending_entries;
-    if (entry == NULL)
+    if (node->pending_entries == NULL)
     {
         node->step = RAFT89_STEP_NONE;
         return RAFT89_OK;
     }
-    node->last_log_index = entry->index;
-    node->last_log_term = entry->term;
+    entry = &node->pending_entries[node->pending_count - 1u];
+    node->last_log_index = raft89__from_public(entry->index);
+    node->last_log_term = raft89__from_public(entry->term);
     raft89__entries_clear(node);
     node->peer_cursor = 0u;
     node->step = RAFT89_STEP_LEADER_BROADCAST;
@@ -324,17 +340,17 @@ int raft89__leader_after_append(raft89 *node)
     return rc;
 }
 
-static void advance_next(raft89 *node, raft89_size idx, raft89_index match)
+static void advance_next(raft89 *node, raft89_size idx, raft89__u64 match)
 {
-    node->next_index[idx] = match + 1u;
+    node->next_index[idx] = raft89__u64_inc(match);
 }
 
 static int handle_ae_failure(raft89 *node, raft89_size idx, raft89_id from)
 {
     int rc;
-    if (node->next_index[idx] > 1u)
+    if (node->next_index[idx] > (raft89__u64)1)
     {
-        --node->next_index[idx];
+        node->next_index[idx] = raft89__u64_dec(node->next_index[idx]);
     }
     rc = raft89__leader_send_to(node, from);
     return rc;
@@ -342,11 +358,11 @@ static int handle_ae_failure(raft89 *node, raft89_size idx, raft89_id from)
 
 int raft89__recv_ae_response(raft89 *node, const raft89_message *msg)
 {
-    raft89_term term;
+    raft89__u64 term;
     raft89_size idx;
-    raft89_index match;
+    raft89__u64 match;
     int rc;
-    term = msg->u.append_entries_response.term;
+    term = raft89__from_public(msg->u.append_entries_response.term);
     if (term < node->current_term)
     {
         return RAFT89_OK;
@@ -366,7 +382,7 @@ int raft89__recv_ae_response(raft89 *node, const raft89_message *msg)
         rc = handle_ae_failure(node, idx, msg->from);
         return rc;
     }
-    match = msg->u.append_entries_response.match_index;
+    match = raft89__from_public(msg->u.append_entries_response.match_index);
     if (match <= node->match_index[idx])
     {
         return RAFT89_OK;
@@ -376,7 +392,7 @@ int raft89__recv_ae_response(raft89 *node, const raft89_message *msg)
         return RAFT89_OK;
     }
     node->match_index[idx] = match;
-    if (match < ULONG_MAX)
+    if (match < RAFT89__U64_MAX)
     {
         advance_next(node, idx, match);
     }
@@ -384,9 +400,9 @@ int raft89__recv_ae_response(raft89 *node, const raft89_message *msg)
     return rc;
 }
 
-static void set_index(raft89_index *out, raft89_index value)
+static void set_index(raft89_index *out, raft89__u64 value)
 {
-    *out = value;
+    *out = raft89__to_public(value);
 }
 
 int raft89_propose(raft89 *node, const void *data, raft89_size size,
@@ -394,6 +410,7 @@ int raft89_propose(raft89 *node, const void *data, raft89_size size,
 {
     int rc;
     raft89_entry entry;
+    raft89__u64 next;
     if (node == NULL)
     {
         return RAFT89_ERR_ARG;
@@ -421,13 +438,14 @@ int raft89_propose(raft89 *node, const void *data, raft89_size size,
     {
         return RAFT89_ERR_LIMIT;
     }
-    if (node->last_log_index == ULONG_MAX)
+    if (node->last_log_index == RAFT89__U64_MAX)
     {
         node->faulted = 1;
         return RAFT89_ERR_LIMIT;
     }
-    entry.index = node->last_log_index + 1u;
-    entry.term = node->current_term;
+    next = raft89__u64_inc(node->last_log_index);
+    entry.index = raft89__to_public(next);
+    entry.term = raft89__to_public(node->current_term);
     entry.data = data;
     entry.size = size;
     rc = raft89__entries_stash(node, &entry, 1u);
@@ -446,7 +464,7 @@ int raft89_propose(raft89 *node, const void *data, raft89_size size,
     node->step = RAFT89_STEP_LEADER_APPEND;
     if (index != NULL)
     {
-        set_index(index, entry.index);
+        set_index(index, next);
     }
     return RAFT89_OK;
 }

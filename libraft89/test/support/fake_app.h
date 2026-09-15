@@ -10,8 +10,8 @@
 
 typedef struct fake_app_rec
 {
-    raft89_index index;
-    raft89_term term;
+    unsigned long index;
+    unsigned long term;
     unsigned long hash;
     int present;
 } fake_app_rec;
@@ -19,7 +19,7 @@ typedef struct fake_app_rec
 typedef struct fake_app
 {
     unsigned long value;
-    raft89_index last_applied;
+    unsigned long last_applied;
     fake_app_rec rec[FAKE_APP_SLOTS];
     unsigned long applied_count;
     unsigned long replay_count;

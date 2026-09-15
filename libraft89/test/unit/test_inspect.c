@@ -42,15 +42,15 @@ static void apply_effect(fake_store *store, const raft89_action *action)
     {
         for (i = 0u; i < action->u.log_append.entry_count; ++i)
         {
-            fake_store_put(store, action->u.log_append.entries[i].term,
-                           action->u.log_append.entries[i].index,
+            fake_store_put(store, test_ul(action->u.log_append.entries[i].term),
+                           test_ul(action->u.log_append.entries[i].index),
                            action->u.log_append.entries[i].data,
                            action->u.log_append.entries[i].size);
         }
     }
     if (action->type == RAFT89_ACT_LOG_TRUNCATE)
     {
-        fake_store_truncate(store, action->u.log_truncate.first_index);
+        fake_store_truncate(store, test_ul(action->u.log_truncate.first_index));
     }
 }
 
@@ -86,8 +86,8 @@ int main(void)
     a = NULL;
     b = NULL;
     pid = 0u;
-    pnext = 0u;
-    pmatch = 0u;
+    pnext = raft89_u64_zero();
+    pmatch = raft89_u64_zero();
     len = 0u;
     granted = 0;
 
@@ -145,8 +145,8 @@ int main(void)
     CHECK_EQ(granted, 1);
     CHECK_EQ(raft89_inspect_peer(a, 0u, &pid, &pnext, &pmatch), 0);
     CHECK_EQ(pid, 2u);
-    CHECK_EQ(pnext, 1u);
-    CHECK_EQ(pmatch, 0u);
+    CHECK_U64(pnext, test_u64(1u));
+    CHECK_U64(pmatch, test_u64(0u));
 
     step_pair(a, &f1.store, b, &f2.store);
     step_pair(a, &f1.store, b, &f2.store);

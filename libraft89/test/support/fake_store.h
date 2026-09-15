@@ -2,7 +2,9 @@
 #define FAKE_STORE_H
 
 /* fake_store.h - in-memory durable store for tests. Models H and L with
- * per-callback fault injection. Not part of the library. */
+ * per-callback fault injection. Test-facing term/index parameters are
+ * unsigned long; the store converts at the public boundary. Not part of
+ * the library. */
 
 #include <raft89.h>
 
@@ -23,8 +25,8 @@ typedef struct fake_store
     fake_store_entry entries[FAKE_STORE_MAX_ENTRIES];
     unsigned long entry_count;
     int override_last;
-    raft89_index last_index_override;
-    raft89_term last_term_override;
+    raft89_u64 last_index_override;
+    raft89_u64 last_term_override;
     int fail_hard_state;
     int fail_log_last;
     int fail_log_term;
@@ -33,13 +35,14 @@ typedef struct fake_store
 } fake_store;
 
 void fake_store_init(fake_store *store);
-void fake_store_set_hard(fake_store *store, raft89_term term,
+void fake_store_set_hard(fake_store *store, unsigned long term,
                          raft89_id voted_for);
-int fake_store_append(fake_store *store, raft89_term term, raft89_index index,
-                      const void *data, unsigned long size);
-int fake_store_put(fake_store *store, raft89_term term, raft89_index index,
+int fake_store_append(fake_store *store, unsigned long term,
+                      unsigned long index, const void *data,
+                      unsigned long size);
+int fake_store_put(fake_store *store, unsigned long term, unsigned long index,
                    const void *data, unsigned long size);
-void fake_store_truncate(fake_store *store, raft89_index first_index);
+void fake_store_truncate(fake_store *store, unsigned long first_index);
 void fake_store_bind(raft89_store *api, fake_store *store);
 
 #endif /* FAKE_STORE_H */

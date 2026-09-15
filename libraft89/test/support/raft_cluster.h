@@ -77,8 +77,8 @@ int cluster_linked(const cluster *c, raft89_id a, raft89_id b);
 /* Recorded applied payload for an index, or NULL when absent. The
  * payload is NUL-terminated when it fits. */
 const unsigned char *cluster_applied(const cluster *c, raft89_id id,
-                                     raft89_index index);
+                                     unsigned long index);
 unsigned long cluster_applied_len(const cluster *c, raft89_id id,
-                                  raft89_index index);
+                                  unsigned long index);
 
 #endif /* RAFT_CLUSTER_H */

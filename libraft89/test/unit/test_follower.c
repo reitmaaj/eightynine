@@ -16,23 +16,23 @@ static raft89 *create_node(fixture *f)
 }
 
 static raft89 *make_node(fixture *f, raft89_size size, raft89_id self,
-                         raft89_term term, raft89_id vote)
+                         unsigned long term, raft89_id vote)
 {
     fixture_init(f, size, self);
     fake_store_set_hard(&f->store, term, vote);
     return create_node(f);
 }
 
-static void entry_set(raft89_entry *entry, raft89_index index, raft89_term term,
-                      const void *data, raft89_size size)
+static void entry_set(raft89_entry *entry, unsigned long index,
+                      unsigned long term, const void *data, raft89_size size)
 {
-    entry->index = index;
-    entry->term = term;
+    entry->index = test_u64(index);
+    entry->term = test_u64(term);
     entry->data = data;
     entry->size = size;
 }
 
-static void expect_ae_reply(raft89 *node, int success, raft89_index match)
+static void expect_ae_reply(raft89 *node, int success, unsigned long match)
 {
     raft89_message msg;
     int rc;
@@ -45,11 +45,11 @@ static void expect_ae_reply(raft89 *node, int success, raft89_index match)
     }
     CHECK_EQ(msg.type, RAFT89_MSG_APPEND_ENTRIES_RESPONSE);
     CHECK_EQ(msg.u.append_entries_response.success, success);
-    CHECK_EQ(msg.u.append_entries_response.match_index, match);
+    CHECK_U64(msg.u.append_entries_response.match_index, test_u64(match));
 }
 
 static void expect_log_append(fake_store *store, raft89 *node,
-                              raft89_index first, raft89_size count)
+                              unsigned long first, raft89_size count)
 {
     const raft89_action *action;
     action = NULL;
@@ -63,14 +63,14 @@ static void expect_log_append(fake_store *store, raft89 *node,
     CHECK_EQ(action->u.log_append.entry_count, count);
     if (count != 0u)
     {
-        CHECK_EQ(action->u.log_append.entries[0].index, first);
+        CHECK_U64(action->u.log_append.entries[0].index, test_u64(first));
     }
     driver_store_effect(store, action);
     CHECK_EQ(raft89_action_done(node, action->id, RAFT89_ACTION_OK), RAFT89_OK);
 }
 
 static void expect_log_truncate(fake_store *store, raft89 *node,
-                                raft89_index first)
+                                unsigned long first)
 {
     const raft89_action *action;
     action = NULL;
@@ -81,12 +81,12 @@ static void expect_log_truncate(fake_store *store, raft89 *node,
         return;
     }
     CHECK_EQ(action->type, RAFT89_ACT_LOG_TRUNCATE);
-    CHECK_EQ(action->u.log_truncate.first_index, first);
+    CHECK_U64(action->u.log_truncate.first_index, test_u64(first));
     driver_store_effect(store, action);
     CHECK_EQ(raft89_action_done(node, action->id, RAFT89_ACTION_OK), RAFT89_OK);
 }
 
-static void expect_apply(raft89 *node, raft89_index index, raft89_term term,
+static void expect_apply(raft89 *node, unsigned long index, unsigned long term,
                          const void *data, raft89_size size)
 {
     const raft89_action *action;
@@ -98,8 +98,8 @@ static void expect_apply(raft89 *node, raft89_index index, raft89_term term,
         return;
     }
     CHECK_EQ(action->type, RAFT89_ACT_APPLY);
-    CHECK_EQ(action->u.apply.entry.index, index);
-    CHECK_EQ(action->u.apply.entry.term, term);
+    CHECK_U64(action->u.apply.entry.index, test_u64(index));
+    CHECK_U64(action->u.apply.entry.term, test_u64(term));
     CHECK_EQ(action->u.apply.entry.size, size);
     if (size != 0u)
     {
@@ -168,9 +168,9 @@ int main(void)
     CHECK_EQ(raft89_recv(node, &msg), RAFT89_OK);
     expect_log_append(&f.store, node, 1u, 1u);
     CHECK_EQ(f.store.entry_count, 1u);
-    CHECK_EQ(f.store.entries[0].term, 1u);
+    CHECK_U64(f.store.entries[0].term, test_u64(1u));
     CHECK_EQ(raft89_status_get(node, &status), RAFT89_OK);
-    CHECK_EQ(status.last_log_index, 1u);
+    CHECK_U64(status.last_log_index, test_u64(1u));
     expect_ae_reply(node, 1, 1u);
     raft89_destroy(node);
 
@@ -232,10 +232,10 @@ int main(void)
     expect_log_truncate(&f.store, node, 3u);
     expect_log_append(&f.store, node, 3u, 2u);
     CHECK_EQ(f.store.entry_count, 4u);
-    CHECK_EQ(f.store.entries[0].term, 1u);
-    CHECK_EQ(f.store.entries[1].term, 1u);
-    CHECK_EQ(f.store.entries[2].term, 3u);
-    CHECK_EQ(f.store.entries[3].term, 3u);
+    CHECK_U64(f.store.entries[0].term, test_u64(1u));
+    CHECK_U64(f.store.entries[1].term, test_u64(1u));
+    CHECK_U64(f.store.entries[2].term, test_u64(3u));
+    CHECK_U64(f.store.entries[3].term, test_u64(3u));
     expect_ae_reply(node, 1, 4u);
     raft89_destroy(node);
 
@@ -274,7 +274,7 @@ int main(void)
     expect_log_truncate(&f.store, node, 3u);
     expect_log_append(&f.store, node, 3u, 1u);
     CHECK_EQ(f.store.entry_count, 3u);
-    CHECK_EQ(f.store.entries[2].term, 3u);
+    CHECK_U64(f.store.entries[2].term, test_u64(3u));
     expect_ae_reply(node, 1, 3u);
     raft89_destroy(node);
 
@@ -294,8 +294,8 @@ int main(void)
     CHECK_EQ(raft89_recv(node, &msg), RAFT89_OK);
     expect_ae_reply(node, 1, 2u);
     CHECK_EQ(raft89_status_get(node, &status), RAFT89_OK);
-    CHECK_EQ(status.commit_index, 2u);
-    CHECK_EQ(status.applied_index, 2u);
+    CHECK_U64(status.commit_index, test_u64(2u));
+    CHECK_U64(status.applied_index, test_u64(2u));
     raft89_destroy(node);
 
     /* F22: leader_commit beyond the log is clamped. */
@@ -309,7 +309,7 @@ int main(void)
     expect_apply(node, 1u, 1u, "a", 1u);
     expect_ae_reply(node, 1, 1u);
     CHECK_EQ(raft89_status_get(node, &status), RAFT89_OK);
-    CHECK_EQ(status.commit_index, 1u);
+    CHECK_U64(status.commit_index, test_u64(1u));
     raft89_destroy(node);
 
     /* F23/F24/F26: commit advances and applies sequentially. */
@@ -327,7 +327,7 @@ int main(void)
     expect_apply(node, 3u, 1u, "c", 1u);
     expect_ae_reply(node, 1, 3u);
     CHECK_EQ(raft89_status_get(node, &status), RAFT89_OK);
-    CHECK_EQ(status.applied_index, 3u);
+    CHECK_U64(status.applied_index, test_u64(3u));
     raft89_destroy(node);
 
     /* F25: log durability precedes application. */
@@ -356,7 +356,8 @@ int main(void)
         if (action != NULL)
         {
             CHECK_EQ(action->type, RAFT89_ACT_SEND);
-            CHECK_EQ(action->u.send.message.u.append_entries_response.term, 5u);
+            CHECK_U64(action->u.send.message.u.append_entries_response.term,
+                      test_u64(5u));
             CHECK_EQ(action->u.send.message.u.append_entries_response.success,
                      0);
             CHECK_EQ(raft89_action_done(node, action->id, RAFT89_ACTION_OK),

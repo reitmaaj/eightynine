@@ -62,13 +62,13 @@ static int state_alloc(raft89 *node, const raft89_config *config)
         return RAFT89_ERR_NOMEM;
     }
     node->next_index =
-        (raft89_index *)calloc(config->member_count, sizeof(raft89_index));
+        (raft89__u64 *)calloc(config->member_count, sizeof(raft89__u64));
     if (node->next_index == NULL)
     {
         return RAFT89_ERR_NOMEM;
     }
     node->match_index =
-        (raft89_index *)calloc(config->member_count, sizeof(raft89_index));
+        (raft89__u64 *)calloc(config->member_count, sizeof(raft89__u64));
     if (node->match_index == NULL)
     {
         return RAFT89_ERR_NOMEM;
@@ -82,13 +82,13 @@ void raft89__node_init(raft89 *node, const raft89_config *config)
 {
     node->self = config->self;
     node->role = RAFT89_FOLLOWER;
-    node->current_term = RAFT89_TERM_NONE;
+    node->current_term = (raft89__u64)0;
     node->voted_for = RAFT89_ID_NONE;
     node->leader_id = RAFT89_ID_NONE;
-    node->last_log_index = RAFT89_INDEX_NONE;
-    node->last_log_term = RAFT89_TERM_NONE;
-    node->commit_index = RAFT89_INDEX_NONE;
-    node->applied_index = RAFT89_INDEX_NONE;
+    node->last_log_index = (raft89__u64)0;
+    node->last_log_term = (raft89__u64)0;
+    node->commit_index = (raft89__u64)0;
+    node->applied_index = (raft89__u64)0;
     node->votes_granted = 0u;
     node->heartbeat_interval = config->heartbeat_interval;
     node->election_timeout_min = config->election_timeout_min;
@@ -109,12 +109,12 @@ void raft89__node_init(raft89 *node, const raft89_config *config)
     memset(&node->pending_msg, 0, sizeof(node->pending_msg));
     node->pending_entries = NULL;
     node->pending_count = 0u;
-    node->ae_prev_index = RAFT89_INDEX_NONE;
-    node->ae_prev_term = RAFT89_TERM_NONE;
-    node->ae_leader_commit = RAFT89_INDEX_NONE;
+    node->ae_prev_index = (raft89__u64)0;
+    node->ae_prev_term = (raft89__u64)0;
+    node->ae_leader_commit = (raft89__u64)0;
     node->ae_leader_id = RAFT89_ID_NONE;
-    node->ae_match_index = RAFT89_INDEX_NONE;
-    node->ae_truncate_first = RAFT89_INDEX_NONE;
+    node->ae_match_index = (raft89__u64)0;
+    node->ae_truncate_first = (raft89__u64)0;
     node->ae_append_offset = 0u;
     node->ae_reply_success = 0;
     node->apply_buffer = NULL;
@@ -150,7 +150,7 @@ int raft89__store_read_hard_state(raft89 *node)
     {
         return RAFT89_ERR_STORE;
     }
-    node->current_term = state.current_term;
+    node->current_term = raft89__from_public(state.current_term);
     node->voted_for = state.voted_for;
     return RAFT89_OK;
 }
@@ -165,8 +165,8 @@ int raft89__store_read_log_last(raft89 *node)
     {
         return RAFT89_ERR_STORE;
     }
-    node->last_log_index = index;
-    node->last_log_term = term;
+    node->last_log_index = raft89__from_public(index);
+    node->last_log_term = raft89__from_public(term);
     return RAFT89_OK;
 }
 
@@ -185,16 +185,16 @@ int raft89__node_has_member(const raft89 *node, raft89_id id)
 
 int raft89__check_restored(const raft89 *node)
 {
-    if (node->last_log_index == RAFT89_INDEX_NONE)
+    if (raft89__u64_is_zero(node->last_log_index))
     {
-        if (node->last_log_term != RAFT89_TERM_NONE)
+        if (!raft89__u64_is_zero(node->last_log_term))
         {
             return RAFT89_ERR_CORRUPT;
         }
     }
-    if (node->last_log_index != RAFT89_INDEX_NONE)
+    if (!raft89__u64_is_zero(node->last_log_index))
     {
-        if (node->last_log_term == RAFT89_TERM_NONE)
+        if (raft89__u64_is_zero(node->last_log_term))
         {
             return RAFT89_ERR_CORRUPT;
         }
@@ -301,12 +301,12 @@ int raft89_status_get(const raft89 *node, raft89_status *status)
     }
     status->self = node->self;
     status->role = node->role;
-    status->current_term = node->current_term;
+    status->current_term = raft89__to_public(node->current_term);
     status->voted_for = node->voted_for;
     status->leader_id = node->leader_id;
-    status->last_log_index = node->last_log_index;
-    status->commit_index = node->commit_index;
-    status->applied_index = node->applied_index;
+    status->last_log_index = raft89__to_public(node->last_log_index);
+    status->commit_index = raft89__to_public(node->commit_index);
+    status->applied_index = raft89__to_public(node->applied_index);
     status->faulted = node->faulted;
     return RAFT89_OK;
 }

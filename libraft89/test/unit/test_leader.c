@@ -67,7 +67,7 @@ static void expect_no_action(raft89 *node)
     CHECK(action == NULL);
 }
 
-static void elect_leader_3(raft89 *node, raft89_term term)
+static void elect_leader_3(raft89 *node, unsigned long term)
 {
     raft89_message msg;
     driver_build_vote_response(2u, 1u, term, 1, &msg);
@@ -76,13 +76,13 @@ static void elect_leader_3(raft89 *node, raft89_term term)
 }
 
 static void propose_one(fake_store *store, raft89 *node, const char *text,
-                        raft89_index expected)
+                        unsigned long expected)
 {
     const raft89_action *action;
     raft89_index index;
-    index = 0u;
+    index = raft89_u64_zero();
     CHECK_EQ(raft89_propose(node, text, 1u, &index), RAFT89_OK);
-    CHECK_EQ(index, expected);
+    CHECK_U64(index, test_u64(expected));
     action = NULL;
     CHECK_EQ(raft89_next_action(node, &action), RAFT89_OK);
     CHECK(action != NULL);
@@ -90,27 +90,27 @@ static void propose_one(fake_store *store, raft89 *node, const char *text,
     {
         CHECK_EQ(action->type, RAFT89_ACT_LOG_APPEND);
         CHECK_EQ(action->u.log_append.entry_count, 1u);
-        CHECK_EQ(action->u.log_append.entries[0].index, expected);
+        CHECK_U64(action->u.log_append.entries[0].index, test_u64(expected));
         driver_store_effect(store, action);
         CHECK_EQ(raft89_action_done(node, action->id, RAFT89_ACTION_OK),
                  RAFT89_OK);
     }
 }
 
-static void ack_ae_response(raft89 *node, raft89_id from, raft89_term term,
-                            int success, raft89_index match)
+static void ack_ae_response(raft89 *node, raft89_id from, unsigned long term,
+                            int success, unsigned long match)
 {
     raft89_message msg;
     msg.type = RAFT89_MSG_APPEND_ENTRIES_RESPONSE;
     msg.from = from;
     msg.to = 1u;
-    msg.u.append_entries_response.term = term;
+    msg.u.append_entries_response.term = test_u64(term);
     msg.u.append_entries_response.success = success;
-    msg.u.append_entries_response.match_index = match;
+    msg.u.append_entries_response.match_index = test_u64(match);
     CHECK_EQ(raft89_recv(node, &msg), RAFT89_OK);
 }
 
-static void expect_apply(raft89 *node, raft89_index index)
+static void expect_apply(raft89 *node, unsigned long index)
 {
     const raft89_action *action;
     action = NULL;
@@ -119,7 +119,7 @@ static void expect_apply(raft89 *node, raft89_index index)
     if (action != NULL)
     {
         CHECK_EQ(action->type, RAFT89_ACT_APPLY);
-        CHECK_EQ(action->u.apply.entry.index, index);
+        CHECK_U64(action->u.apply.entry.index, test_u64(index));
         CHECK_EQ(raft89_action_done(node, action->id, RAFT89_ACTION_OK),
                  RAFT89_OK);
     }
@@ -152,9 +152,9 @@ int main(void)
     CHECK_EQ(status.role, RAFT89_LEADER);
 
     /* R04: local append precedes replication. */
-    index = 0u;
+    index = raft89_u64_zero();
     CHECK_EQ(raft89_propose(node, "x", 1u, &index), RAFT89_OK);
-    CHECK_EQ(index, 1u);
+    CHECK_U64(index, test_u64(1u));
     {
         const raft89_action *action;
         action = NULL;
@@ -174,7 +174,7 @@ int main(void)
     CHECK_EQ(take_ae(node, &cap), 1);
     CHECK_EQ(cap.msg.type, RAFT89_MSG_APPEND_ENTRIES);
     CHECK_EQ(cap.msg.u.append_entries.entry_count, 1u);
-    CHECK_EQ(cap.entries[0].index, 1u);
+    CHECK_U64(cap.entries[0].index, test_u64(1u));
     CHECK(memcmp(cap.entries[0].data, "x", 1u) == 0);
     CHECK_EQ(take_ae(node, &cap), 1);
 
@@ -212,8 +212,8 @@ int main(void)
     propose_one(&f.store, node, "a", 1u);
     CHECK_EQ(take_ae(node, &cap), 1);
     CHECK_EQ(cap.msg.u.append_entries.entry_count, 1u);
-    CHECK_EQ(cap.entries[0].index, 1u);
-    CHECK_EQ(cap.entries[0].term, 2u);
+    CHECK_U64(cap.entries[0].index, test_u64(1u));
+    CHECK_U64(cap.entries[0].term, test_u64(2u));
     CHECK(memcmp(cap.entries[0].data, "a", 1u) == 0);
     CHECK_EQ(take_ae(node, &cap), 1);
     CHECK_EQ(cap.msg.u.append_entries.entry_count, 1u);
@@ -222,7 +222,7 @@ int main(void)
     ack_ae_response(node, 2u, 2u, 1, 1u);
     expect_apply(node, 1u);
     CHECK_EQ(raft89_status_get(node, &status), RAFT89_OK);
-    CHECK_EQ(status.commit_index, 1u);
+    CHECK_U64(status.commit_index, test_u64(1u));
 
     /* Duplicate and stale successes change nothing. */
     ack_ae_response(node, 2u, 2u, 1, 1u);
@@ -233,7 +233,7 @@ int main(void)
     /* Heartbeat now carries no entries for peer 2. */
     CHECK_EQ(raft89_tick(node, 10u), RAFT89_OK);
     CHECK_EQ(take_ae(node, &cap), 1);
-    CHECK_EQ(cap.msg.u.append_entries.prev_log_index, 1u);
+    CHECK_U64(cap.msg.u.append_entries.prev_log_index, test_u64(1u));
     CHECK_EQ(cap.msg.u.append_entries.entry_count, 0u);
     CHECK_EQ(take_ae(node, &cap), 1);
     CHECK_EQ(cap.msg.u.append_entries.entry_count, 1u);
@@ -257,7 +257,7 @@ int main(void)
     ack_ae_response(node, 2u, 6u, 1, 1u);
     expect_no_action(node);
     CHECK_EQ(raft89_status_get(node, &status), RAFT89_OK);
-    CHECK_EQ(status.commit_index, 0u);
+    CHECK_U64(status.commit_index, test_u64(0u));
 
     /* A current-term entry commits and drags the old entry with it. */
     propose_one(&f.store, node, "new", 2u);
@@ -267,7 +267,7 @@ int main(void)
     expect_apply(node, 1u);
     expect_apply(node, 2u);
     CHECK_EQ(raft89_status_get(node, &status), RAFT89_OK);
-    CHECK_EQ(status.commit_index, 2u);
+    CHECK_U64(status.commit_index, test_u64(2u));
     raft89_destroy(node);
 
     /* K04/K06: minority and duplicates never form a quorum. */
@@ -305,7 +305,7 @@ int main(void)
     ack_ae_response(node, 3u, 2u, 1, 1u);
     expect_apply(node, 1u);
     CHECK_EQ(raft89_status_get(node, &status), RAFT89_OK);
-    CHECK_EQ(status.commit_index, 1u);
+    CHECK_U64(status.commit_index, test_u64(1u));
     raft89_destroy(node);
 
     /* R11/R12/R13/R14: failure backoff discovers the prefix. */
@@ -328,13 +328,13 @@ int main(void)
     /* next_index for peer 2 is 4: failures back it down to 1. */
     ack_ae_response(node, 2u, 6u, 0, 0u);
     CHECK_EQ(take_ae(node, &cap), 1);
-    CHECK_EQ(cap.msg.u.append_entries.prev_log_index, 2u);
+    CHECK_U64(cap.msg.u.append_entries.prev_log_index, test_u64(2u));
     ack_ae_response(node, 2u, 6u, 0, 0u);
     CHECK_EQ(take_ae(node, &cap), 1);
-    CHECK_EQ(cap.msg.u.append_entries.prev_log_index, 1u);
+    CHECK_U64(cap.msg.u.append_entries.prev_log_index, test_u64(1u));
     ack_ae_response(node, 2u, 6u, 0, 0u);
     CHECK_EQ(take_ae(node, &cap), 1);
-    CHECK_EQ(cap.msg.u.append_entries.prev_log_index, 0u);
+    CHECK_U64(cap.msg.u.append_entries.prev_log_index, test_u64(0u));
     CHECK_EQ(cap.msg.u.append_entries.entry_count, 3u);
     ack_ae_response(node, 2u, 6u, 1, 3u);
     expect_no_action(node);
@@ -387,7 +387,7 @@ int main(void)
     CHECK_EQ(driver_expect_hard_state(node, 3u, RAFT89_ID_NONE), 1);
     CHECK_EQ(raft89_status_get(node, &status), RAFT89_OK);
     CHECK_EQ(status.role, RAFT89_FOLLOWER);
-    CHECK_EQ(status.current_term, 3u);
+    CHECK_U64(status.current_term, test_u64(3u));
     raft89_destroy(node);
 
     /* Non-member and malformed responses are rejected. */
@@ -402,15 +402,15 @@ int main(void)
         bad.type = RAFT89_MSG_APPEND_ENTRIES_RESPONSE;
         bad.from = 9u;
         bad.to = 1u;
-        bad.u.append_entries_response.term = 1u;
+        bad.u.append_entries_response.term = test_u64(1u);
         bad.u.append_entries_response.success = 1;
-        bad.u.append_entries_response.match_index = 0u;
+        bad.u.append_entries_response.match_index = test_u64(0u);
         CHECK_EQ(raft89_recv(node, &bad), RAFT89_ERR_PROTOCOL);
         bad.from = 2u;
         bad.u.append_entries_response.success = 2;
         CHECK_EQ(raft89_recv(node, &bad), RAFT89_ERR_PROTOCOL);
         bad.u.append_entries_response.success = 0;
-        bad.u.append_entries_response.match_index = 3u;
+        bad.u.append_entries_response.match_index = test_u64(3u);
         CHECK_EQ(raft89_recv(node, &bad), RAFT89_ERR_PROTOCOL);
         raft89_destroy(node);
     }

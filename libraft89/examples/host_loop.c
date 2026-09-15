@@ -42,6 +42,16 @@ typedef struct loopback
     unsigned long count;
 } loopback;
 
+static unsigned long host_lo(raft89_u64 v)
+{
+    return (unsigned long)v.lo;
+}
+
+static raft89_u64 host_u64(unsigned long v)
+{
+    return raft89_u64_from_u32((raft89_u32)v);
+}
+
 static int store_hard_state(void *ctx, raft89_hard_state *state)
 {
     mem_store *store;
@@ -69,11 +79,13 @@ static int store_log_last(void *ctx, raft89_index *index, raft89_term *term)
 
 static mem_entry *store_find(mem_store *store, raft89_index index)
 {
-    if (index == 0u || index > store->entry_count)
+    unsigned long i;
+    i = host_lo(index);
+    if (i == 0ul || i > store->entry_count)
     {
         return NULL;
     }
-    return &store->entries[index - 1u];
+    return &store->entries[i - 1u];
 }
 
 static int store_log_term(void *ctx, raft89_index index, raft89_term *term)
@@ -154,8 +166,8 @@ static void packet_enqueue(loopback *net, raft89_id from, raft89_id to,
 
 static void apply_command(const raft89_entry *entry)
 {
-    printf("applied index %lu payload %.*s\n", entry->index, (int)entry->size,
-           (const char *)entry->data);
+    printf("applied index %lu payload %.*s\n", host_lo(entry->index),
+           (int)entry->size, (const char *)entry->data);
 }
 
 static int run_action(raft89 *node, const raft89_action *action,
@@ -178,7 +190,7 @@ static int run_action(raft89 *node, const raft89_action *action,
             const raft89_entry *entry;
             mem_entry *slot;
             entry = &action->u.log_append.entries[i];
-            if (entry->index > (raft89_index)ENTRY_MAX)
+            if (host_lo(entry->index) > (unsigned long)ENTRY_MAX)
             {
                 return RAFT89_ERR;
             }
@@ -186,22 +198,23 @@ static int run_action(raft89 *node, const raft89_action *action,
             {
                 return RAFT89_ERR;
             }
-            slot = &store->entries[entry->index - 1u];
+            slot = &store->entries[host_lo(entry->index) - 1u];
             slot->term = entry->term;
             slot->index = entry->index;
             slot->size = entry->size;
             memcpy(slot->data, entry->data, entry->size);
-            if (entry->index > store->entry_count)
+            if (host_lo(entry->index) > store->entry_count)
             {
-                store->entry_count = entry->index;
+                store->entry_count = host_lo(entry->index);
             }
         }
     }
     if (action->type == RAFT89_ACT_LOG_TRUNCATE)
     {
-        if (action->u.log_truncate.first_index <= store->entry_count)
+        if (host_lo(action->u.log_truncate.first_index) <= store->entry_count)
         {
-            store->entry_count = action->u.log_truncate.first_index - 1u;
+            store->entry_count =
+                host_lo(action->u.log_truncate.first_index) - 1u;
         }
     }
     if (action->type == RAFT89_ACT_APPLY)
@@ -290,7 +303,7 @@ int main(void)
     msg.type = RAFT89_MSG_REQUEST_VOTE_RESPONSE;
     msg.from = 2u;
     msg.to = 1u;
-    msg.u.request_vote_response.term = 1u;
+    msg.u.request_vote_response.term = host_u64(1u);
     msg.u.request_vote_response.vote_granted = 1;
     if (raft89_recv(node, &msg) != RAFT89_OK || drain(node, &store, &net) != 0)
     {
@@ -303,7 +316,7 @@ int main(void)
     }
 
     /* Propose a command and replicate it. */
-    index = 0u;
+    index = raft89_u64_zero();
     rc = raft89_propose(node, "hello", 5u, &index);
     if (rc != RAFT89_OK || drain(node, &store, &net) != 0)
     {
@@ -315,7 +328,7 @@ int main(void)
     msg.type = RAFT89_MSG_APPEND_ENTRIES_RESPONSE;
     msg.from = 2u;
     msg.to = 1u;
-    msg.u.append_entries_response.term = 1u;
+    msg.u.append_entries_response.term = host_u64(1u);
     msg.u.append_entries_response.success = 1;
     msg.u.append_entries_response.match_index = index;
     if (raft89_recv(node, &msg) != RAFT89_OK || drain(node, &store, &net) != 0)
