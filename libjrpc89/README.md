@@ -128,8 +128,10 @@ test/e2e/               mock server + harness + exchange and SIGPIPE suites
 
 ## Dependency
 
-`libj89` (`../libj89`) provides parsing, the node tree, the builder API,
-and rendering. It is compiled from source as part of the build.
+`libj89` (`../libj89`) provides parsing, the node tree, the builder API, and
+rendering. It is built as a static archive (`../libj89/build/libj89.a`) and
+linked; libjrpc89 never compiles libj89 sources directly. libj89 in turn
+links `libstr89` and `libu89`.
 
 ## Development discipline
 

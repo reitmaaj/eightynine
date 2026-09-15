@@ -15,26 +15,36 @@ SRC := "src/jrpc89_internal.c src/id.c src/request.c src/response.c src/error.c 
 TOOL := "tool/jrpc89.c"
 LIB := "src/jrpc89_internal.c src/id.c src/request.c src/response.c src/error.c src/io.c src/io_posix.c"
 LIB_NO_POSIX := "src/jrpc89_internal.c src/id.c src/request.c src/response.c src/error.c src/io.c"
-LIBJ89_SRC := LIBJ89 + "/src/parse.c " + LIBJ89 + "/src/value.c " + LIBJ89 + "/src/print.c"
+LIBJ89LIB := LIBJ89 + "/build/libj89.a"
 
 default: build
 
-# Build the sibling libstr89 dependency (owned UTF-8 storage for libj89).
-# libstr89 builds libu89 (Unicode facts) first.
+# Build the sibling dependencies: libstr89 (owned UTF-8 storage for libj89,
+# which builds libu89 first) and libj89's static archive.
 deps:
 	cd {{STR89}} && just build
+	cd {{LIBJ89}} && just lib
 
-# Compile the CLI demo (tool + library + libj89).
+# Compile the CLI demo (tool + library + libj89 archive).
 build: deps
 	mkdir -p build
-	{{CC}} {{STRICT}} -Iinclude -I{{LIBJ89}}/include -I{{U89}}/include -I{{STR89INC}} -o build/jrpc89 {{TOOL}} {{SRC}} {{LIBJ89_SRC}} {{STR89LIB}} {{U89LIB}} -lm
+	{{CC}} {{STRICT}} -Iinclude -I{{LIBJ89}}/include -I{{U89}}/include -I{{STR89INC}} -o build/jrpc89 {{TOOL}} {{SRC}} {{LIBJ89LIB}} {{STR89LIB}} {{U89LIB}} -lm
+
+# Static archive of the library for downstream consumers.
+lib: deps
+	mkdir -p build/lib
+	@for f in {{LIB}}; do \
+	    o=build/lib/$(basename "$f" .c).o; \
+	    {{CC}} {{STRICT}} -Iinclude -I{{LIBJ89}}/include -I{{U89}}/include -I{{STR89INC}} -c "$f" -o "$o" || exit 1; \
+	done
+	ar rcs build/libjrpc89.a build/lib/*.o
 
 # Unit tests, each linked with the library sources (real POSIX adapter).
 unit: build
 	@for t in test/unit/test_*.c; do \
 	    [ -e "$t" ] || continue; \
 	    name=$(basename "$t" .c); \
-	    {{CC}} {{STRICT}} -Iinclude -I{{LIBJ89}}/include -I{{U89}}/include -I{{STR89INC}} -Itest/unit -o build/$name "$t" {{LIB}} {{LIBJ89_SRC}} {{STR89LIB}} {{U89LIB}} -lm || exit 1; \
+	    {{CC}} {{STRICT}} -Iinclude -I{{LIBJ89}}/include -I{{U89}}/include -I{{STR89INC}} -Itest/unit -o build/$name "$t" {{LIB}} {{LIBJ89LIB}} {{STR89LIB}} {{U89LIB}} -lm || exit 1; \
 	    ./build/$name || exit 1; \
 	done
 
@@ -43,7 +53,7 @@ fault: build
 	@for t in test/fault/test_*.c; do \
 	    [ -e "$t" ] || continue; \
 	    name=$(basename "$t" .c); \
-	    {{CC}} {{STRICT}} -Iinclude -Isrc -I{{LIBJ89}}/include -I{{U89}}/include -I{{STR89INC}} -Itest/fault -o build/$name "$t" {{LIB_NO_POSIX}} {{LIBJ89_SRC}} {{STR89LIB}} {{U89LIB}} -lm || exit 1; \
+	    {{CC}} {{STRICT}} -Iinclude -Isrc -I{{LIBJ89}}/include -I{{U89}}/include -I{{STR89INC}} -Itest/fault -o build/$name "$t" {{LIB_NO_POSIX}} {{LIBJ89LIB}} {{STR89LIB}} {{U89LIB}} -lm || exit 1; \
 	    ./build/$name || exit 1; \
 	done
 
