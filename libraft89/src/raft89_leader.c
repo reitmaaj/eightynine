@@ -237,14 +237,22 @@ int raft89__leader_send_to(raft89 *node, raft89_id peer)
     return rc;
 }
 
+static int broadcast_finish(raft89 *node)
+{
+    int rc;
+    node->step = RAFT89_STEP_NONE;
+    rc = raft89__leader_maybe_commit(node);
+    return rc;
+}
+
 int raft89__leader_broadcast_next(raft89 *node)
 {
     raft89_id peer;
     int rc;
     if (node->peer_cursor >= node->peer_count)
     {
-        node->step = RAFT89_STEP_NONE;
-        return RAFT89_OK;
+        rc = broadcast_finish(node);
+        return rc;
     }
     peer = node->peers[node->peer_cursor];
     ++node->peer_cursor;
@@ -405,22 +413,71 @@ static void set_index(raft89_index *out, raft89__u64 value)
     *out = raft89__to_public(value);
 }
 
-int raft89_propose(raft89 *node, const void *data, raft89_size size,
-                   raft89_index *index)
+/* True when some command payload pointer is unusable. */
+static int commands_bad(const raft89_command *commands, raft89_size count)
 {
+    raft89_size i;
+    for (i = 0u; i < count; ++i)
+    {
+        if (commands[i].size != 0u)
+        {
+            if (commands[i].data == NULL)
+            {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+/* Saturating sum of command payload sizes. */
+static unsigned long commands_total(const raft89_command *commands,
+                                    raft89_size count)
+{
+    unsigned long sum;
+    raft89_size i;
+    sum = 0u;
+    for (i = 0u; i < count; ++i)
+    {
+        sum = raft89__sat_add(sum, commands[i].size);
+    }
+    return sum;
+}
+
+static void command_fill(raft89_entry *entry, raft89__u64 index,
+                         raft89__u64 term, const raft89_command *command)
+{
+    entry->index = raft89__to_public(index);
+    entry->term = raft89__to_public(term);
+    entry->data = command->data;
+    entry->size = command->size;
+}
+
+int raft89_proposev(raft89 *node, const raft89_command *commands,
+                    raft89_size count, raft89_index *first_index)
+{
+    raft89_entry *entries;
+    unsigned long total;
+    raft89__u64 first;
+    raft89_size i;
+    int bad;
     int rc;
-    raft89_entry entry;
-    raft89__u64 next;
     if (node == NULL)
     {
         return RAFT89_ERR_ARG;
     }
-    if (size != 0u)
+    if (commands == NULL)
     {
-        if (data == NULL)
-        {
-            return RAFT89_ERR_ARG;
-        }
+        return RAFT89_ERR_ARG;
+    }
+    if (count == 0u)
+    {
+        return RAFT89_ERR_ARG;
+    }
+    bad = commands_bad(commands, count);
+    if (bad)
+    {
+        return RAFT89_ERR_ARG;
     }
     if (node->faulted != 0)
     {
@@ -434,21 +491,37 @@ int raft89_propose(raft89 *node, const void *data, raft89_size size,
     {
         return RAFT89_NOT_LEADER;
     }
-    if (size > node->max_append_bytes)
+    if (count > node->max_append_entries)
     {
         return RAFT89_ERR_LIMIT;
     }
-    if (node->last_log_index == RAFT89__U64_MAX)
+    if (count > ULONG_MAX / sizeof(raft89_entry))
+    {
+        return RAFT89_ERR_LIMIT;
+    }
+    total = commands_total(commands, count);
+    if (total > node->max_append_bytes)
+    {
+        return RAFT89_ERR_LIMIT;
+    }
+    if (node->last_log_index > RAFT89__U64_MAX - raft89__size_to_u64(count))
     {
         node->faulted = 1;
         return RAFT89_ERR_LIMIT;
     }
-    next = raft89__u64_inc(node->last_log_index);
-    entry.index = raft89__to_public(next);
-    entry.term = raft89__to_public(node->current_term);
-    entry.data = data;
-    entry.size = size;
-    rc = raft89__entries_stash(node, &entry, 1u);
+    entries = (raft89_entry *)malloc(count * sizeof(raft89_entry));
+    if (entries == NULL)
+    {
+        return RAFT89_ERR_NOMEM;
+    }
+    first = raft89__u64_inc(node->last_log_index);
+    for (i = 0u; i < count; ++i)
+    {
+        command_fill(&entries[i], first + raft89__size_to_u64(i),
+                     node->current_term, &commands[i]);
+    }
+    rc = raft89__entries_stash(node, entries, count);
+    free(entries);
     if (rc != RAFT89_OK)
     {
         return rc;
@@ -460,11 +533,22 @@ int raft89_propose(raft89 *node, const void *data, raft89_size size,
         return rc;
     }
     node->action.u.log_append.entries = node->pending_entries;
-    node->action.u.log_append.entry_count = 1u;
+    node->action.u.log_append.entry_count = count;
     node->step = RAFT89_STEP_LEADER_APPEND;
-    if (index != NULL)
+    if (first_index != NULL)
     {
-        set_index(index, next);
+        set_index(first_index, first);
     }
     return RAFT89_OK;
+}
+
+int raft89_propose(raft89 *node, const void *data, raft89_size size,
+                   raft89_index *index)
+{
+    raft89_command command;
+    int rc;
+    command.data = data;
+    command.size = size;
+    rc = raft89_proposev(node, &command, 1u, index);
+    return rc;
 }

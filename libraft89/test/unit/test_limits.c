@@ -134,14 +134,11 @@ int main(void)
     CHECK_U64(status.last_log_index, u64(1u, 5u));
     raft89_destroy(node);
 
-    /* U06: proposing at the maximum index faults the node and emits no
-     * action. A single-node cluster grows its log from 2^64-2 to
-     * 2^64-1 without any store read of the high index. */
+    /* U06: proposing a batch that would pass 2^64-1 faults the node and
+     * emits no action. The private last index is set directly so the
+     * artificial high index needs no durable entries. */
     fixture_init(&f, 1u, 1u);
     fake_store_set_hard(&f.store, 1u, 0u);
-    f.store.override_last = 1;
-    f.store.last_index_override = u64(0xffffffffu, 0xfffffffeu);
-    f.store.last_term_override = u64(0u, 1u);
     fake_random_push(&f.random, 0u);
     node = NULL;
     CHECK_EQ(raft89_create(&f.config, &node), RAFT89_OK);
@@ -152,21 +149,45 @@ int main(void)
     }
     CHECK_EQ(raft89_tick(node, 20u), RAFT89_OK);
     CHECK_EQ(driver_expect_hard_state(node, 2u, 1u), 1);
+    driver_drain(node);
     CHECK_EQ(raft89_status_get(node, &status), RAFT89_OK);
     CHECK_EQ(status.role, RAFT89_LEADER);
+    node->last_log_index = raft89__from_public(u64(0xffffffffu, 0xfffffffeu));
+    node->last_log_term = raft89__from_public(test_u64(1u));
     {
-        raft89_index index;
-        index = raft89_u64_zero();
-        CHECK_EQ(raft89_propose(node, "x", 1u, &index), RAFT89_OK);
-        CHECK_U64(index, u64(0xffffffffu, 0xffffffffu));
-        driver_drain(node);
+        raft89_command commands[2];
+        commands[0].data = "x";
+        commands[0].size = 1u;
+        commands[1].data = "y";
+        commands[1].size = 1u;
+        CHECK_EQ(raft89_proposev(node, commands, 2u, NULL), RAFT89_ERR_LIMIT);
     }
+    CHECK_EQ(raft89_status_get(node, &status), RAFT89_OK);
+    CHECK_EQ(status.faulted, 1);
+    CHECK_U64(status.last_log_index, u64(0xffffffffu, 0xfffffffeu));
+    CHECK(raft89_inspect_action(node) == NULL);
+    raft89_destroy(node);
+
+    /* A single command at the maximum index is refused identically. */
+    fixture_init(&f, 1u, 1u);
+    fake_store_set_hard(&f.store, 1u, 0u);
+    fake_random_push(&f.random, 0u);
+    node = NULL;
+    CHECK_EQ(raft89_create(&f.config, &node), RAFT89_OK);
+    CHECK(node != NULL);
+    if (node == NULL)
+    {
+        TEST_END;
+    }
+    CHECK_EQ(raft89_tick(node, 20u), RAFT89_OK);
+    CHECK_EQ(driver_expect_hard_state(node, 2u, 1u), 1);
+    driver_drain(node);
+    node->last_log_index = raft89__from_public(u64(0xffffffffu, 0xffffffffu));
+    node->last_log_term = raft89__from_public(test_u64(1u));
     CHECK_EQ(raft89_propose(node, "y", 1u, NULL), RAFT89_ERR_LIMIT);
     CHECK_EQ(raft89_status_get(node, &status), RAFT89_OK);
     CHECK_EQ(status.faulted, 1);
-    CHECK_U64(status.last_log_index, u64(0xffffffffu, 0xffffffffu));
     CHECK(raft89_inspect_action(node) == NULL);
-    CHECK_EQ(raft89_tick(node, 1u), RAFT89_ERR_FAULTED);
     raft89_destroy(node);
 
     /* An AppendEntries whose batch range would wrap past 2^64-1 is

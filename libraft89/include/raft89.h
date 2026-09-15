@@ -471,11 +471,47 @@ typedef unsigned long raft89_u32;
     int raft89_recv(raft89 *node, const raft89_message *message);
 
     /*
-     * Propose one application command. Only the current leader accepts
-     * proposals. On RAFT89_OK, *index receives the assigned log index (the
-     * command is not committed until a corresponding RAFT89_ACT_APPLY
-     * appears). index may be NULL. data remains caller-owned and need
-     * remain valid only for the duration of this call; size may be zero.
+     * One application command in a batch proposal.
+     */
+    typedef struct raft89_command
+    {
+        const void *data;
+        raft89_size size;
+    } raft89_command;
+
+    /*
+     * Propose one non-empty consecutive batch of application commands.
+     * Only the current leader accepts proposals.
+     *
+     * count must satisfy 1 <= count <= config.max_append_entries.
+     *
+     * The sum of the command payload sizes must not overflow raft89_size
+     * and must not exceed config.max_append_bytes.
+     *
+     * For each command:
+     *
+     *     size > 0  => data must not be NULL
+     *     size == 0 => data may be NULL
+     *
+     * On RAFT89_OK:
+     *
+     *     *first_index receives the index assigned to commands[0]
+     *
+     * and the commands receive consecutive indices. first_index may be
+     * NULL. The library emits one RAFT89_ACT_LOG_APPEND containing the
+     * complete batch before any replication SEND for those entries, and no
+     * subset of the batch becomes part of the local Raft log.
+     */
+    int raft89_proposev(raft89 *node, const raft89_command *commands,
+                        raft89_size count, raft89_index *first_index);
+
+    /*
+     * Propose one application command; equivalent to a one-element
+     * raft89_proposev(). On RAFT89_OK, *index receives the assigned log
+     * index (the command is not committed until a corresponding
+     * RAFT89_ACT_APPLY appears). index may be NULL. data remains
+     * caller-owned and need remain valid only for the duration of this
+     * call; size may be zero.
      */
     int raft89_propose(raft89 *node, const void *data, raft89_size size,
                        raft89_index *index);
