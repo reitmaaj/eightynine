@@ -290,6 +290,16 @@ valgrind: build
 	    valgrind --error-exitcode=1 --leak-check=full --quiet "./build/vg_$name" || exit 1; \
 	done
 
+# Run the 32-bit smoke, unit, and api suites under valgrind memcheck.
+valgrind32: build32
+	@if [ ! -f build/32/libledger89.a ]; then echo "valgrind32: SKIPPED: no 32-bit toolchain"; exit 0; fi; \
+	for t in test/smoke.c test/unit/test_*.c test/api/test_*.c; do \
+	    [ -e "$t" ] || continue; \
+	    name=$(basename "$t" .c); \
+	    {{CC}} {{STRICT}} {{POSIX}} {{TESTFLAGS}} {{INC}} -m32 -o "build/32/vg_$name" "$t" test/support/*.c build/32/libledger89.a || exit 1; \
+	    valgrind --error-exitcode=1 --leak-check=full --quiet "./build/32/vg_$name" || exit 1; \
+	done
+
 # Generate compile databases and run the green matrix.
 green:
 	sh scripts/gen_compile_db gcc build/gcc/compile_commands.json

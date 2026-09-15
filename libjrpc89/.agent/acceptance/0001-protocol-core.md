@@ -20,7 +20,8 @@
 - The protocol core builds warning-free on ILP32 and passes the whole suite
   (smoke, unit, fault, allocation-failure, and e2e) under `-m32`, with the
   unit, fault, and allocation-failure suites also clean under 32-bit
-  ASan + UBSan (`just sanitize32`, GCC i686 runtime).
+  ASan + UBSan with both the GCC i686 and clang i386 runtimes
+  (`just sanitize32` and `just CC=clang sanitize32`).
 
 ## Unacceptable behaviors (must reject / refuse)
 
