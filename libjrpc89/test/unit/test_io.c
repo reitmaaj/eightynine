@@ -5,6 +5,7 @@
 #include <unistd.h>
 
 #include <jrpc89.h>
+#include <jrpc89_io.h>
 
 static int failures;
 
@@ -36,12 +37,12 @@ static void test_roundtrip(void)
     {
         return;
     }
-    st = jrpc89_write_frame(sv[0], "{\"a\":1}", 7);
+    st = jrpc89_fd_write_frame(sv[0], "{\"a\":1}", 7);
     if (st != JRPC89_OK)
     {
         fail("write_frame");
     }
-    st = jrpc89_read_frame(sv[1], buf, sizeof(buf), &len);
+    st = jrpc89_fd_read_frame(sv[1], buf, sizeof(buf), &len);
     if (st != JRPC89_OK)
     {
         fail("read_frame");
@@ -69,22 +70,22 @@ static void test_multiple_frames(void)
     {
         return;
     }
-    st = jrpc89_write_frame(sv[0], "one", 3);
+    st = jrpc89_fd_write_frame(sv[0], "one", 3);
     if (st != JRPC89_OK)
     {
         fail("write one");
     }
-    st = jrpc89_write_frame(sv[0], "two", 3);
+    st = jrpc89_fd_write_frame(sv[0], "two", 3);
     if (st != JRPC89_OK)
     {
         fail("write two");
     }
-    st = jrpc89_read_frame(sv[1], buf, sizeof(buf), &len);
+    st = jrpc89_fd_read_frame(sv[1], buf, sizeof(buf), &len);
     if (st != JRPC89_OK || len != 3 || strncmp(buf, "one", 3) != 0)
     {
         fail("read one");
     }
-    st = jrpc89_read_frame(sv[1], buf, sizeof(buf), &len);
+    st = jrpc89_fd_read_frame(sv[1], buf, sizeof(buf), &len);
     if (st != JRPC89_OK || len != 3 || strncmp(buf, "two", 3) != 0)
     {
         fail("read two");
@@ -109,7 +110,7 @@ static void test_empty_line(void)
     {
         fail("empty line: raw write");
     }
-    st = jrpc89_read_frame(sv[1], buf, sizeof(buf), &len);
+    st = jrpc89_fd_read_frame(sv[1], buf, sizeof(buf), &len);
     if (st != JRPC89_OK)
     {
         fail("empty line: status");
@@ -135,7 +136,7 @@ static void test_eof_no_data(void)
     close(sv[0]);
     buf[0] = 'x';
     len = 7;
-    st = jrpc89_read_frame(sv[1], buf, sizeof(buf), &len);
+    st = jrpc89_fd_read_frame(sv[1], buf, sizeof(buf), &len);
     if (st != JRPC89_EOF)
     {
         fail("eof status");
@@ -166,7 +167,7 @@ static void test_truncated_frame(void)
     close(sv[0]);
     buf[0] = 'x';
     len = 7;
-    st = jrpc89_read_frame(sv[1], buf, sizeof(buf), &len);
+    st = jrpc89_fd_read_frame(sv[1], buf, sizeof(buf), &len);
     if (st != JRPC89_ETRUNC)
     {
         fail("truncated status");
@@ -188,12 +189,12 @@ static void test_exact_fit_frame(void)
     {
         return;
     }
-    st = jrpc89_write_frame(sv[0], "abcdefg", 7);
+    st = jrpc89_fd_write_frame(sv[0], "abcdefg", 7);
     if (st != JRPC89_OK)
     {
         fail("write exact fit");
     }
-    st = jrpc89_read_frame(sv[1], buf, sizeof(buf), &len);
+    st = jrpc89_fd_read_frame(sv[1], buf, sizeof(buf), &len);
     if (st != JRPC89_OK)
     {
         fail("exact fit status");
@@ -216,12 +217,12 @@ static void test_too_long_frame(void)
     {
         return;
     }
-    st = jrpc89_write_frame(sv[0], "abcdefgh", 8);
+    st = jrpc89_fd_write_frame(sv[0], "abcdefgh", 8);
     if (st != JRPC89_OK)
     {
         fail("write too long");
     }
-    st = jrpc89_read_frame(sv[1], buf, sizeof(buf), &len);
+    st = jrpc89_fd_read_frame(sv[1], buf, sizeof(buf), &len);
     if (st != JRPC89_ETOOLONG)
     {
         fail("too long status");
@@ -244,22 +245,22 @@ static void test_oversize_recovery(void)
     {
         return;
     }
-    st = jrpc89_write_frame(sv[0], "abcdefghijkl", 12);
+    st = jrpc89_fd_write_frame(sv[0], "abcdefghijkl", 12);
     if (st != JRPC89_OK)
     {
         fail("recovery: write oversized");
     }
-    st = jrpc89_write_frame(sv[0], "end", 3);
+    st = jrpc89_fd_write_frame(sv[0], "end", 3);
     if (st != JRPC89_OK)
     {
         fail("recovery: write valid");
     }
-    st = jrpc89_read_frame(sv[1], buf, sizeof(buf), &len);
+    st = jrpc89_fd_read_frame(sv[1], buf, sizeof(buf), &len);
     if (st != JRPC89_ETOOLONG)
     {
         fail("recovery: first status");
     }
-    st = jrpc89_read_frame(sv[1], buf, sizeof(buf), &len);
+    st = jrpc89_fd_read_frame(sv[1], buf, sizeof(buf), &len);
     if (st != JRPC89_OK)
     {
         fail("recovery: second status");
@@ -283,12 +284,12 @@ static void test_cap_one(void)
     {
         return;
     }
-    st = jrpc89_write_frame(sv[0], "a", 1);
+    st = jrpc89_fd_write_frame(sv[0], "a", 1);
     if (st != JRPC89_OK)
     {
         fail("cap one: write");
     }
-    st = jrpc89_read_frame(sv[1], buf, 1, &len);
+    st = jrpc89_fd_read_frame(sv[1], buf, 1, &len);
     if (st != JRPC89_ETOOLONG)
     {
         fail("cap one: overflow status");
@@ -298,7 +299,7 @@ static void test_cap_one(void)
     {
         fail("cap one: raw write");
     }
-    st = jrpc89_read_frame(sv[1], buf, 1, &len);
+    st = jrpc89_fd_read_frame(sv[1], buf, 1, &len);
     if (st != JRPC89_OK || len != 0)
     {
         fail("cap one: empty frame");
@@ -317,28 +318,28 @@ static void test_write_rejections(void)
     {
         return;
     }
-    st = jrpc89_write_frame(sv[0], "a\nb", 3);
+    st = jrpc89_fd_write_frame(sv[0], "a\nb", 3);
     if (st != JRPC89_EINVAL)
     {
         fail("write embedded newline accepted");
     }
-    st = jrpc89_write_frame(sv[0], "abc", 0);
+    st = jrpc89_fd_write_frame(sv[0], "abc", 0);
     if (st != JRPC89_EINVAL)
     {
         fail("write empty accepted");
     }
-    st = jrpc89_write_frame(sv[0], (const char *)0, 3);
+    st = jrpc89_fd_write_frame(sv[0], (const char *)0, 3);
     if (st != JRPC89_EINVAL)
     {
         fail("write NULL accepted");
     }
-    st = jrpc89_write_frame(-1, "abc", 3);
+    st = jrpc89_fd_write_frame(-1, "abc", 3);
     if (st != JRPC89_EINVAL)
     {
         fail("write bad fd accepted");
     }
     close(sv[0]);
-    st = jrpc89_read_frame(sv[1], buf, sizeof(buf), &len);
+    st = jrpc89_fd_read_frame(sv[1], buf, sizeof(buf), &len);
     if (st != JRPC89_EOF)
     {
         fail("rejected write emitted bytes");
@@ -358,17 +359,17 @@ static void test_read_rejections(void)
     }
     buf[0] = 'x';
     len = 7;
-    st = jrpc89_read_frame(sv[1], (char *)0, sizeof(buf), &len);
+    st = jrpc89_fd_read_frame(sv[1], (char *)0, sizeof(buf), &len);
     if (st != JRPC89_EINVAL)
     {
         fail("read NULL buf accepted");
     }
-    st = jrpc89_read_frame(sv[1], buf, sizeof(buf), (j89_len *)0);
+    st = jrpc89_fd_read_frame(sv[1], buf, sizeof(buf), (j89_len *)0);
     if (st != JRPC89_EINVAL)
     {
         fail("read NULL out_len accepted");
     }
-    st = jrpc89_read_frame(sv[1], buf, 0, &len);
+    st = jrpc89_fd_read_frame(sv[1], buf, 0, &len);
     if (st != JRPC89_EINVAL)
     {
         fail("read cap zero accepted");

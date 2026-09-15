@@ -69,3 +69,9 @@
   by libj89 rather than approximated.
 - The library MUST NOT connect, accept, or close sockets; it only uses the
   provided fd.
+- The framing logic MUST NOT depend on POSIX headers; read and write are
+  isolated behind the adapter in `src/io_posix.c`.
+- A write interrupted by EINTR MUST be retried, and a short write MUST be
+  completed by looping.
+- The CLI MUST survive a write to a pipe whose read end is closed (no
+  SIGPIPE termination) and report the failure with a nonzero exit.

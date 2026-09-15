@@ -10,7 +10,8 @@ All JSON processing is delegated to the sibling `libj89` library.
 The library is a thin, transport-agnostic JSON-RPC 2.0 message layer. It
 does not manage sockets, TLS, batching, or the transport lifecycle; it
 assumes an opened Unix socket file descriptor is provided and reads and
-writes newline-delimited JSON frames on it.
+writes newline-delimited JSON frames on it. The protocol core is ISO C89;
+the optional framing profile in `jrpc89_io.h` is POSIX-specific.
 
 ## Why strict C89 + green
 
@@ -27,9 +28,9 @@ explicit statement-level structure.
 - `method` and `params` on requests.
 - `id` echoed back for string, integer, and null ids.
 - Notifications omit `id`; no response is expected.
-- Standard error codes and error-object extraction.
+- Standard error codes and a checked result-or-error decode view.
 - NDJSON framing over a caller-provided open fd.
-- A CLI demo that opens a Unix socket itself and drives the library.
+- A CLI demo that drives the library over a provided fd.
 
 ## Out of scope (V1)
 

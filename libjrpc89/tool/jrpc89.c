@@ -1,18 +1,23 @@
-/* main.c - libjrpc89 CLI demo: send one JSON-RPC 2.0 request over an
+/* tool/jrpc89.c - libjrpc89 CLI demo: send one JSON-RPC 2.0 request over an
  * already-open Unix socket fd and print the result or a structured error.
  *
  * Usage: jrpc89 <fd> <method> [params-json]
  *
- * The fd must be an open, connected Unix socket; the CLI reads the response
- * from and writes the request to the same fd (matching the library's
- * "assume an opened socket is provided" transport contract).
+ * The fd must be an open, connected Unix socket. The CLI takes ownership of
+ * that inherited fd and closes it explicitly on every exit path; the library
+ * never opens, connects, or closes it. SIGPIPE is ignored so a disconnected
+ * peer surfaces as a write failure rather than process termination.
  */
+#include <errno.h>
+#include <limits.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
 #include <jrpc89.h>
+#include <jrpc89_io.h>
 
 #define JRPC89_BUF_LEN 8192
 
@@ -26,6 +31,38 @@ static int jrpc89_usage_fd(const char *fd_text)
 {
     fprintf(stderr, "jrpc89: invalid fd %s\n", fd_text);
     return 2;
+}
+
+/* Parse a non-negative fd with full validation. Returns 0 on success. */
+static int jrpc89_parse_fd(const char *fd_text, int *fd)
+{
+    char *end;
+    long v;
+    errno = 0;
+    end = NULL;
+    v = strtol(fd_text, &end, 10);
+    if (errno != 0)
+    {
+        return -1;
+    }
+    if (end == fd_text)
+    {
+        return -1;
+    }
+    if (*end != '\0')
+    {
+        return -1;
+    }
+    if (v < 0)
+    {
+        return -1;
+    }
+    if (v > INT_MAX)
+    {
+        return -1;
+    }
+    *fd = (int)v;
+    return 0;
 }
 
 /* The optional params argument (argv[3]), or dflt when absent. */
@@ -159,6 +196,8 @@ int main(int argc, char **argv)
     int r;
     int match;
     int params_ok;
+    int fd_ok;
+    void (*sig_prev)(int);
     const char *wmem;
     j89_len woff;
     if (argc < 3)
@@ -170,12 +209,18 @@ int main(int argc, char **argv)
     fd_text = argv[1];
     method = argv[2];
     params_text = jrpc89_arg3(argc, argv, NULL);
-    fd = atoi(fd_text);
-    if (fd < 0)
+    fd_ok = jrpc89_parse_fd(fd_text, &fd);
+    if (fd_ok != 0)
     {
         int rc;
         rc = jrpc89_usage_fd(fd_text);
         return rc;
+    }
+    sig_prev = signal(SIGPIPE, SIG_IGN);
+    if (sig_prev == SIG_ERR)
+    {
+        fprintf(stderr, "jrpc89: cannot ignore SIGPIPE\n");
+        return 1;
     }
     j89_arena_init(&a);
     j89_arena_init(&out);
@@ -205,14 +250,14 @@ int main(int argc, char **argv)
     }
     wmem = out.mem;
     woff = out.off;
-    st = jrpc89_write_frame(fd, wmem, woff);
+    st = jrpc89_fd_write_frame(fd, wmem, woff);
     if (st != JRPC89_OK)
     {
         int rc;
         rc = jrpc89_die_plain(fd, &a, &out, "jrpc89: write failed");
         return rc;
     }
-    st = jrpc89_read_frame(fd, buf, JRPC89_BUF_LEN, &len);
+    st = jrpc89_fd_read_frame(fd, buf, JRPC89_BUF_LEN, &len);
     if (st != JRPC89_OK)
     {
         int rc;

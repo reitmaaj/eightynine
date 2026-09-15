@@ -2,9 +2,9 @@
 # gen_compile_db <compiler> <outfile>
 #
 # Emit a compile_commands.json for the given compiler, listing every source
-# translation unit under src/ with the include paths needed to parse it.
-# green overrides the diagnostic/language profile, so the command only needs
-# correct includes and the file list. The GCC and Clang databases are
+# translation unit under src/ and tool/ with the include paths needed to parse
+# it. green overrides the diagnostic/language profile, so the command only
+# needs correct includes and the file list. The GCC and Clang databases are
 # generated from the same source list, so their translation-unit sets match.
 
 cc="$1"
@@ -16,7 +16,7 @@ libj89="$(cd "$root/../libj89" && pwd)"
 mkdir -p "$(dirname "$out")"
 
 first=1
-for f in "$root"/src/*.c; do
+for f in "$root"/src/*.c "$root"/tool/*.c; do
     [ -e "$f" ] || continue
     if [ "$first" -eq 1 ]; then
         first=0

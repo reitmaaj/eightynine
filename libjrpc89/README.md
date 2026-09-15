@@ -54,11 +54,15 @@ POSIX transport profile.
 
 ## Transport contract
 
-The library operates on an **already-open Unix socket `int fd`**. It does
-not `connect`, `accept`, or manage socket lifecycle. Frames are
-newline-delimited JSON (NDJSON): one message per line. The CLI demo reads
-into an 8192-byte buffer, so a response frame may be up to 8191 bytes; a
-larger frame is reported as too long.
+The library operates on an **already-open, blocking, connected Unix socket
+`int fd`**. It does not `connect`, `accept`, or manage socket lifecycle.
+Frames are newline-delimited JSON (NDJSON): one message per line. The CLI
+demo reads into an 8192-byte buffer, so a response frame may be up to 8191
+bytes; a larger frame is drained and reported as too long, leaving the
+stream on the next frame boundary. The adapter suppresses SIGPIPE where the
+platform offers `MSG_NOSIGNAL`; elsewhere the application must configure its
+SIGPIPE policy (the CLI ignores it). Nonblocking descriptors are out of
+scope in V1.
 
 ## Known limitation: none
 
@@ -70,8 +74,9 @@ failure and never returns a node from a failed construction.
 ## Build and test
 
 ```sh
-just build       # compile the jrpc89 CLI (library + libj89)
-just test        # smoke, unit, e2e scripts, and the parameterized suite
+just build       # compile the jrpc89 CLI (tool + library + libj89)
+just test        # smoke, unit, fault, e2e scripts, and the parameterized suite
+just fault       # scripted syscall-seam framing tests only
 just e2e-suite   # parameterized exchange suite only
 just green       # generate compile DBs and run the seven-cell green matrix
 just check       # green gate (matrix + tidy + format)
@@ -85,9 +90,11 @@ just format      # apply canonical formatting
 
 1. **smoke** — one end-to-end request/response round trip over a Unix socket.
 2. **unit** — one test binary per library module (`test/unit/test_*.c`).
-3. **e2e scripts** — `smoke.sh`, `error.sh`, `mismatch.sh` driven by the
-   Python mock server.
-4. **e2e-suite** — a parameterized matrix (`test/e2e/suite.py`) that must
+3. **fault** — framing tests against a scripted syscall seam
+   (`test/fault/test_*.c`) covering EINTR, short transfers, EOF, and errors.
+4. **e2e scripts** — `smoke.sh`, `error.sh`, `mismatch.sh`, and `sigpipe.sh`
+   driven by the Python mock server.
+5. **e2e-suite** — a parameterized matrix (`test/e2e/suite.py`) that must
    cover at least 100 passing exchanges (valid responses, exit 0, result
    echoed) and at least 100 failing exchanges (valid server errors reported
    as a structured error, or malformed/framing/mismatch/request failures
@@ -109,10 +116,13 @@ pattern.
 ## Layout
 
 ```text
-include/jrpc89.h        public API
-src/                    library modules + main.c (CLI)
-test/unit/              unit tests
-test/e2e/               mock server + harness + parameterized exchange suite
+include/jrpc89.h        protocol model/build/decode API (ISO C89)
+include/jrpc89_io.h     optional POSIX fd + NDJSON profile
+src/                    library modules (io.c framing, io_posix.c adapter)
+tool/jrpc89.c           CLI demo
+test/unit/              pure and protocol unit tests
+test/fault/             scripted syscall-seam tests
+test/e2e/               mock server + harness + exchange and SIGPIPE suites
 .agent/                 concept, stories, design, testing, acceptance
 ```
 

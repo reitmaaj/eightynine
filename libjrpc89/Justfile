@@ -11,8 +11,10 @@ GREEN := env_var_or_default("GREEN", "../../green/.agent/tmp/build/green")
 
 STRICT := "-std=c89 -pedantic-errors -Wall -Wextra -Werror -Wconversion -Wsign-conversion -Wstrict-prototypes -Wmissing-prototypes -Wold-style-definition -Wundef -Wshadow -Wformat=2"
 
-SRC := "src/jrpc89_internal.c src/id.c src/request.c src/response.c src/error.c src/io.c src/main.c"
-LIB := "src/jrpc89_internal.c src/id.c src/request.c src/response.c src/error.c src/io.c"
+SRC := "src/jrpc89_internal.c src/id.c src/request.c src/response.c src/error.c src/io.c src/io_posix.c"
+TOOL := "tool/jrpc89.c"
+LIB := "src/jrpc89_internal.c src/id.c src/request.c src/response.c src/error.c src/io.c src/io_posix.c"
+LIB_NO_POSIX := "src/jrpc89_internal.c src/id.c src/request.c src/response.c src/error.c src/io.c"
 LIBJ89_SRC := LIBJ89 + "/src/parse.c " + LIBJ89 + "/src/value.c " + LIBJ89 + "/src/print.c"
 
 default: build
@@ -22,12 +24,12 @@ default: build
 deps:
 	cd {{STR89}} && just build
 
-# Compile the CLI demo (library + libj89).
+# Compile the CLI demo (tool + library + libj89).
 build: deps
 	mkdir -p build
-	{{CC}} {{STRICT}} -Iinclude -I{{LIBJ89}}/include -I{{U89}}/include -I{{STR89INC}} -o build/jrpc89 {{SRC}} {{LIBJ89_SRC}} {{STR89LIB}} {{U89LIB}} -lm
+	{{CC}} {{STRICT}} -Iinclude -I{{LIBJ89}}/include -I{{U89}}/include -I{{STR89INC}} -o build/jrpc89 {{TOOL}} {{SRC}} {{LIBJ89_SRC}} {{STR89LIB}} {{U89LIB}} -lm
 
-# Unit tests, each linked with the non-main library sources.
+# Unit tests, each linked with the library sources (real POSIX adapter).
 unit: build
 	@for t in test/unit/test_*.c; do \
 	    [ -e "$t" ] || continue; \
@@ -36,9 +38,18 @@ unit: build
 	    ./build/$name || exit 1; \
 	done
 
+# Framing tests against a scripted syscall seam (no POSIX adapter linked).
+fault: build
+	@for t in test/fault/test_*.c; do \
+	    [ -e "$t" ] || continue; \
+	    name=$(basename "$t" .c); \
+	    {{CC}} {{STRICT}} -Iinclude -Isrc -I{{LIBJ89}}/include -I{{U89}}/include -I{{STR89INC}} -Itest/fault -o build/$name "$t" {{LIB_NO_POSIX}} {{LIBJ89_SRC}} {{STR89LIB}} {{U89LIB}} -lm || exit 1; \
+	    ./build/$name || exit 1; \
+	done
+
 # End-to-end tests against a mock Unix-socket server (small scripts).
 e2e: build
-	@for s in test/e2e/smoke.sh test/e2e/error.sh test/e2e/mismatch.sh; do \
+	@for s in test/e2e/smoke.sh test/e2e/error.sh test/e2e/mismatch.sh test/e2e/sigpipe.sh; do \
 	    sh "$s" ./build/jrpc89 || exit 1; \
 	done
 
@@ -50,8 +61,8 @@ e2e-suite: build
 smoke: build
 	sh test/e2e/smoke.sh ./build/jrpc89
 
-# Run every test (smoke runs first, then unit, then the e2e scripts and suite).
-test: smoke unit e2e e2e-suite
+# Run every test (smoke runs first, then unit and fault, then e2e).
+test: smoke unit fault e2e e2e-suite
 
 # Generate the GCC and Clang compilation databases, then run the seven-cell
 # green matrix from this project root.
@@ -70,13 +81,13 @@ lint:
 	    shellcheck -s sh "$f" || exit 1; \
 	    shellcheck -s bash "$f" || exit 1; \
 	done
-	@for f in src/*.c src/*.h include/*.h test/*/*.c; do \
+	@for f in src/*.c src/*.h include/*.h tool/*.c test/*/*.c; do \
 	    [ -e "$f" ] || continue; \
 	    clang-format --dry-run --Werror "$f" || { echo "needs formatting: $f"; exit 1; }; \
 	done
 
 format:
-	@for f in src/*.c src/*.h include/*.h test/*/*.c; do \
+	@for f in src/*.c src/*.h include/*.h tool/*.c test/*/*.c; do \
 	    [ -e "$f" ] || continue; \
 	    clang-format -i "$f"; \
 	done

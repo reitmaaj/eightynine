@@ -81,8 +81,9 @@ distinction is deterministic.
 - `request` — build request/notification object nodes via libj89's builder.
 - `response` — decode a parsed response into a checked result-or-error view.
 - `error` — error code constants and reserved-range classification.
-- `io` — NDJSON framing over an fd (transport profile; POSIX adapter).
-- `main` — CLI demo that drives the library over a provided fd.
+- `io` — NDJSON framing logic, ISO C89, behind an internal syscall seam.
+- `io_posix` — the POSIX read/write adapter implementing the seam.
+- `tool/jrpc89.c` — CLI demo that drives the library over a provided fd.
 
 ## Dependency
 

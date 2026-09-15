@@ -1,44 +1,45 @@
-/* io.c - newline-delimited JSON framing over an open socket fd. */
-#include <errno.h>
-#include <unistd.h>
+/* io.c - newline-delimited JSON framing over an open fd.
+ *
+ * ISO C89: this translation unit owns the framing logic and reaches the
+ * outside world only through the syscall seam declared in io_internal.h.
+ * The POSIX adapter in io_posix.c implements the seam. */
+#include <jrpc89_io.h>
 
-#include <jrpc89.h>
+#include "io_internal.h"
 
-/* Write up to n bytes, retrying on EINTR. Returns the number of bytes
- * written, or -1 on a hard error. */
-static ssize_t jrpc89_write_one(int fd, const char *buf, size_t n)
+/* Write up to n bytes, retrying on EINTR. Returns 0 on progress, -1 on a
+ * hard error. On success *put is at least 1. */
+static int jrpc89_write_once(int fd, const char *buf, j89_len len, j89_len *put)
 {
-    ssize_t w;
+    int st;
     for (;;)
     {
-        w = write(fd, buf, n);
-        if (w >= 0)
+        st = jrpc89_sys_write(fd, buf, len, put);
+        if (st != JRPC89_SYS_INTR)
         {
             break;
         }
-        if (errno == EINTR)
-        {
-            continue;
-        }
-        break;
     }
-    return w;
-}
-
-/* One write attempt that advances *off past the bytes written. Returns 0 on
- * progress, -1 on a write error (including EOF). */
-static int jrpc89_advance_write(int fd, const char *buf, j89_len len,
-                                j89_len *off)
-{
-    ssize_t w;
-    j89_len wlen;
-    w = jrpc89_write_one(fd, buf + *off, len - *off);
-    if (w <= 0)
+    if (st != JRPC89_SYS_OK)
     {
         return -1;
     }
-    wlen = (j89_len)w;
-    *off = *off + wlen;
+    return 0;
+}
+
+/* One write attempt that advances *off past the bytes written. Returns 0 on
+ * progress, -1 on a hard error. */
+static int jrpc89_advance_write(int fd, const char *buf, j89_len len,
+                                j89_len *off)
+{
+    j89_len put;
+    int r;
+    r = jrpc89_write_once(fd, buf + *off, len - *off, &put);
+    if (r != 0)
+    {
+        return -1;
+    }
+    *off = *off + put;
     return 0;
 }
 
@@ -73,7 +74,7 @@ static int jrpc89_has_newline(const char *json, j89_len len)
     return 0;
 }
 
-jrpc89_status jrpc89_write_frame(int fd, const char *json, j89_len len)
+jrpc89_status jrpc89_fd_write_frame(int fd, const char *json, j89_len len)
 {
     int nl;
     int r;
@@ -108,24 +109,28 @@ jrpc89_status jrpc89_write_frame(int fd, const char *json, j89_len len)
 }
 
 /* Read up to one byte, retrying on EINTR. Returns 1 on a byte, 0 on EOF,
- * or -1 on a hard error. */
-static ssize_t jrpc89_read_one(int fd, char *c)
+ * -1 on a hard error. */
+static int jrpc89_read_one(int fd, char *c)
 {
-    ssize_t w;
+    int st;
+    j89_len got;
     for (;;)
     {
-        w = read(fd, c, 1);
-        if (w >= 0)
+        st = jrpc89_sys_read(fd, c, 1, &got);
+        if (st != JRPC89_SYS_INTR)
         {
             break;
         }
-        if (errno == EINTR)
-        {
-            continue;
-        }
-        break;
     }
-    return w;
+    if (st == JRPC89_SYS_OK)
+    {
+        return 1;
+    }
+    if (st == JRPC89_SYS_EOF)
+    {
+        return 0;
+    }
+    return -1;
 }
 
 /* Fold one received byte into the frame. Returns 0 when reading continues,
@@ -163,16 +168,16 @@ static int jrpc89_ingest(char *buf, j89_len limit, char c, j89_len *i,
 static int jrpc89_read_step(int fd, char *buf, j89_len limit, j89_len *i,
                             int *found, int *toobig, int *err, int *eof)
 {
-    ssize_t w;
+    int r;
     char c;
     int step;
-    w = jrpc89_read_one(fd, &c);
-    if (w == 1)
+    r = jrpc89_read_one(fd, &c);
+    if (r == 1)
     {
         step = jrpc89_ingest(buf, limit, c, i, found, toobig);
         return step;
     }
-    if (w == 0)
+    if (r == 0)
     {
         *eof = 1;
         return 1;
@@ -205,8 +210,8 @@ static jrpc89_status jrpc89_end_status(j89_len i)
     return JRPC89_ETRUNC;
 }
 
-jrpc89_status jrpc89_read_frame(int fd, char *buf, j89_len cap,
-                                j89_len *out_len)
+jrpc89_status jrpc89_fd_read_frame(int fd, char *buf, j89_len cap,
+                                   j89_len *out_len)
 {
     j89_len limit;
     j89_len i;
