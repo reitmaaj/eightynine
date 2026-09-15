@@ -36,9 +36,15 @@
   mismatch.
 - The CLI demo MUST reject a response whose `id` does not match the request
   id instead of printing the result as a success.
-- `jrpc89_request_new` MUST refuse an empty or NUL method name.
-- `jrpc89_request_new` MUST refuse a NULL method pointer without dereferencing
-  it.
+- `jrpc89_request_new` MUST refuse a NULL id pointer and an unknown id kind.
+- `jrpc89_request_new` MUST refuse a string id whose pointer is NULL and an
+  integer id that is NaN, infinite, fractional, or outside ±2^53.
+- `jrpc89_request_new` MUST refuse a NULL method pointer with a nonzero
+  length without dereferencing it.
+- A request `params` node that is present MUST be an array or an object;
+  scalar params MUST be refused.
+- A zero-length method name MUST be accepted and rendered as an empty JSON
+  string.
 - A response whose `error` member is not an object MUST be rejected.
 - A response whose `error` object lacks an integer `code` or a string
   `message` MUST be rejected.

@@ -32,7 +32,7 @@ unit: build
 	@for t in test/unit/test_*.c; do \
 	    [ -e "$t" ] || continue; \
 	    name=$(basename "$t" .c); \
-	    {{CC}} {{STRICT}} -Iinclude -I{{LIBJ89}}/include -I{{U89}}/include -I{{STR89INC}} -Itest/unit -o build/$name "$t" {{LIB}} {{LIBJ89_SRC}} {{STR89LIB}} {{U89LIB}} || exit 1; \
+	    {{CC}} {{STRICT}} -Iinclude -I{{LIBJ89}}/include -I{{U89}}/include -I{{STR89INC}} -Itest/unit -o build/$name "$t" {{LIB}} {{LIBJ89_SRC}} {{STR89LIB}} {{U89LIB}} -lm || exit 1; \
 	    ./build/$name || exit 1; \
 	done
 

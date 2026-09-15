@@ -17,9 +17,7 @@ import harness
 
 
 def reserved(code):
-    if code in (-32700, -32600, -32601, -32602, -32603):
-        return True
-    return -32099 <= code <= -32000
+    return -32768 <= code <= -32000
 
 
 # ---- server play functions: play(sock, req, arg) -----------------------
@@ -160,9 +158,6 @@ def build_passing():
                       play_echo_result, res, check_result))
 
     params_list = [
-        "null", "true", "false", "0", "1", "-1", "42", "1.5", "1e3",
-        "-0.25", "123", "-7",
-        '"x"', '""', '"héllo ☃"', '"a b c"', '"x y z"',
         "[]", "[1,2,3]", "[1,\"x\",null]", "[1,2,3,4,5]", "[[],[]]",
         "[true,false,null]",
         "{}", '{"a":1}', '{"a":{"b":[1,2]}}', '[{"a":1},{"b":2}]',
@@ -188,6 +183,8 @@ def build_passing():
     for i, m in enumerate(methods):
         cases.append(("pass:method:%d" % i, m, None, play_echo_result, "ok",
                       lambda o, e, r, a: check_result(o, e, r, "ok")))
+    cases.append(("pass:emptymethod", "", None, play_echo_result, "ok",
+                  lambda o, e, r, a: check_result(o, e, r, "ok")))
     return cases
 
 
@@ -238,10 +235,14 @@ def build_failing():
     cases.append(("fail:oversized:big", "echo", None, play_oversized, 16384,
                   check_failure))
     cases.append(("fail:eof", "echo", None, play_eof, None, check_failure))
-    cases.append(("fail:emptymethod", "", None, play_eof, None,
-                  check_failure))
     cases.append(("fail:invalidparams", "echo", "not json", play_echo_params,
                   None, check_failure))
+    scalar_params = ["null", "true", "false", "0", "1", "-1", "42", "1.5",
+                     "1e3", "-0.25", "123", "-7",
+                     '"x"', '""', '"héllo ☃"', '"a b c"', '"x y z"']
+    for i, p in enumerate(scalar_params):
+        cases.append(("fail:scalarparams:%d" % i, "echo", p, play_echo_params,
+                      None, check_failure))
     cases.append(("fail:wrongid:int", "echo", None, play_wrongid, "int",
                   check_failure))
     cases.append(("fail:wrongid:type", "echo", None, play_wrongid, "string",

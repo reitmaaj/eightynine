@@ -19,7 +19,9 @@ clang-tidy C23, and canonical formatting.
 - Response validation: an `id` must be present and match the request id;
   exactly one of `result` or `error` must be present; an `error` member must
   be an object carrying an integer `code` and a string `message`.
-- Request building refuses an empty or NULL method.
+- Request building takes the method as bytes plus an explicit length, so
+  embedded NUL bytes are preserved and zero-length methods are allowed.
+  `params`, when present, must be an array or object.
 - NDJSON framing over an already-open Unix socket file descriptor, with
   distinct return codes for end-of-file, frame-too-long, read error, and
   truncated frame.

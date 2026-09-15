@@ -47,9 +47,6 @@ typedef struct
     j89_len len;     /* byte length when kind == JRPC89_ID_STRING */
 } jrpc89_id;
 
-/* True when the id is present in a request (not a notification). */
-int jrpc89_id_present(const jrpc89_id *id);
-
 /* True when two ids are structurally equal (same kind and value). */
 int jrpc89_id_matches(const jrpc89_id *a, const jrpc89_id *b);
 
@@ -57,13 +54,15 @@ int jrpc89_id_matches(const jrpc89_id *a, const jrpc89_id *b);
 /* request building                                                    */
 /* ------------------------------------------------------------------ */
 
-/* Build a request object {jsonrpc, method, params?, id?} node. Pass
- * J89_BAD as params to omit the params member; pass an id whose kind is
- * JRPC89_ID_NONE (or NULL) to build a notification without an id member.
- * Returns the object node, or J89_BAD on failure (NULL, empty, or NUL
- * method, or an allocation failure reported via j89_error). */
-j89_len jrpc89_request_new(j89_arena *a, const char *method, j89_len params,
-                           const jrpc89_id *id);
+/* Build a request object {jsonrpc, method, params?, id?} node. The method
+ * is given as bytes plus length, so embedded NUL bytes are preserved and a
+ * zero-length method is allowed; method may be NULL only when method_len is
+ * zero. params must be J89_BAD to omit the member, or an array/object node.
+ * id must be non-NULL; kind JRPC89_ID_NONE builds a notification without an
+ * id member. Returns the object node, or J89_BAD on failure (bad arguments,
+ * a failed arena, scalar params, or a libj89 builder failure). */
+j89_len jrpc89_request_new(j89_arena *a, const char *method, j89_len method_len,
+                           j89_len params, const jrpc89_id *id);
 
 /* ------------------------------------------------------------------ */
 /* response parsing                                                    */

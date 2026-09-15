@@ -146,6 +146,10 @@ j89_len j89_integer_new(j89_arena *a, j89_int v);
 j89_len j89_double_new(j89_arena *a, double v);
 j89_len j89_bool_new(j89_arena *a, int v);
 
+/* Create a JSON null node. On allocation failure returns J89_BAD and marks
+ * the arena failed. */
+j89_len j89_null_new(j89_arena *a);
+
 /* Assign child to one array slot. */
 void j89_array_set(j89_arena *a, j89_len array, j89_len index, j89_len child);
 

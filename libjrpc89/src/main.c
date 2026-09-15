@@ -150,6 +150,7 @@ int main(int argc, char **argv)
     j89_len req;
     j89_len resp;
     j89_len len;
+    j89_len mlen;
     char buf[JRPC89_BUF_LEN];
     int fd;
     int r;
@@ -189,7 +190,8 @@ int main(int argc, char **argv)
     }
     id.kind = JRPC89_ID_INT;
     id.num = 1;
-    req = jrpc89_request_new(&a, method, params, &id);
+    mlen = strlen(method);
+    req = jrpc89_request_new(&a, method, mlen, params, &id);
     req_ok = jrpc89_has_node(req);
     if (req_ok == 0)
     {

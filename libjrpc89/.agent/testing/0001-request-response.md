@@ -23,17 +23,42 @@ WHEN jrpc89_request_new builds the request object
 THEN the object has no id member.
 
 SCENARIO: build a request with params
-GIVEN a method name, an id, and a params node
+GIVEN a method name, an id, and an array or object params node
 WHEN jrpc89_request_new builds the request object
 THEN the params member is present and equals the given node.
 
-SCENARIO: reject an empty method
-GIVEN an empty or NUL method name
+SCENARIO: allow an empty method
+GIVEN an empty method name (zero bytes)
 WHEN jrpc89_request_new builds the request object
-THEN it reports an error and produces no usable object.
+THEN it builds a request with an empty method string.
 
-SCENARIO: reject a NULL method pointer
-GIVEN a NULL method name
+SCENARIO: preserve a method with embedded NUL bytes
+GIVEN a method of three bytes containing an embedded NUL
+WHEN jrpc89_request_new builds the request object
+THEN the method member carries the exact byte sequence.
+
+SCENARIO: reject scalar params
+GIVEN a params node that is null, boolean, number, or string
+WHEN jrpc89_request_new builds the request object
+THEN it refuses, because JSON-RPC params must be an array or object.
+
+SCENARIO: reject a NULL id pointer
+GIVEN a NULL id pointer
+WHEN jrpc89_request_new builds the request object
+THEN it refuses without dereferencing the pointer and produces no usable object.
+
+SCENARIO: reject an illegal id kind
+GIVEN an id whose kind is unknown or a string id with a NULL pointer
+WHEN jrpc89_request_new builds the request object
+THEN it refuses and produces no usable object.
+
+SCENARIO: reject a non-exact integer id
+GIVEN an integer id that is NaN, infinite, fractional, or outside ±2^53
+WHEN jrpc89_request_new builds the request object
+THEN it refuses rather than rendering a non-integer JSON id.
+
+SCENARIO: reject a NULL method pointer with a nonzero length
+GIVEN a NULL method name and a nonzero method length
 WHEN jrpc89_request_new builds the request object
 THEN it refuses without dereferencing the pointer and produces no usable object.
 
