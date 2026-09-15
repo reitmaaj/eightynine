@@ -5,18 +5,19 @@
 - `jrpc89_request_new` yields a request object with `jsonrpc: "2.0"`, the
   method, the params, and the id (integer, string, or null).
 - A notification built with `JRPC89_ID_NONE` has no `id` member.
-- `jrpc89_response_validate` accepts a valid response and distinguishes a
-  result from an error.
-- `jrpc89_error_code`, `jrpc89_error_message`, and `jrpc89_error_data`
-  extract the members of a parsed error object.
+- `jrpc89_response_decode` accepts a valid response and produces a view whose
+  kind distinguishes a result from an error; on `JRPC89_OK` every field
+  permitted by the kind is usable without further structural checks.
+- `jrpc89_response_decode` leaves `*out` unchanged on every non-OK return.
+- `jrpc89_id_equal` compares ids structurally, including embedded NUL bytes.
 - `jrpc89_write_frame` and `jrpc89_read_frame` round-trip a JSON message as
   newline-delimited bytes over an fd.
 - The CLI demo connects to a Unix socket, sends a request, and prints the
   result or a structured error, exiting 0 on a successful call.
-- `jrpc89_error_is_reserved` classifies the `-32768..-32000` range (including
+- `jrpc89_error_code_reserved` classifies the `-32768..-32000` range (including
   currently unassigned gaps) and the standard codes as reserved.
-- `jrpc89_error_code` returns the exact `j89_int` code, preserving values
-  outside the C `int` range that libj89 accepts.
+- Decoded error codes are exact `j89_int` values, preserving values outside
+  the C `int` range that libj89 accepts.
 
 ## Unacceptable behaviors (must reject / refuse)
 
@@ -29,8 +30,9 @@
 - `jrpc89_request_new` MUST NOT return a usable object when any libj89 builder
   operation failed (for example, invalid UTF-8 in the method): the arena is
   marked failed and no node is returned.
-- `jrpc89_request_new` MUST refuse an arena that is already marked failed.
-- `jrpc89_error_is_reserved` MUST classify every code in `-32768..-32000` as
+- `jrpc89_request_new` MUST refuse an arena that is already marked failed or
+  carries a pending error message.
+- `jrpc89_error_code_reserved` MUST classify every code in `-32768..-32000` as
   reserved, including gaps such as `-32100` and `-32500`.
 - A response whose `id` does not match the request id MUST be reported as a
   mismatch.

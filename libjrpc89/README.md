@@ -16,9 +16,14 @@ clang-tidy C23, and canonical formatting.
   and the full reserved range `-32768..-32000`; reserved-vs-application
   classification; error-object access. Error codes are exact `j89_int`
   values, so codes outside the C `int` range are preserved.
-- Response validation: an `id` must be present and match the request id;
-  exactly one of `result` or `error` must be present; an `error` member must
-  be an object carrying an integer `code` and a string `message`.
+- Response decoding into a checked result-or-error view: an `id` must be
+  present and be an integer, string, or null; exactly one of `result` or
+  `error` must be present; an `error` member must be an object carrying an
+  integer `code` and a string `message`. On success every field permitted by
+  the kind is usable without further structural checks.
+- A single `jrpc89_status` namespace for protocol and transport results, and
+  a strict request contract: the arena must be clean, and `*out` is unchanged
+  on failure.
 - Request building takes the method as bytes plus an explicit length, so
   embedded NUL bytes are preserved and zero-length methods are allowed.
   `params`, when present, must be an array or object.
@@ -30,6 +35,21 @@ clang-tidy C23, and canonical formatting.
   silently omitting params) and rejects a mismatched response id.
 
 No batching in V1.
+
+## Public API (V1)
+
+```text
+jrpc89_request_new        build a request/notification node
+jrpc89_response_decode    decode a parsed response into jrpc89_response
+jrpc89_id_equal           structural id equality
+jrpc89_error_code_reserved  reserved interval -32768..-32000
+jrpc89_write_frame        write one NDJSON frame
+jrpc89_read_frame         read one NDJSON frame
+```
+
+Types: `jrpc89_status`, `jrpc89_id`, `jrpc89_response`, `jrpc89_error`.
+The protocol core is ISO C89 and POSIX-free; the framing functions are the
+POSIX transport profile.
 
 ## Transport contract
 
@@ -70,7 +90,7 @@ just format      # apply canonical formatting
    cover at least 100 passing exchanges (valid responses, exit 0, result
    echoed) and at least 100 failing exchanges (valid server errors reported
    as a structured error, or malformed/framing/mismatch/request failures
-   rejected with a nonzero exit). It currently runs 140 passing and 134
+   rejected with a nonzero exit). It currently runs 124 passing and 150
    failing cases and fails unless every case passes.
 
 ## CLI demo

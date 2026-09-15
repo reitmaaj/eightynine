@@ -108,26 +108,34 @@ int jrpc89_id_valid(const jrpc89_id *id)
     return 0;
 }
 
-int jrpc89_id_matches(const jrpc89_id *a, const jrpc89_id *b)
+int jrpc89_id_equal(const jrpc89_id *x, const jrpc89_id *y)
 {
-    if (a->kind != b->kind)
+    if (x == NULL)
     {
         return 0;
     }
-    if (a->kind == JRPC89_ID_INT)
+    if (y == NULL)
+    {
+        return 0;
+    }
+    if (x->kind != y->kind)
+    {
+        return 0;
+    }
+    if (x->kind == JRPC89_ID_INT)
     {
         int eq;
         eq = 0;
-        if (a->num == b->num)
+        if (x->num == y->num)
         {
             eq = 1;
         }
         return eq;
     }
-    if (a->kind == JRPC89_ID_STRING)
+    if (x->kind == JRPC89_ID_STRING)
     {
         int eq;
-        eq = jrpc89_bytes_equal(a->str, a->len, b->str, b->len);
+        eq = jrpc89_bytes_equal(x->str, x->len, y->str, y->len);
         return eq;
     }
     return 1;

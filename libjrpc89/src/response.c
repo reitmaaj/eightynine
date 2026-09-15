@@ -1,4 +1,4 @@
-/* response.c - parse and validate JSON-RPC 2.0 response objects. */
+/* response.c - decode JSON-RPC 2.0 response objects. */
 #include <jrpc89.h>
 
 #include "jrpc89_internal.h"
@@ -40,221 +40,257 @@ static int jrpc89_member_has(j89_arena *a, j89_len node, const char *key)
     return r;
 }
 
-/* Validate the error object of a response: it must be an object with an
- * integer code and a string message. Records a message and returns nonzero
- * when invalid. */
-static int jrpc89_validate_error(j89_arena *a, j89_len resp)
+static void jrpc89_id_set_int(j89_arena *a, j89_len node, jrpc89_id *out)
 {
-    j89_kind ek;
-    j89_kind ck;
-    j89_kind mk;
-    j89_len err;
-    j89_len code;
-    j89_len msg;
-    int err_is_obj;
-    int has_code;
-    int has_msg;
-    int code_ok;
-    int msg_ok;
-    err = j89_object_find(a, resp, "error");
-    ek = j89_kind_of(a, err);
-    err_is_obj = (ek == J89_OBJECT);
-    if (!err_is_obj)
-    {
-        jrpc89_set_error(a, "jrpc89: response error is not an object");
-        return -1;
-    }
-    code = j89_object_find(a, err, "code");
-    has_code = jrpc89_has_node(code);
-    if (!has_code)
-    {
-        jrpc89_set_error(a, "jrpc89: response error has no code");
-        return -1;
-    }
-    ck = j89_kind_of(a, code);
-    code_ok = (ck == J89_INTEGER);
-    if (!code_ok)
-    {
-        jrpc89_set_error(a, "jrpc89: response error code is not integer");
-        return -1;
-    }
-    msg = j89_object_find(a, err, "message");
-    has_msg = jrpc89_has_node(msg);
-    if (!has_msg)
-    {
-        jrpc89_set_error(a, "jrpc89: response error has no message");
-        return -1;
-    }
-    mk = j89_kind_of(a, msg);
-    msg_ok = (mk == J89_STRING);
-    if (!msg_ok)
-    {
-        jrpc89_set_error(a, "jrpc89: response error message is not string");
-        return -1;
-    }
-    return 0;
-}
-
-/* Validate the id member of a response: it must be present and must be an
- * integer, string, or null. Returns 0 when valid, nonzero otherwise. */
-static int jrpc89_validate_id(j89_arena *a, j89_len resp)
-{
-    j89_len id;
-    j89_kind k;
-    int has_id;
-    id = j89_object_find(a, resp, "id");
-    has_id = jrpc89_has_node(id);
-    if (!has_id)
-    {
-        jrpc89_set_error(a, "jrpc89: response has no id member");
-        return -1;
-    }
-    k = j89_kind_of(a, id);
-    if (k == J89_INTEGER)
-    {
-        return 0;
-    }
-    if (k == J89_STRING)
-    {
-        return 0;
-    }
-    if (k == J89_NULL)
-    {
-        return 0;
-    }
-    jrpc89_set_error(a, "jrpc89: response id is not integer, string, or null");
-    return -1;
-}
-
-int jrpc89_response_validate(j89_arena *a, j89_len resp)
-{
-    j89_kind k;
-    j89_len version;
-    int have_result;
-    int have_error;
-    int is_obj;
-    int version_ok;
-    int idok;
-    k = j89_kind_of(a, resp);
-    is_obj = (k == J89_OBJECT);
-    if (!is_obj)
-    {
-        jrpc89_set_error(a, "jrpc89: response is not an object");
-        return -1;
-    }
-    version = j89_object_find(a, resp, "jsonrpc");
-    version_ok = jrpc89_has_node(version);
-    if (!version_ok)
-    {
-        jrpc89_set_error(a, "jrpc89: response has no jsonrpc version");
-        return -1;
-    }
-    version_ok = jrpc89_str_is(a, version, "2.0", 3);
-    if (!version_ok)
-    {
-        jrpc89_set_error(a, "jrpc89: response jsonrpc is not \"2.0\"");
-        return -1;
-    }
-    have_result = jrpc89_member_has(a, resp, "result");
-    have_error = jrpc89_member_has(a, resp, "error");
-    if (have_error)
-    {
-        int eok;
-        eok = jrpc89_validate_error(a, resp);
-        if (eok != 0)
-        {
-            return -1;
-        }
-    }
-    if (have_result)
-    {
-        if (have_error)
-        {
-            jrpc89_set_error(a, "jrpc89: response has both result and error");
-            return -1;
-        }
-    }
-    if (!have_result)
-    {
-        if (!have_error)
-        {
-            jrpc89_set_error(a,
-                             "jrpc89: response has neither result nor error");
-            return -1;
-        }
-    }
-    idok = jrpc89_validate_id(a, resp);
-    return idok;
-}
-
-int jrpc89_is_error(j89_arena *a, j89_len resp)
-{
-    j89_len v;
-    int r;
-    v = j89_object_find(a, resp, "error");
-    r = jrpc89_has_node(v);
-    return r;
-}
-
-j89_len jrpc89_result_node(j89_arena *a, j89_len resp)
-{
-    j89_len v;
-    v = j89_object_find(a, resp, "result");
-    return v;
-}
-
-static void jrpc89_set_id_int(j89_arena *a, j89_len node, jrpc89_id *out)
-{
-    j89_int num;
-    num = j89_int_value(a, node);
-    out->num = num;
     out->kind = JRPC89_ID_INT;
+    out->num = j89_int_value(a, node);
 }
 
-static void jrpc89_set_id_string(j89_arena *a, j89_len node, jrpc89_id *out)
+static void jrpc89_id_set_string(j89_arena *a, j89_len node, jrpc89_id *out)
 {
-    const char *str;
-    j89_len len;
-    str = j89_string_value(a, node);
-    len = j89_string_length(a, node);
-    out->str = str;
-    out->len = len;
     out->kind = JRPC89_ID_STRING;
+    out->str = j89_string_value(a, node);
+    out->len = j89_string_length(a, node);
 }
 
-static int jrpc89_id_from_node(j89_arena *a, j89_len node, jrpc89_id *out)
+/* Convert one node to an id. Returns JRPC89_OK for integer, string, or
+ * null, and JRPC89_EPROTO for every other node kind. */
+static jrpc89_status jrpc89_id_from_node(j89_arena *a, j89_len node,
+                                         jrpc89_id *out)
 {
     j89_kind k;
     k = j89_kind_of(a, node);
     if (k == J89_INTEGER)
     {
-        jrpc89_set_id_int(a, node, out);
-        return 0;
+        jrpc89_id_set_int(a, node, out);
+        return JRPC89_OK;
     }
     if (k == J89_STRING)
     {
-        jrpc89_set_id_string(a, node, out);
-        return 0;
+        jrpc89_id_set_string(a, node, out);
+        return JRPC89_OK;
     }
     if (k == J89_NULL)
     {
         out->kind = JRPC89_ID_NULL;
-        return 0;
+        return JRPC89_OK;
     }
-    return -1;
+    return JRPC89_EPROTO;
 }
 
-int jrpc89_id_of_response(j89_arena *a, j89_len resp, jrpc89_id *out)
+static void jrpc89_error_zero(jrpc89_error *out)
 {
-    j89_len v;
+    out->code = 0;
+    out->message = "";
+    out->message_len = 0;
+    out->data = J89_BAD;
+}
+
+/* Initialize every field of the decode result before any optional part is
+ * filled in, so a partially built view never escapes. */
+static void jrpc89_response_zero(jrpc89_response *out)
+{
+    out->kind = JRPC89_RESPONSE_RESULT;
+    out->id.kind = JRPC89_ID_NONE;
+    out->id.num = 0;
+    out->id.str = NULL;
+    out->id.len = 0;
+    out->result = J89_BAD;
+    jrpc89_error_zero(&out->error);
+}
+
+/* Decode the error member: an object with an integer code and a string
+ * message; data is optional. Returns JRPC89_OK or JRPC89_EPROTO. */
+static jrpc89_status jrpc89_decode_error(j89_arena *a, j89_len resp,
+                                         jrpc89_error *out)
+{
+    j89_len err;
+    j89_len code;
+    j89_len msg;
+    j89_kind k;
     int has;
-    int r;
-    v = j89_object_find(a, resp, "id");
-    has = jrpc89_has_node(v);
+    err = j89_object_find(a, resp, "error");
+    k = j89_kind_of(a, err);
+    if (k != J89_OBJECT)
+    {
+        return JRPC89_EPROTO;
+    }
+    code = j89_object_find(a, err, "code");
+    has = jrpc89_has_node(code);
     if (!has)
     {
-        return -1;
+        return JRPC89_EPROTO;
     }
-    r = jrpc89_id_from_node(a, v, out);
-    return r;
+    k = j89_kind_of(a, code);
+    if (k != J89_INTEGER)
+    {
+        return JRPC89_EPROTO;
+    }
+    msg = j89_object_find(a, err, "message");
+    has = jrpc89_has_node(msg);
+    if (!has)
+    {
+        return JRPC89_EPROTO;
+    }
+    k = j89_kind_of(a, msg);
+    if (k != J89_STRING)
+    {
+        return JRPC89_EPROTO;
+    }
+    out->code = j89_int_value(a, code);
+    out->message = j89_string_value(a, msg);
+    out->message_len = j89_string_length(a, msg);
+    out->data = j89_object_find(a, err, "data");
+    return JRPC89_OK;
+}
+
+/* Exactly one of result or error must be present. */
+static jrpc89_status jrpc89_check_xor(int have_result, int have_error)
+{
+    if (have_result)
+    {
+        if (have_error)
+        {
+            return JRPC89_EPROTO;
+        }
+        return JRPC89_OK;
+    }
+    if (have_error)
+    {
+        return JRPC89_OK;
+    }
+    return JRPC89_EPROTO;
+}
+
+static jrpc89_status jrpc89_decode_error_body(j89_arena *a, j89_len node,
+                                              jrpc89_response *out)
+{
+    jrpc89_status st;
+    st = jrpc89_decode_error(a, node, &out->error);
+    if (st != JRPC89_OK)
+    {
+        return st;
+    }
+    out->kind = JRPC89_RESPONSE_ERROR;
+    return JRPC89_OK;
+}
+
+static jrpc89_status jrpc89_decode_result_body(j89_arena *a, j89_len node,
+                                               jrpc89_response *out)
+{
+    j89_len result;
+    result = j89_object_find(a, node, "result");
+    out->result = result;
+    out->kind = JRPC89_RESPONSE_RESULT;
+    return JRPC89_OK;
+}
+
+/* Fill in the result-or-error part of the view. */
+static jrpc89_status jrpc89_decode_body(j89_arena *a, j89_len node,
+                                        jrpc89_response *out)
+{
+    jrpc89_status st;
+    int have_result;
+    int have_error;
+    have_result = jrpc89_member_has(a, node, "result");
+    have_error = jrpc89_member_has(a, node, "error");
+    st = jrpc89_check_xor(have_result, have_error);
+    if (st != JRPC89_OK)
+    {
+        return st;
+    }
+    if (have_error)
+    {
+        st = jrpc89_decode_error_body(a, node, out);
+        return st;
+    }
+    st = jrpc89_decode_result_body(a, node, out);
+    return st;
+}
+
+/* Decode the id member: it must be present and be an integer, string, or
+ * null. Returns JRPC89_OK or JRPC89_EPROTO. */
+static jrpc89_status jrpc89_decode_id(j89_arena *a, j89_len resp,
+                                      jrpc89_id *out)
+{
+    j89_len id;
+    jrpc89_status st;
+    int has;
+    id = j89_object_find(a, resp, "id");
+    has = jrpc89_has_node(id);
+    if (!has)
+    {
+        return JRPC89_EPROTO;
+    }
+    st = jrpc89_id_from_node(a, id, out);
+    return st;
+}
+
+/* Check the fixed parts of a response: object root and a "2.0" version. */
+static jrpc89_status jrpc89_check_head(j89_arena *a, j89_len node)
+{
+    j89_len version;
+    j89_kind k;
+    int has;
+    int ok;
+    k = j89_kind_of(a, node);
+    if (k != J89_OBJECT)
+    {
+        return JRPC89_EPROTO;
+    }
+    version = j89_object_find(a, node, "jsonrpc");
+    has = jrpc89_has_node(version);
+    if (!has)
+    {
+        return JRPC89_EPROTO;
+    }
+    ok = jrpc89_str_is(a, version, "2.0", 3);
+    if (!ok)
+    {
+        return JRPC89_EPROTO;
+    }
+    return JRPC89_OK;
+}
+
+jrpc89_status jrpc89_response_decode(j89_arena *a, j89_len node,
+                                     jrpc89_response *out)
+{
+    jrpc89_response tmp;
+    jrpc89_status st;
+    int dirty;
+    if (a == NULL)
+    {
+        return JRPC89_EINVAL;
+    }
+    if (out == NULL)
+    {
+        return JRPC89_EINVAL;
+    }
+    if (node == J89_BAD)
+    {
+        return JRPC89_EPROTO;
+    }
+    dirty = jrpc89_arena_dirty(a);
+    if (dirty)
+    {
+        return JRPC89_EINVAL;
+    }
+    st = jrpc89_check_head(a, node);
+    if (st != JRPC89_OK)
+    {
+        return st;
+    }
+    jrpc89_response_zero(&tmp);
+    st = jrpc89_decode_body(a, node, &tmp);
+    if (st != JRPC89_OK)
+    {
+        return st;
+    }
+    st = jrpc89_decode_id(a, node, &tmp.id);
+    if (st != JRPC89_OK)
+    {
+        return st;
+    }
+    *out = tmp;
+    return JRPC89_OK;
 }

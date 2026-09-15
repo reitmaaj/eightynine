@@ -73,7 +73,7 @@ static int jrpc89_parse_params_text(j89_arena *a, const char *params_text,
     int ok;
     plen = strlen(params_text);
     *params = j89_parse(params_text, plen, a);
-    ok = jrpc89_has_node(*params);
+    ok = (*params != J89_BAD);
     if (ok == 0)
     {
         return 0;
@@ -96,14 +96,12 @@ static int jrpc89_parse_params(j89_arena *a, const char *params_text,
     return 1;
 }
 
-static int jrpc89_print_result(j89_arena *a, j89_len resp)
+static int jrpc89_print_result(j89_arena *a, j89_len result)
 {
-    j89_len result;
     j89_arena out;
     const void *rmem;
     j89_len roff;
     int r;
-    result = jrpc89_result_node(a, resp);
     j89_arena_init(&out);
     r = j89_render(a, result, 1, &out);
     if (r != 0)
@@ -119,21 +117,25 @@ static int jrpc89_print_result(j89_arena *a, j89_len resp)
     return 0;
 }
 
-static int jrpc89_print_error(j89_arena *a, j89_len resp)
+static int jrpc89_print_error(const jrpc89_response *dec)
 {
     j89_int code;
     int reserved;
     const char *cls;
     const char *msg;
-    code = jrpc89_error_code(a, resp);
-    reserved = jrpc89_error_is_reserved(code);
+    j89_len msglen;
+    code = dec->error.code;
+    reserved = jrpc89_error_code_reserved(code);
     cls = "application";
     if (reserved)
     {
         cls = "reserved";
     }
-    msg = jrpc89_error_message(a, resp);
-    printf("error %.0f %s \"%s\"\n", code, cls, msg);
+    msg = dec->error.message;
+    msglen = dec->error.message_len;
+    printf("error %.0f %s \"", code, cls);
+    fwrite(msg, 1, msglen, stdout);
+    printf("\"\n");
     return 0;
 }
 
@@ -143,7 +145,8 @@ int main(int argc, char **argv)
     const char *method;
     const char *params_text;
     jrpc89_id id;
-    jrpc89_id resp_id;
+    jrpc89_response dec;
+    jrpc89_status st;
     j89_arena a;
     j89_arena out;
     j89_len params;
@@ -155,10 +158,6 @@ int main(int argc, char **argv)
     int fd;
     int r;
     int w;
-    int v;
-    int is_err;
-    int req_ok;
-    int resp_ok;
     int match;
     int params_ok;
     const char *wmem;
@@ -191,12 +190,11 @@ int main(int argc, char **argv)
     id.kind = JRPC89_ID_INT;
     id.num = 1;
     mlen = strlen(method);
-    req = jrpc89_request_new(&a, method, mlen, params, &id);
-    req_ok = jrpc89_has_node(req);
-    if (req_ok == 0)
+    st = jrpc89_request_new(&a, method, mlen, params, &id, &req);
+    if (st != JRPC89_OK)
     {
         int rc;
-        rc = jrpc89_die(&a, fd, &out, "jrpc89");
+        rc = jrpc89_die(&a, fd, &out, "jrpc89: request failed");
         return rc;
     }
     r = j89_render(&a, req, 1, &out);
@@ -223,42 +221,33 @@ int main(int argc, char **argv)
         return rc;
     }
     resp = j89_parse(buf, len, &a);
-    resp_ok = jrpc89_has_node(resp);
-    if (resp_ok == 0)
+    if (resp == J89_BAD)
     {
         int rc;
-        rc = jrpc89_die(&a, fd, &out, "jrpc89");
+        rc = jrpc89_die(&a, fd, &out, "jrpc89: invalid JSON");
         return rc;
     }
-    v = jrpc89_response_validate(&a, resp);
-    if (v != 0)
+    st = jrpc89_response_decode(&a, resp, &dec);
+    if (st != JRPC89_OK)
     {
         int rc;
-        rc = jrpc89_die(&a, fd, &out, "jrpc89");
+        rc = jrpc89_die_plain(fd, &a, &out, "jrpc89: invalid response");
         return rc;
     }
-    r = jrpc89_id_of_response(&a, resp, &resp_id);
-    if (r != 0)
-    {
-        int rc;
-        rc = jrpc89_die_plain(fd, &a, &out, "jrpc89: response has no id");
-        return rc;
-    }
-    match = jrpc89_id_matches(&id, &resp_id);
+    match = jrpc89_id_equal(&id, &dec.id);
     if (match == 0)
     {
         int rc;
         rc = jrpc89_die_plain(fd, &a, &out, "jrpc89: response id mismatch");
         return rc;
     }
-    is_err = jrpc89_is_error(&a, resp);
-    if (is_err != 0)
+    if (dec.kind == JRPC89_RESPONSE_ERROR)
     {
-        r = jrpc89_print_error(&a, resp);
+        r = jrpc89_print_error(&dec);
     }
     else
     {
-        r = jrpc89_print_result(&a, resp);
+        r = jrpc89_print_result(&a, dec.result);
     }
     close(fd);
     j89_arena_destroy(&a);

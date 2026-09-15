@@ -73,71 +73,88 @@ GIVEN an arena already marked failed by an earlier builder failure
 WHEN jrpc89_request_new builds the request object
 THEN it refuses immediately and produces no usable object.
 
-## Response parsing
+## Response decoding
 
-SCENARIO: parse a successful response
+SCENARIO: decode a successful response
 GIVEN a response object with result and a matching id
-WHEN jrpc89_response_validate runs
-THEN it accepts it, reports not-error, and yields the result node.
+WHEN jrpc89_response_decode runs
+THEN it returns JRPC89_OK, reports kind RESULT, and yields the result node
+AND the error fields are zeroed.
 
-SCENARIO: parse an error response
+SCENARIO: decode an error response
 GIVEN a response object with error, code, message, and a matching id
-WHEN jrpc89_response_validate runs
-THEN it accepts it, reports error, and yields code/message/data.
+WHEN jrpc89_response_decode runs
+THEN it returns JRPC89_OK, reports kind ERROR, and yields code/message/data
+AND the result field is J89_BAD.
+
+SCENARIO: leave the output unchanged on every decode failure
+GIVEN a sentinel-filled jrpc89_response
+WHEN jrpc89_response_decode rejects the input
+THEN the status is not JRPC89_OK and every output field is unchanged.
 
 SCENARIO: reject a response with a non-"2.0" jsonrpc version
 GIVEN a response object whose jsonrpc member is not "2.0"
-WHEN jrpc89_response_validate runs
-THEN it rejects it.
+WHEN jrpc89_response_decode runs
+THEN it returns JRPC89_EPROTO.
 
 SCENARIO: reject a response with both result and error
 GIVEN a response object carrying both result and error members
-WHEN jrpc89_response_validate runs
-THEN it rejects it.
+WHEN jrpc89_response_decode runs
+THEN it returns JRPC89_EPROTO.
 
 SCENARIO: reject a response with neither result nor error
 GIVEN a response object with neither result nor error members
-WHEN jrpc89_response_validate runs
-THEN it rejects it.
+WHEN jrpc89_response_decode runs
+THEN it returns JRPC89_EPROTO.
 
 SCENARIO: reject a response with a non-object error
 GIVEN a response whose error member is not an object
-WHEN jrpc89_response_validate runs
-THEN it rejects it.
+WHEN jrpc89_response_decode runs
+THEN it returns JRPC89_EPROTO.
 
 SCENARIO: reject an error object without a code
 GIVEN a response whose error object has no code member
-WHEN jrpc89_response_validate runs
-THEN it rejects it.
+WHEN jrpc89_response_decode runs
+THEN it returns JRPC89_EPROTO.
 
 SCENARIO: reject an error object without a message
 GIVEN a response whose error object has no message member
-WHEN jrpc89_response_validate runs
-THEN it rejects it.
+WHEN jrpc89_response_decode runs
+THEN it returns JRPC89_EPROTO.
 
 SCENARIO: reject a non-integer error code
 GIVEN a response whose error code is not an integer
-WHEN jrpc89_response_validate runs
-THEN it rejects it.
+WHEN jrpc89_response_decode runs
+THEN it returns JRPC89_EPROTO.
 
 SCENARIO: reject a non-string error message
 GIVEN a response whose error message is not a string
-WHEN jrpc89_response_validate runs
-THEN it rejects it.
+WHEN jrpc89_response_decode runs
+THEN it returns JRPC89_EPROTO.
 
 SCENARIO: reject a response without an id
 GIVEN a response object with result but no id member
-WHEN jrpc89_response_validate runs
-THEN it rejects it.
+WHEN jrpc89_response_decode runs
+THEN it returns JRPC89_EPROTO.
 
 SCENARIO: reject an illegal response id kind
 GIVEN a response whose id is a boolean, float, array, or object
-WHEN jrpc89_response_validate runs
-THEN it rejects it rather than silently treating the id as null.
+WHEN jrpc89_response_decode runs
+THEN it returns JRPC89_EPROTO rather than silently treating the id as null.
+
+SCENARIO: reject a J89_BAD node
+GIVEN node == J89_BAD
+WHEN jrpc89_response_decode runs
+THEN it returns JRPC89_EPROTO without touching libj89 accessors.
+
+SCENARIO: reject a dirty arena
+GIVEN an arena marked failed by an earlier builder failure
+WHEN jrpc89_response_decode runs
+THEN it returns JRPC89_EINVAL and leaves the output unchanged.
 
 SCENARIO: reject a mismatched response id
 GIVEN a response whose id differs from the request id
-WHEN jrpc89_id_matches compares them
+WHEN jrpc89_id_equal compares them
 THEN it reports no match.
 
 SCENARIO: CLI rejects a mismatched response id
@@ -149,18 +166,18 @@ THEN the CLI reports a mismatch and exits nonzero instead of printing a result.
 
 SCENARIO: classify a reserved server code
 GIVEN an error code in -32768..-32000
-WHEN jrpc89_error_is_reserved classifies it
+WHEN jrpc89_error_code_reserved classifies it
 THEN it reports reserved.
 
 SCENARIO: classify an application code
 GIVEN an error code outside -32768..-32000
-WHEN jrpc89_error_is_reserved classifies it
+WHEN jrpc89_error_code_reserved classifies it
 THEN it reports application-defined.
 
 SCENARIO: preserve an error code outside the C int range
 GIVEN an error code within libj89's exact integer range but outside INT_MIN..INT_MAX
-WHEN jrpc89_error_code extracts it
-THEN the exact j89_int value is returned rather than a narrowed int.
+WHEN jrpc89_response_decode extracts it
+THEN the exact j89_int value is available in the decoded error view.
 
 ## Framing
 
