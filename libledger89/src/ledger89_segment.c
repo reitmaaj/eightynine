@@ -238,6 +238,7 @@ int led89_emit_batch(ledger89 *l, led89_fd fd, led89_u64 *offset,
     unsigned char crcbuf[LED89_RECORD_CRC_SIZE];
     led89_u64 total;
     led89_u64 at;
+    led89_u64 wide_count;
     led89_u32 crc;
     size_t i;
     int rc;
@@ -247,7 +248,10 @@ int led89_emit_batch(ledger89 *l, led89_fd fd, led89_u64 *offset,
     {
         return rc;
     }
-    if ((led89_u64)count > (led89_u64)0xFFFFFFFFu)
+    /* The widened local keeps the LP64 range guard free of a spurious
+       -Wtype-limits warning on ILP32, where size_t is 32 bits. */
+    wide_count = (led89_u64)count;
+    if (wide_count > (led89_u64)0xFFFFFFFFu)
     {
         return LEDGER89_ERANGE;
     }

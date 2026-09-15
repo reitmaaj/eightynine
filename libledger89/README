@@ -58,6 +58,12 @@ interprets record payloads.
 - `just stress` — many parts, huge payload, large batches.
 - `just test` — all fast suites.
 - `just long` — multi-hundred-thousand-operation model run plus a many-part sweep.
+- `just build32` — best-effort ILP32 build of `build/32/libledger89.a`; skips
+  cleanly when 32-bit multilib is absent.
+- `just test32` — all fast suites under `-m32` against `build/32/libledger89.a`.
+- `just adapters-raft32` — the libraft89 + libledger89 fixture under `-m32`.
+- `just sanitize32` — the fast suites under 32-bit ASan and UBSan; skips
+  cleanly when the i686 sanitizer runtimes are absent.
 - `just sanitize` — fast suites under ASan + UBSan.
 - `just valgrind` — fast suites under valgrind memcheck.
 - `just green` — green conformance matrix (see the status note below).

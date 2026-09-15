@@ -43,6 +43,9 @@ Traceability: each criterion maps to scenarios in
 18. The Raft adapter suite reads term prefixes with `read_at(0, 8)` and
     payloads with `read_at(8, size - 8)`, maps a `raft89_proposev` batch to
     one `appendv_at` + `sync`, and preserves terms above 2^32. (AB01)
+19. The library builds warning-free under the strict flag set on ILP32 and
+    passes the full fast suite, the bespoke `--wrap` fault suites, and the
+    Raft adapter under `-m32`.
 
 ## Must reject / fail safely
 
@@ -67,3 +70,25 @@ Traceability: each criterion maps to scenarios in
 11. `read_at` with `offset` past the record end, a range crossing the record
     end, or NULL data with non-zero size returns `ERANGE`/`EINVAL` and copies
     nothing. (R04)
+
+## ILP32 verification (2026-09-15)
+
+Host: Fedora 43, GCC 15.3.1, `cc -m32` multilib present.
+
+- `just build32` — `build32: ok`. This exposed one real defect: the count
+  range guards in `led89_validate_slices` and `led89_emit_batch` cast a
+  32-bit `size_t` directly to `led89_u64`, which GCC rejects under
+  `-Werror=type-limits` on ILP32. Both now widen `count` into a local
+  `led89_u64` first, keeping the LP64 guard intact and warning-free.
+- `just test32` — smoke, unit, api, crash, fault, `fault-nomem32`,
+  `fault-eintr32`, corrupt, model, adapters, golden, and stress all pass
+  under `-m32`.
+- `just adapters-raft32` — the libraft89 + libledger89 fixture passes on
+  ILP32 (envelope boundary, 4 KiB payload, `proposev` batch mapping, 64-bit
+  term, index conversion).
+- `just sanitize32` — wired for `-m32 -fsanitize=address,undefined`; on this
+  host it reports `sanitize32: SKIPPED: no 32-bit ASan/UBSan runtime (install
+  libasan.i686 libubsan.i686)` because the i686 sanitizer runtimes are absent.
+
+`just check` (green, lint, and the LP64 fast suite) remains the release gate;
+the 32-bit recipes are additive and skip cleanly when the toolchain is absent.

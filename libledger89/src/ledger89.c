@@ -231,6 +231,7 @@ int ledger89_get_state(ledger89 *ledger, ledger89_state *state_out)
 
 static int led89_validate_slices(const ledger89_slice *records, size_t count)
 {
+    led89_u64 wide_count;
     size_t i;
 
     if (count == 0u)
@@ -241,7 +242,10 @@ static int led89_validate_slices(const ledger89_slice *records, size_t count)
     {
         return LEDGER89_EINVAL;
     }
-    if ((led89_u64)count > (led89_u64)0xFFFFFFFFu)
+    /* The widened local keeps the LP64 range guard free of a spurious
+       -Wtype-limits warning on ILP32, where size_t is 32 bits. */
+    wide_count = (led89_u64)count;
+    if (wide_count > (led89_u64)0xFFFFFFFFu)
     {
         return LEDGER89_ERANGE;
     }
