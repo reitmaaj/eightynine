@@ -18,7 +18,9 @@
 - Error codes are exact `j89_int` values, including values outside the C `int`
   range.
 - The protocol core builds warning-free on ILP32 and passes the whole suite
-  (smoke, unit, fault, allocation-failure, and e2e) under `-m32`.
+  (smoke, unit, fault, allocation-failure, and e2e) under `-m32`, with the
+  unit, fault, and allocation-failure suites also clean under 32-bit
+  ASan + UBSan (`just sanitize32`, GCC i686 runtime).
 
 ## Unacceptable behaviors (must reject / refuse)
 
