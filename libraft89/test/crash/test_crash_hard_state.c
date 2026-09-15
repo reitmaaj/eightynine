@@ -31,7 +31,7 @@ static void vote_case(int mode)
     CHECK_EQ(raft89_recv(node, &msg), RAFT89_OK);
     CHECK_EQ(oracle_peek(&o), 1);
     CHECK_EQ(o.action->type, RAFT89_ACT_HARD_STATE);
-    CHECK_EQ(o.action->u.hard_state.state.current_term, 7u);
+    CHECK_U64(o.action->u.hard_state.state.current_term, test_u64(7u));
     CHECK_EQ(o.action->u.hard_state.state.voted_for, 3u);
 
     if (mode == 0)
@@ -64,16 +64,16 @@ static void vote_case(int mode)
     CHECK_EQ(raft89_status_get(o.raft, &status), RAFT89_OK);
     CHECK_EQ(status.role, RAFT89_FOLLOWER);
     CHECK_EQ(status.leader_id, RAFT89_ID_NONE);
-    CHECK_EQ(status.commit_index, 0u);
-    CHECK_EQ(status.applied_index, 0u);
+    CHECK_U64(status.commit_index, test_u64(0u));
+    CHECK_U64(status.applied_index, test_u64(0u));
     if (mode <= 1)
     {
-        CHECK_EQ(status.current_term, 6u);
+        CHECK_U64(status.current_term, test_u64(6u));
         CHECK_EQ(status.voted_for, RAFT89_ID_NONE);
     }
     else
     {
-        CHECK_EQ(status.current_term, 7u);
+        CHECK_U64(status.current_term, test_u64(7u));
         CHECK_EQ(status.voted_for, 3u);
     }
     raft89_destroy(o.raft);

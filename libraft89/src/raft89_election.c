@@ -22,8 +22,8 @@ raft89_size raft89__member_index(const raft89 *node, raft89_id id)
     return node->member_count;
 }
 
-int raft89__log_is_fresh(raft89_term cand_term, raft89_index cand_index,
-                         raft89_term our_term, raft89_index our_index)
+int raft89__log_is_fresh(raft89__u64 cand_term, raft89__u64 cand_index,
+                         raft89__u64 our_term, raft89__u64 our_index)
 {
     if (cand_term != our_term)
     {
@@ -42,23 +42,24 @@ static void reset_votes(raft89 *node)
     node->votes[raft89__member_index(node, node->self)] = 1u;
 }
 
-static int reply_vote(raft89 *node, raft89_id peer, raft89_term term,
+static int reply_vote(raft89 *node, raft89_id peer, raft89__u64 term,
                       int granted)
 {
     raft89_message msg;
     int rc;
-    raft89__build_vote_response(node->self, peer, term, granted, &msg);
+    raft89__build_vote_response(node->self, peer, raft89__to_public(term),
+                                granted, &msg);
     rc = raft89__emit_send(node, &msg);
     return rc;
 }
 
 static int persist_vote_then_reply(raft89 *node, raft89_id peer,
-                                   raft89_term term, raft89_id vote,
+                                   raft89__u64 term, raft89_id vote,
                                    int granted)
 {
     int rc;
-    raft89__build_vote_response(node->self, peer, term, granted,
-                                &node->pending_msg);
+    raft89__build_vote_response(node->self, peer, raft89__to_public(term),
+                                granted, &node->pending_msg);
     rc = raft89__emit_hard_state(node, term, vote);
     if (rc != RAFT89_OK)
     {
@@ -68,7 +69,7 @@ static int persist_vote_then_reply(raft89 *node, raft89_id peer,
     return RAFT89_OK;
 }
 
-int raft89__step_down_new_term(raft89 *node, raft89_term term)
+int raft89__step_down_new_term(raft89 *node, raft89__u64 term)
 {
     int rc;
     node->role = RAFT89_FOLLOWER;
@@ -83,13 +84,12 @@ int raft89__step_down_new_term(raft89 *node, raft89_term term)
 int raft89__start_election(raft89 *node)
 {
     int rc;
-    raft89_term term;
-    if (node->current_term == ULONG_MAX)
+    raft89__u64 term;
+    if (node->current_term == RAFT89__U64_MAX)
     {
-        node->faulted = 1;
         return RAFT89_ERR_LIMIT;
     }
-    term = node->current_term + 1u;
+    term = raft89__u64_inc(node->current_term);
     node->role = RAFT89_CANDIDATE;
     node->leader_id = RAFT89_ID_NONE;
     node->election_elapsed = 0u;
@@ -139,15 +139,15 @@ int raft89__election_send_next(raft89 *node)
 
 static void init_peer_state(raft89 *node, raft89_size index)
 {
-    node->next_index[index] = node->last_log_index + 1u;
-    node->match_index[index] = RAFT89_INDEX_NONE;
+    node->next_index[index] = raft89__u64_inc(node->last_log_index);
+    node->match_index[index] = (raft89__u64)0;
 }
 
 int raft89__become_leader(raft89 *node)
 {
     raft89_size i;
     int rc;
-    if (node->last_log_index == ULONG_MAX)
+    if (node->last_log_index == RAFT89__U64_MAX)
     {
         node->faulted = 1;
         return RAFT89_ERR_LIMIT;
@@ -177,10 +177,10 @@ static raft89_id fresh_vote(const raft89_message *msg, int fresh)
 
 static int vote_new_term(raft89 *node, const raft89_message *msg, int fresh)
 {
-    raft89_term term;
+    raft89__u64 term;
     raft89_id vote;
     int rc;
-    term = msg->u.request_vote.term;
+    term = raft89__from_public(msg->u.request_vote.term);
     vote = fresh_vote(msg, fresh);
     node->role = RAFT89_FOLLOWER;
     node->leader_id = RAFT89_ID_NONE;
@@ -192,18 +192,19 @@ static int vote_new_term(raft89 *node, const raft89_message *msg, int fresh)
 
 int raft89__recv_request_vote(raft89 *node, const raft89_message *msg)
 {
-    raft89_term term;
+    raft89__u64 term;
     int fresh;
     int rc;
-    term = msg->u.request_vote.term;
+    term = raft89__from_public(msg->u.request_vote.term);
     if (term < node->current_term)
     {
         rc = reply_vote(node, msg->from, node->current_term, 0);
         return rc;
     }
-    fresh = raft89__log_is_fresh(msg->u.request_vote.last_log_term,
-                                 msg->u.request_vote.last_log_index,
-                                 node->last_log_term, node->last_log_index);
+    fresh = raft89__log_is_fresh(
+        raft89__from_public(msg->u.request_vote.last_log_term),
+        raft89__from_public(msg->u.request_vote.last_log_index),
+        node->last_log_term, node->last_log_index);
     if (term > node->current_term)
     {
         rc = vote_new_term(node, msg, fresh);
@@ -235,10 +236,10 @@ int raft89__recv_request_vote(raft89 *node, const raft89_message *msg)
 
 int raft89__recv_vote_response(raft89 *node, const raft89_message *msg)
 {
-    raft89_term term;
+    raft89__u64 term;
     raft89_size index;
     int rc;
-    term = msg->u.request_vote_response.term;
+    term = raft89__from_public(msg->u.request_vote_response.term);
     if (term < node->current_term)
     {
         return RAFT89_OK;

@@ -65,10 +65,10 @@ int main(void)
     CHECK_EQ(raft89_tick(node, 20u), RAFT89_OK);
     CHECK_EQ(raft89_status_get(node, &status), RAFT89_OK);
     CHECK_EQ(status.role, RAFT89_CANDIDATE);
-    CHECK_EQ(status.current_term, RAFT89_TERM_NONE);
+    CHECK_U64(status.current_term, RAFT89_TERM_NONE);
     CHECK_EQ(driver_expect_hard_state(node, 1u, 1u), 1);
     CHECK_EQ(raft89_status_get(node, &status), RAFT89_OK);
-    CHECK_EQ(status.current_term, 1u);
+    CHECK_U64(status.current_term, test_u64(1u));
     CHECK_EQ(status.voted_for, 1u);
     n = driver_collect_sends(node, to, 8u);
     CHECK_EQ(n, 2u);
@@ -144,7 +144,7 @@ int main(void)
     CHECK_EQ(driver_expect_hard_state(node, 2u, RAFT89_ID_NONE), 1);
     CHECK_EQ(raft89_status_get(node, &status), RAFT89_OK);
     CHECK_EQ(status.role, RAFT89_FOLLOWER);
-    CHECK_EQ(status.current_term, 2u);
+    CHECK_U64(status.current_term, test_u64(2u));
     raft89_destroy(node);
 
     /* E15: a candidate that times out starts a new election. */

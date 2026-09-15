@@ -3,9 +3,19 @@
 
 #include "fake_store.h"
 
-static fake_store_entry *find_entry(fake_store *store, raft89_index index)
+static raft89_u64 store_u64(unsigned long v)
 {
-    if (index == 0u)
+    return raft89_u64_from_u32((raft89_u32)v);
+}
+
+static unsigned long store_lo(raft89_u64 v)
+{
+    return (unsigned long)v.lo;
+}
+
+static fake_store_entry *find_entry(fake_store *store, unsigned long index)
+{
+    if (index == 0ul)
     {
         return NULL;
     }
@@ -13,7 +23,7 @@ static fake_store_entry *find_entry(fake_store *store, raft89_index index)
     {
         return NULL;
     }
-    return &store->entries[index - 1u];
+    return &store->entries[index - 1ul];
 }
 
 static int store_hard_state(void *ctx, raft89_hard_state *state)
@@ -45,8 +55,8 @@ static int store_log_last(void *ctx, raft89_index *index, raft89_term *term)
     }
     if (store->entry_count == 0u)
     {
-        *index = RAFT89_INDEX_NONE;
-        *term = RAFT89_TERM_NONE;
+        *index = raft89_u64_zero();
+        *term = raft89_u64_zero();
         return RAFT89_OK;
     }
     last = &store->entries[store->entry_count - 1u];
@@ -64,7 +74,7 @@ static int store_log_term(void *ctx, raft89_index index, raft89_term *term)
     {
         return RAFT89_ERR_STORE;
     }
-    entry = find_entry(store, index);
+    entry = find_entry(store, store_lo(index));
     if (entry == NULL)
     {
         return RAFT89_ERR_STORE;
@@ -82,7 +92,7 @@ static int store_log_size(void *ctx, raft89_index index, raft89_size *size)
     {
         return RAFT89_ERR_STORE;
     }
-    entry = find_entry(store, index);
+    entry = find_entry(store, store_lo(index));
     if (entry == NULL)
     {
         return RAFT89_ERR_STORE;
@@ -101,7 +111,7 @@ static int store_log_read(void *ctx, raft89_index index, void *data,
     {
         return RAFT89_ERR_STORE;
     }
-    entry = find_entry(store, index);
+    entry = find_entry(store, store_lo(index));
     if (entry == NULL)
     {
         return RAFT89_ERR_STORE;
@@ -120,21 +130,24 @@ static int store_log_read(void *ctx, raft89_index index, void *data,
 void fake_store_init(fake_store *store)
 {
     memset(store, 0, sizeof(*store));
-    store->hard.current_term = RAFT89_TERM_NONE;
+    store->hard.current_term = raft89_u64_zero();
     store->hard.voted_for = RAFT89_ID_NONE;
+    store->last_index_override = raft89_u64_zero();
+    store->last_term_override = raft89_u64_zero();
 }
 
-void fake_store_set_hard(fake_store *store, raft89_term term,
+void fake_store_set_hard(fake_store *store, unsigned long term,
                          raft89_id voted_for)
 {
-    store->hard.current_term = term;
+    store->hard.current_term = store_u64(term);
     store->hard.voted_for = voted_for;
 }
-int fake_store_put(fake_store *store, raft89_term term, raft89_index index,
+
+int fake_store_put(fake_store *store, unsigned long term, unsigned long index,
                    const void *data, unsigned long size)
 {
     fake_store_entry *entry;
-    if (index == 0u)
+    if (index == 0ul)
     {
         return RAFT89_ERR_ARG;
     }
@@ -146,9 +159,9 @@ int fake_store_put(fake_store *store, raft89_term term, raft89_index index,
     {
         return RAFT89_ERR_NOMEM;
     }
-    entry = &store->entries[index - 1u];
-    entry->term = term;
-    entry->index = index;
+    entry = &store->entries[index - 1ul];
+    entry->term = store_u64(term);
+    entry->index = store_u64(index);
     entry->size = size;
     if (size != 0u)
     {
@@ -161,9 +174,9 @@ int fake_store_put(fake_store *store, raft89_term term, raft89_index index,
     return RAFT89_OK;
 }
 
-void fake_store_truncate(fake_store *store, raft89_index first_index)
+void fake_store_truncate(fake_store *store, unsigned long first_index)
 {
-    if (first_index == 0u)
+    if (first_index == 0ul)
     {
         return;
     }
@@ -171,11 +184,11 @@ void fake_store_truncate(fake_store *store, raft89_index first_index)
     {
         return;
     }
-    store->entry_count = first_index - 1u;
+    store->entry_count = first_index - 1ul;
 }
 
-int fake_store_append(fake_store *store, raft89_term term, raft89_index index,
-                      const void *data, unsigned long size)
+int fake_store_append(fake_store *store, unsigned long term,
+                      unsigned long index, const void *data, unsigned long size)
 {
     return fake_store_put(store, term, index, data, size);
 }

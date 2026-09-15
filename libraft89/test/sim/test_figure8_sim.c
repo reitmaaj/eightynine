@@ -36,7 +36,7 @@ static void heal_all(void)
     }
 }
 
-static void expect_applied(raft89_id id, raft89_index index, const char *text)
+static void expect_applied(raft89_id id, unsigned long index, const char *text)
 {
     const unsigned char *data;
     data = cluster_applied(&c, id, index);
@@ -100,7 +100,7 @@ int main(void)
     cluster_drain(&c, 1u);
     cluster_deliver_all(&c);
     cluster_deliver_all(&c);
-    CHECK_EQ(status_of(1u).commit_index, 1u);
+    CHECK_U64(status_of(1u).commit_index, test_u64(1u));
     expect_no_x();
 
     /* S1 crashes; S5 leads and accepts Y but crashes before replicating. */
@@ -129,7 +129,7 @@ int main(void)
     cluster_deliver_all(&c);
     cluster_deliver_all(&c);
     CHECK_EQ(status_of(1u).role, RAFT89_LEADER);
-    CHECK(status_of(1u).commit_index < 2u);
+    CHECK(test_ul(status_of(1u).commit_index) < 2u);
     expect_no_x();
 
     /* S1 crashes; S5 returns in term 4, overwrites X with Y, and commits

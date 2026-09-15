@@ -133,6 +133,17 @@ static void w_ulong(model_writer *w, unsigned long value)
     }
 }
 
+static unsigned long model_ul(raft89_u64 v)
+{
+    return (unsigned long)v.lo;
+}
+
+static void w_u64(model_writer *w, raft89_u64 value)
+{
+    w_ulong(w, (unsigned long)value.hi);
+    w_ulong(w, (unsigned long)value.lo);
+}
+
 static void w_bytes(model_writer *w, const void *data, unsigned long size)
 {
     const unsigned char *bytes;
@@ -212,13 +223,13 @@ static int model_key(const cluster *c, unsigned char *buf, unsigned long cap,
         w_u8(&w, (unsigned long)n->up);
         w_ulong(&w, n->crashes);
         w_ulong(&w, (unsigned long)n->oracle.phase);
-        w_ulong(&w, n->f.store.hard.current_term);
+        w_u64(&w, n->f.store.hard.current_term);
         w_ulong(&w, n->f.store.hard.voted_for);
         w_ulong(&w, n->f.store.entry_count);
         for (k = 0ul; k < n->f.store.entry_count; ++k)
         {
-            w_ulong(&w, n->f.store.entries[k].term);
-            w_ulong(&w, n->f.store.entries[k].index);
+            w_u64(&w, n->f.store.entries[k].term);
+            w_u64(&w, n->f.store.entries[k].index);
             w_ulong(&w, n->f.store.entries[k].size);
             w_bytes(&w, n->f.store.entries[k].data, n->f.store.entries[k].size);
         }
@@ -290,7 +301,7 @@ static int prune(const cluster *c)
     for (i = 0ul; i < (unsigned long)c->count; ++i)
     {
         n = &c->nodes[i];
-        if (n->f.store.hard.current_term > MODEL_MAX_TERM)
+        if (model_ul(n->f.store.hard.current_term) > MODEL_MAX_TERM)
         {
             return 1;
         }
@@ -310,24 +321,24 @@ static int prune(const cluster *c)
         {
             return 1;
         }
-        if (s.current_term > MODEL_MAX_TERM)
+        if (model_ul(s.current_term) > MODEL_MAX_TERM)
         {
             return 1;
         }
-        if (s.last_log_index > MODEL_MAX_INDEX)
+        if (model_ul(s.last_log_index) > MODEL_MAX_INDEX)
         {
             return 1;
         }
-        if (s.commit_index > MODEL_MAX_INDEX)
+        if (model_ul(s.commit_index) > MODEL_MAX_INDEX)
         {
             return 1;
         }
-        if (s.applied_index > MODEL_MAX_INDEX)
+        if (model_ul(s.applied_index) > MODEL_MAX_INDEX)
         {
             return 1;
         }
         raft89_inspect_view_get(n->raft, &v);
-        if (v.last_log_index > MODEL_MAX_INDEX)
+        if (model_ul(v.last_log_index) > MODEL_MAX_INDEX)
         {
             return 1;
         }
@@ -337,7 +348,8 @@ static int prune(const cluster *c)
             for (k = 0ul; k < (unsigned long)action->u.log_append.entry_count;
                  ++k)
             {
-                if (action->u.log_append.entries[k].index > MODEL_MAX_INDEX)
+                if (model_ul(action->u.log_append.entries[k].index) >
+                    MODEL_MAX_INDEX)
                 {
                     return 1;
                 }
@@ -345,7 +357,7 @@ static int prune(const cluster *c)
         }
         if (action != NULL && action->type == RAFT89_ACT_APPLY)
         {
-            if (action->u.apply.entry.index > MODEL_MAX_INDEX)
+            if (model_ul(action->u.apply.entry.index) > MODEL_MAX_INDEX)
             {
                 return 1;
             }
@@ -375,7 +387,7 @@ static void coverage_update(const cluster *c)
         }
         if (raft89_status_get(c->nodes[i].raft, &s) == RAFT89_OK)
         {
-            if (s.commit_index > 0ul)
+            if (model_ul(s.commit_index) > 0ul)
             {
                 ++cover_commits;
             }

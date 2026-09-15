@@ -16,7 +16,7 @@ static void seed_log(fixture *f)
 }
 
 static void truncate_case(int mode, unsigned long expected_count,
-                          raft89_index expected_last)
+                          unsigned long expected_last)
 {
     fixture f;
     fake_app app;
@@ -38,15 +38,15 @@ static void truncate_case(int mode, unsigned long expected_count,
         return;
     }
     oracle_init(&o, node);
-    entries[0].index = 3u;
-    entries[0].term = 3u;
+    entries[0].index = test_u64(3u);
+    entries[0].term = test_u64(3u);
     entries[0].data = "d";
     entries[0].size = 1u;
     driver_build_ae(2u, 1u, 1u, 2u, 1u, 0u, entries, 1u, &msg);
     CHECK_EQ(raft89_recv(node, &msg), RAFT89_OK);
     CHECK_EQ(oracle_peek(&o), 1);
     CHECK_EQ(o.action->type, RAFT89_ACT_LOG_TRUNCATE);
-    CHECK_EQ(o.action->u.log_truncate.first_index, 3u);
+    CHECK_U64(o.action->u.log_truncate.first_index, test_u64(3u));
 
     if (mode == 0)
     {
@@ -71,7 +71,7 @@ static void truncate_case(int mode, unsigned long expected_count,
     CHECK_EQ(f.store.entry_count, expected_count);
     CHECK_EQ(oracle_restart(&o, &f.config), RAFT89_OK);
     CHECK_EQ(raft89_status_get(o.raft, &status), RAFT89_OK);
-    CHECK_EQ(status.last_log_index, expected_last);
+    CHECK_U64(status.last_log_index, test_u64(expected_last));
     raft89_destroy(o.raft);
 }
 

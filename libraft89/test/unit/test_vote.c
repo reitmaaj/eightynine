@@ -14,7 +14,7 @@ static raft89 *make_node(fixture *f, raft89_size size, raft89_id self)
     return node;
 }
 
-static void expect_refusal(raft89 *node, raft89_term term)
+static void expect_refusal(raft89 *node, unsigned long term)
 {
     const raft89_action *action;
     action = NULL;
@@ -25,12 +25,13 @@ static void expect_refusal(raft89 *node, raft89_term term)
     }
     CHECK_EQ(action->type, RAFT89_ACT_SEND);
     CHECK_EQ(action->u.send.message.type, RAFT89_MSG_REQUEST_VOTE_RESPONSE);
-    CHECK_EQ(action->u.send.message.u.request_vote_response.term, term);
+    CHECK_U64(action->u.send.message.u.request_vote_response.term,
+              test_u64(term));
     CHECK_EQ(action->u.send.message.u.request_vote_response.vote_granted, 0);
     CHECK_EQ(raft89_action_done(node, action->id, RAFT89_ACTION_OK), RAFT89_OK);
 }
 
-static void expect_grant(raft89 *node, raft89_term term)
+static void expect_grant(raft89 *node, unsigned long term)
 {
     const raft89_action *action;
     action = NULL;
@@ -41,7 +42,8 @@ static void expect_grant(raft89 *node, raft89_term term)
     }
     CHECK_EQ(action->type, RAFT89_ACT_SEND);
     CHECK_EQ(action->u.send.message.type, RAFT89_MSG_REQUEST_VOTE_RESPONSE);
-    CHECK_EQ(action->u.send.message.u.request_vote_response.term, term);
+    CHECK_U64(action->u.send.message.u.request_vote_response.term,
+              test_u64(term));
     CHECK_EQ(action->u.send.message.u.request_vote_response.vote_granted, 1);
     CHECK_EQ(raft89_action_done(node, action->id, RAFT89_ACTION_OK), RAFT89_OK);
 }

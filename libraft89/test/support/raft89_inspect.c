@@ -45,6 +45,28 @@ static void w_ulong(writer *w, unsigned long value)
     }
 }
 
+/* A term or index is always written as two big-endian 32-bit words, so
+ * the encoding is identical on ILP32 and LP64 hosts. */
+static void w_u32(writer *w, raft89_u32 value)
+{
+    w_u8(w, (unsigned long)((value >> 24) & 0xFFu));
+    w_u8(w, (unsigned long)((value >> 16) & 0xFFu));
+    w_u8(w, (unsigned long)((value >> 8) & 0xFFu));
+    w_u8(w, (unsigned long)(value & 0xFFu));
+}
+
+static void w_public_u64(writer *w, raft89_u64 value)
+{
+    w_u32(w, value.hi);
+    w_u32(w, value.lo);
+}
+
+static void w_native_u64(writer *w, raft89__u64 value)
+{
+    w_u32(w, (raft89_u32)((value >> 32) & (raft89__u64)0xFFFFFFFFu));
+    w_u32(w, (raft89_u32)(value & (raft89__u64)0xFFFFFFFFu));
+}
+
 static void w_bytes(writer *w, const void *data, unsigned long size)
 {
     const unsigned char *bytes;
@@ -79,8 +101,8 @@ static void snap_entries(writer *w, const raft89_entry *entries,
     w_ulong(w, (unsigned long)count);
     for (i = 0u; i < count; ++i)
     {
-        w_ulong(w, entries[i].term);
-        w_ulong(w, entries[i].index);
+        w_public_u64(w, entries[i].term);
+        w_public_u64(w, entries[i].index);
         w_ulong(w, entries[i].size);
         w_bytes(w, entries[i].data, entries[i].size);
     }
@@ -93,29 +115,31 @@ static void snap_message(writer *w, const raft89_message *msg)
     w_ulong(w, msg->to);
     if (msg->type == RAFT89_MSG_REQUEST_VOTE)
     {
-        w_ulong(w, msg->u.request_vote.term);
-        w_ulong(w, msg->u.request_vote.last_log_index);
-        w_ulong(w, msg->u.request_vote.last_log_term);
+        w_public_u64(w, msg->u.request_vote.term);
+        w_public_u64(w, msg->u.request_vote.last_log_index);
+        w_public_u64(w, msg->u.request_vote.last_log_term);
     }
     if (msg->type == RAFT89_MSG_REQUEST_VOTE_RESPONSE)
     {
-        w_ulong(w, msg->u.request_vote_response.term);
+        w_public_u64(w, msg->u.request_vote_response.term);
         w_ulong(w, (unsigned long)msg->u.request_vote_response.vote_granted);
     }
     if (msg->type == RAFT89_MSG_APPEND_ENTRIES)
     {
-        w_ulong(w, msg->u.append_entries.term);
-        w_ulong(w, msg->u.append_entries.prev_log_index);
-        w_ulong(w, msg->u.append_entries.prev_log_term);
-        w_ulong(w, msg->u.append_entries.leader_commit);
+        w_public_u64(w, msg->u.append_entries.term);
+        w_public_u64(w, msg->u.append_entries.prev_log_index);
+        w_public_u64(w, msg->u.append_entries.prev_log_term);
+        w_public_u64(w, msg->u.append_entries.leader_commit);
         snap_entries(w, msg->u.append_entries.entries,
                      msg->u.append_entries.entry_count);
     }
     if (msg->type == RAFT89_MSG_APPEND_ENTRIES_RESPONSE)
     {
-        w_ulong(w, msg->u.append_entries_response.term);
+        w_public_u64(w, msg->u.append_entries_response.term);
         w_ulong(w, (unsigned long)msg->u.append_entries_response.success);
-        w_ulong(w, msg->u.append_entries_response.match_index);
+        w_public_u64(w, msg->u.append_entries_response.match_index);
+        w_public_u64(w, msg->u.append_entries_response.conflict_term);
+        w_public_u64(w, msg->u.append_entries_response.conflict_index);
     }
 }
 
@@ -128,7 +152,7 @@ static void snap_action(writer *w, const raft89_action *action)
     }
     if (action->type == RAFT89_ACT_HARD_STATE)
     {
-        w_ulong(w, action->u.hard_state.state.current_term);
+        w_public_u64(w, action->u.hard_state.state.current_term);
         w_ulong(w, action->u.hard_state.state.voted_for);
     }
     if (action->type == RAFT89_ACT_LOG_APPEND)
@@ -138,12 +162,12 @@ static void snap_action(writer *w, const raft89_action *action)
     }
     if (action->type == RAFT89_ACT_LOG_TRUNCATE)
     {
-        w_ulong(w, action->u.log_truncate.first_index);
+        w_public_u64(w, action->u.log_truncate.first_index);
     }
     if (action->type == RAFT89_ACT_APPLY)
     {
-        w_ulong(w, action->u.apply.entry.term);
-        w_ulong(w, action->u.apply.entry.index);
+        w_public_u64(w, action->u.apply.entry.term);
+        w_public_u64(w, action->u.apply.entry.index);
         w_ulong(w, action->u.apply.entry.size);
         w_bytes(w, action->u.apply.entry.data, action->u.apply.entry.size);
     }
@@ -154,13 +178,13 @@ static void snap_node(writer *w, const raft89 *node)
     raft89_size i;
     w_ulong(w, node->self);
     w_ulong(w, (unsigned long)node->role);
-    w_ulong(w, node->current_term);
+    w_native_u64(w, node->current_term);
     w_ulong(w, node->voted_for);
     w_ulong(w, node->leader_id);
-    w_ulong(w, node->last_log_index);
-    w_ulong(w, node->last_log_term);
-    w_ulong(w, node->commit_index);
-    w_ulong(w, node->applied_index);
+    w_native_u64(w, node->last_log_index);
+    w_native_u64(w, node->last_log_term);
+    w_native_u64(w, node->commit_index);
+    w_native_u64(w, node->applied_index);
     w_ulong(w, (unsigned long)node->member_count);
     for (i = 0u; i < node->member_count; ++i)
     {
@@ -178,11 +202,11 @@ static void snap_node(writer *w, const raft89 *node)
     }
     for (i = 0u; i < node->member_count; ++i)
     {
-        w_ulong(w, node->next_index[i]);
+        w_native_u64(w, node->next_index[i]);
     }
     for (i = 0u; i < node->member_count; ++i)
     {
-        w_ulong(w, node->match_index[i]);
+        w_native_u64(w, node->match_index[i]);
     }
     w_ulong(w, node->heartbeat_interval);
     w_ulong(w, node->election_timeout_min);
@@ -202,12 +226,12 @@ static void snap_node(writer *w, const raft89 *node)
     w_ulong(w, node->peer_cursor);
     snap_message(w, &node->pending_msg);
     snap_entries(w, node->pending_entries, node->pending_count);
-    w_ulong(w, node->ae_prev_index);
-    w_ulong(w, node->ae_prev_term);
-    w_ulong(w, node->ae_leader_commit);
+    w_native_u64(w, node->ae_prev_index);
+    w_native_u64(w, node->ae_prev_term);
+    w_native_u64(w, node->ae_leader_commit);
     w_ulong(w, node->ae_leader_id);
-    w_ulong(w, node->ae_match_index);
-    w_ulong(w, node->ae_truncate_first);
+    w_native_u64(w, node->ae_match_index);
+    w_native_u64(w, node->ae_truncate_first);
     w_ulong(w, node->ae_append_offset);
     w_ulong(w, (unsigned long)node->ae_reply_success);
     w_ulong(w, node->apply_size);
@@ -219,13 +243,13 @@ static void snap_node(writer *w, const raft89 *node)
 void raft89_inspect_view_get(const raft89 *node, raft89_inspect_view *view)
 {
     view->role = node->role;
-    view->current_term = node->current_term;
+    view->current_term = raft89__to_public(node->current_term);
     view->voted_for = node->voted_for;
     view->leader_id = node->leader_id;
-    view->last_log_index = node->last_log_index;
-    view->last_log_term = node->last_log_term;
-    view->commit_index = node->commit_index;
-    view->applied_index = node->applied_index;
+    view->last_log_index = raft89__to_public(node->last_log_index);
+    view->last_log_term = raft89__to_public(node->last_log_term);
+    view->commit_index = raft89__to_public(node->commit_index);
+    view->applied_index = raft89__to_public(node->applied_index);
     view->election_timeout = node->election_timeout;
     view->election_elapsed = node->election_elapsed;
     view->heartbeat_elapsed = node->heartbeat_elapsed;
@@ -247,8 +271,8 @@ int raft89_inspect_peer(const raft89 *node, raft89_size index, raft89_id *id,
     }
     member = raft89__member_index(node, node->peers[index]);
     *id = node->peers[index];
-    *next_index = node->next_index[member];
-    *match_index = node->match_index[member];
+    *next_index = raft89__to_public(node->next_index[member]);
+    *match_index = raft89__to_public(node->match_index[member]);
     return 0;
 }
 
@@ -292,7 +316,7 @@ static int copy_ids(raft89_id **dst, const raft89_id *src, raft89_size count)
     return 0;
 }
 
-static int copy_indexes(raft89_index **dst, const raft89_index *src,
+static int copy_indexes(raft89__u64 **dst, const raft89__u64 *src,
                         raft89_size count)
 {
     *dst = NULL;
@@ -300,12 +324,12 @@ static int copy_indexes(raft89_index **dst, const raft89_index *src,
     {
         return 0;
     }
-    *dst = (raft89_index *)malloc(count * sizeof(raft89_index));
+    *dst = (raft89__u64 *)malloc(count * sizeof(raft89__u64));
     if (*dst == NULL)
     {
         return -1;
     }
-    memcpy(*dst, src, count * sizeof(raft89_index));
+    memcpy(*dst, src, count * sizeof(raft89__u64));
     return 0;
 }
 

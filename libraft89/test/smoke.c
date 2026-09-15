@@ -28,12 +28,12 @@ int main(void)
     CHECK_EQ(raft89_status_get(node, &status), RAFT89_OK);
     CHECK_EQ(status.self, 1u);
     CHECK_EQ(status.role, RAFT89_FOLLOWER);
-    CHECK_EQ(status.current_term, 7u);
+    CHECK_U64(status.current_term, test_u64(7u));
     CHECK_EQ(status.voted_for, RAFT89_ID_NONE);
     CHECK_EQ(status.leader_id, RAFT89_ID_NONE);
-    CHECK_EQ(status.last_log_index, RAFT89_INDEX_NONE);
-    CHECK_EQ(status.commit_index, RAFT89_INDEX_NONE);
-    CHECK_EQ(status.applied_index, RAFT89_INDEX_NONE);
+    CHECK_U64(status.last_log_index, RAFT89_INDEX_NONE);
+    CHECK_U64(status.commit_index, RAFT89_INDEX_NONE);
+    CHECK_U64(status.applied_index, RAFT89_INDEX_NONE);
     CHECK_EQ(status.faulted, 0);
 
     action = NULL;

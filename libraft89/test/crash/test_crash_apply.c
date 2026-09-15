@@ -33,7 +33,7 @@ static void apply_case(int mode)
     CHECK_EQ(raft89_recv(node, &msg), RAFT89_OK);
     CHECK_EQ(oracle_peek(&o), 1);
     CHECK_EQ(o.action->type, RAFT89_ACT_APPLY);
-    CHECK_EQ(o.action->u.apply.entry.index, 1u);
+    CHECK_U64(o.action->u.apply.entry.index, test_u64(1u));
 
     if (mode == 0)
     {
@@ -54,15 +54,15 @@ static void apply_case(int mode)
 
     CHECK_EQ(oracle_restart(&o, &f.config), RAFT89_OK);
     CHECK_EQ(raft89_status_get(o.raft, &status), RAFT89_OK);
-    CHECK_EQ(status.applied_index, 0u);
-    CHECK_EQ(status.commit_index, 0u);
+    CHECK_U64(status.applied_index, test_u64(0u));
+    CHECK_U64(status.commit_index, test_u64(0u));
 
     /* Replay: the same committed entries are offered again. */
     CHECK_EQ(raft89_recv(o.raft, &msg), RAFT89_OK);
     CHECK_EQ(oracle_peek(&o), 1);
     CHECK_EQ(o.action->type, RAFT89_ACT_APPLY);
-    CHECK_EQ(o.action->u.apply.entry.index, 1u);
-    CHECK_EQ(o.action->u.apply.entry.term, 1u);
+    CHECK_U64(o.action->u.apply.entry.index, test_u64(1u));
+    CHECK_U64(o.action->u.apply.entry.term, test_u64(1u));
     CHECK_EQ(o.action->u.apply.entry.size, 1u);
     CHECK_EQ(oracle_effect_apply_partial(&o, &app, 1), 0);
     CHECK_EQ(oracle_ack(&o, RAFT89_ACTION_OK), RAFT89_OK);
@@ -79,7 +79,7 @@ static void apply_case(int mode)
 
     CHECK_EQ(oracle_peek(&o), 1);
     CHECK_EQ(o.action->type, RAFT89_ACT_APPLY);
-    CHECK_EQ(o.action->u.apply.entry.index, 2u);
+    CHECK_U64(o.action->u.apply.entry.index, test_u64(2u));
     CHECK_EQ(oracle_effect_apply_partial(&o, &app, 1), 0);
     CHECK_EQ(oracle_ack(&o, RAFT89_ACTION_OK), RAFT89_OK);
     CHECK_EQ(app.applied_count, 2u);
@@ -87,8 +87,8 @@ static void apply_case(int mode)
     /* CR11: a conflicting replay is corruption. */
     {
         raft89_entry bad;
-        bad.index = 1u;
-        bad.term = 9u;
+        bad.index = test_u64(1u);
+        bad.term = test_u64(9u);
         bad.data = "a";
         bad.size = 1u;
         CHECK_EQ(fake_app_apply(&app, &bad), -1);

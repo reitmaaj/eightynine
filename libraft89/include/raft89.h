@@ -1,6 +1,8 @@
 #ifndef RAFT89_H
 #define RAFT89_H
 
+#include <limits.h>
+
 /*
  * raft89.h - deterministic Raft protocol core (ISO C89).
  *
@@ -39,25 +41,60 @@ extern "C"
 {
 #endif
 
-#define RAFT89_VERSION_MAJOR 1
+#define RAFT89_VERSION_MAJOR 2
 #define RAFT89_VERSION_MINOR 0
 #define RAFT89_VERSION_PATCH 0
 
     /*
-     * Scalar types. Node id 0 means "none". Term 0 is the initial term.
-     * Log index 0 denotes the position immediately before the first entry.
-     * The library uses unsigned long to retain strict C89 portability.
+     * Portable 32/64-bit scalar types.
+     *
+     * libraft89 requires an exact unsigned 32-bit C integer type. Terms and
+     * log indices are persistent, globally growing 64-bit quantities and are
+     * represented portably as {hi, lo} word pairs, independent of the host
+     * data model. Arithmetic on them is a private implementation concern.
+     */
+
+#if UINT_MAX == 4294967295U
+    typedef unsigned int raft89_u32;
+#elif ULONG_MAX == 4294967295UL
+typedef unsigned long raft89_u32;
+#else
+#error "libraft89 requires an exact 32-bit unsigned integer type"
+#endif
+
+    typedef struct raft89_u64
+    {
+        raft89_u32 hi;
+        raft89_u32 lo;
+    } raft89_u64;
+
+    typedef raft89_u64 raft89_term;
+    typedef raft89_u64 raft89_index;
+
+    /*
+     * Scalar helpers. cmp() returns <0, 0, >0 according to a < b, a == b,
+     * a > b.
+     */
+    int raft89_u64_cmp(raft89_u64 a, raft89_u64 b);
+
+    int raft89_u64_equal(raft89_u64 a, raft89_u64 b);
+
+    raft89_u64 raft89_u64_zero(void);
+
+    raft89_u64 raft89_u64_from_u32(raft89_u32 value);
+
+    /*
+     * Scalar types that are not persistent globally growing sequence
+     * numbers remain unsigned long.
      */
     typedef unsigned long raft89_id;
-    typedef unsigned long raft89_term;
-    typedef unsigned long raft89_index;
     typedef unsigned long raft89_size;
     typedef unsigned long raft89_time;
     typedef unsigned long raft89_action_id;
 
 #define RAFT89_ID_NONE ((raft89_id)0)
-#define RAFT89_TERM_NONE ((raft89_term)0)
-#define RAFT89_INDEX_NONE ((raft89_index)0)
+#define RAFT89_TERM_NONE (raft89_u64_zero())
+#define RAFT89_INDEX_NONE (raft89_u64_zero())
 #define RAFT89_ACTION_ID_NONE ((raft89_action_id)0)
 
     /* Opaque node object. Its representation is private. */
@@ -173,16 +210,35 @@ extern "C"
     } raft89_append_entries;
 
     /*
-     * AppendEntries response. success must contain either 0 or 1. When
-     * success != 0, match_index names the highest index matched by this
-     * AppendEntries RPC. When success == 0, match_index carries no meaning
-     * in v1 and must contain RAFT89_INDEX_NONE.
+     * AppendEntries response. success must contain either 0 or 1.
+     *
+     * success != 0:
+     *     match_index names the highest index matched by this RPC;
+     *     conflict_term  == RAFT89_TERM_NONE;
+     *     conflict_index == RAFT89_INDEX_NONE.
+     *
+     * success == 0 because prev_log_index is absent (the follower log is
+     * too short):
+     *     match_index    == RAFT89_INDEX_NONE;
+     *     conflict_term  == RAFT89_TERM_NONE;
+     *     conflict_index == follower_last_log_index + 1.
+     *
+     * success == 0 because prev_log_term mismatches:
+     *     match_index    == RAFT89_INDEX_NONE;
+     *     conflict_term  == follower term at prev_log_index;
+     *     conflict_index == first local index carrying conflict_term.
+     *
+     * A leader may use the hints to jump next_index directly instead of
+     * decrementing one position per round. Conflict hints change
+     * performance only; they never alter committed-log semantics.
      */
     typedef struct raft89_append_entries_response
     {
         raft89_term term;
         int success;
         raft89_index match_index;
+        raft89_term conflict_term;
+        raft89_index conflict_index;
     } raft89_append_entries_response;
 
     /*
@@ -277,6 +333,24 @@ extern "C"
         raft89_size max_append_bytes;
         raft89_store store;
         raft89_random random;
+
+        /*
+         * Highest log index which the host knows was durably and
+         * successfully applied to its application state machine.
+         *
+         * Zero means no recovered application checkpoint and preserves the
+         * v1 restart behavior. A non-zero value must not exceed the durable
+         * last log index; raft89_create() verifies that and probes the
+         * durable entry through the store, failing with ERR_CORRUPT or
+         * ERR_STORE otherwise.
+         *
+         * The host MUST supply only an index previously emitted by
+         * RAFT89_ACT_APPLY whose application effect became durable before
+         * the checkpoint became durable. The library cannot independently
+         * prove that condition; it validates the checkpoint against the
+         * durable local log only.
+         */
+        raft89_index applied_index;
     } raft89_config;
 
     /*
@@ -416,11 +490,47 @@ extern "C"
     int raft89_recv(raft89 *node, const raft89_message *message);
 
     /*
-     * Propose one application command. Only the current leader accepts
-     * proposals. On RAFT89_OK, *index receives the assigned log index (the
-     * command is not committed until a corresponding RAFT89_ACT_APPLY
-     * appears). index may be NULL. data remains caller-owned and need
-     * remain valid only for the duration of this call; size may be zero.
+     * One application command in a batch proposal.
+     */
+    typedef struct raft89_command
+    {
+        const void *data;
+        raft89_size size;
+    } raft89_command;
+
+    /*
+     * Propose one non-empty consecutive batch of application commands.
+     * Only the current leader accepts proposals.
+     *
+     * count must satisfy 1 <= count <= config.max_append_entries.
+     *
+     * The sum of the command payload sizes must not overflow raft89_size
+     * and must not exceed config.max_append_bytes.
+     *
+     * For each command:
+     *
+     *     size > 0  => data must not be NULL
+     *     size == 0 => data may be NULL
+     *
+     * On RAFT89_OK:
+     *
+     *     *first_index receives the index assigned to commands[0]
+     *
+     * and the commands receive consecutive indices. first_index may be
+     * NULL. The library emits one RAFT89_ACT_LOG_APPEND containing the
+     * complete batch before any replication SEND for those entries, and no
+     * subset of the batch becomes part of the local Raft log.
+     */
+    int raft89_proposev(raft89 *node, const raft89_command *commands,
+                        raft89_size count, raft89_index *first_index);
+
+    /*
+     * Propose one application command; equivalent to a one-element
+     * raft89_proposev(). On RAFT89_OK, *index receives the assigned log
+     * index (the command is not committed until a corresponding
+     * RAFT89_ACT_APPLY appears). index may be NULL. data remains
+     * caller-owned and need remain valid only for the duration of this
+     * call; size may be zero.
      */
     int raft89_propose(raft89 *node, const void *data, raft89_size size,
                        raft89_index *index);

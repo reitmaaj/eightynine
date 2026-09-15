@@ -49,7 +49,7 @@ int raft89__emit_send(raft89 *node, const raft89_message *msg)
     return RAFT89_OK;
 }
 
-int raft89__emit_hard_state(raft89 *node, raft89_term term, raft89_id voted_for)
+int raft89__emit_hard_state(raft89 *node, raft89__u64 term, raft89_id voted_for)
 {
     int rc;
     rc = raft89__action_begin(node, RAFT89_ACT_HARD_STATE);
@@ -57,14 +57,15 @@ int raft89__emit_hard_state(raft89 *node, raft89_term term, raft89_id voted_for)
     {
         return rc;
     }
-    node->action.u.hard_state.state.current_term = term;
+    node->action.u.hard_state.state.current_term = raft89__to_public(term);
     node->action.u.hard_state.state.voted_for = voted_for;
     return RAFT89_OK;
 }
 
 void raft89__apply_hard_state(raft89 *node)
 {
-    node->current_term = node->action.u.hard_state.state.current_term;
+    node->current_term =
+        raft89__from_public(node->action.u.hard_state.state.current_term);
     node->voted_for = node->action.u.hard_state.state.voted_for;
 }
 

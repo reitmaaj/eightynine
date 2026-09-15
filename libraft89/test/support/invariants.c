@@ -5,10 +5,15 @@
 #include "invariants.h"
 #include "raft89_inspect.h"
 
-static const fake_store_entry *store_entry(const fake_store *store,
-                                           raft89_index index)
+static unsigned long inv_ul(raft89_u64 v)
 {
-    if (index == 0u || index > store->entry_count)
+    return (unsigned long)v.lo;
+}
+
+static const fake_store_entry *store_entry(const fake_store *store,
+                                           unsigned long index)
+{
+    if (index == 0ul || index > store->entry_count)
     {
         return NULL;
     }
@@ -43,7 +48,7 @@ static int is_member(const cluster *c, raft89_id id)
 
 static int entry_equal(const fake_store_entry *a, const fake_store_entry *b)
 {
-    if (a->term != b->term)
+    if (!raft89_u64_equal(a->term, b->term))
     {
         return 0;
     }
@@ -84,7 +89,7 @@ static const char *check_leaders(const cluster *c)
             {
                 continue;
             }
-            if (si.current_term == sj.current_term)
+            if (raft89_u64_equal(si.current_term, sj.current_term))
             {
                 return "I01: two leaders in one term";
             }
@@ -127,11 +132,11 @@ static const char *check_store_shape(const cluster *c)
         store = &c->nodes[i].f.store;
         for (k = 0u; k < store->entry_count; ++k)
         {
-            if (store->entries[k].index != (raft89_index)(k + 1u))
+            if (inv_ul(store->entries[k].index) != k + 1u)
             {
                 return "I05: non-contiguous durable log";
             }
-            if (store->entries[k].term == RAFT89_TERM_NONE)
+            if (raft89_u64_equal(store->entries[k].term, RAFT89_TERM_NONE))
             {
                 return "I05: zero-term durable entry";
             }
@@ -162,7 +167,7 @@ static const char *check_log_matching(const cluster *c)
             }
             for (k = 0u; k < n; ++k)
             {
-                if (a->entries[k].term != b->entries[k].term)
+                if (!raft89_u64_equal(a->entries[k].term, b->entries[k].term))
                 {
                     continue;
                 }
@@ -199,8 +204,8 @@ static const char *check_applies(const cluster *c)
                 {
                     continue;
                 }
-                rb = &c->nodes[j].app.rec[(unsigned long)ra->index %
-                                          (unsigned long)FAKE_APP_SLOTS];
+                rb = &c->nodes[j]
+                          .app.rec[ra->index % (unsigned long)FAKE_APP_SLOTS];
                 if (rb->present == 0)
                 {
                     continue;
@@ -219,7 +224,7 @@ static const char *check_applies(const cluster *c)
     for (i = 0u; i < c->count; ++i)
     {
         app = &c->nodes[i].app;
-        last = (unsigned long)app->last_applied;
+        last = app->last_applied;
         if (last > (unsigned long)FAKE_APP_SLOTS)
         {
             last = (unsigned long)FAKE_APP_SLOTS;
@@ -227,7 +232,7 @@ static const char *check_applies(const cluster *c)
         for (k = 1u; k <= last; ++k)
         {
             ra = &app->rec[k % (unsigned long)FAKE_APP_SLOTS];
-            if (ra->present == 0 || ra->index != (raft89_index)k)
+            if (ra->present == 0 || ra->index != k)
             {
                 return "I09: apply gap";
             }
@@ -251,7 +256,7 @@ static const char *check_status_bounds(const cluster *c)
             continue;
         }
         raft89_inspect_view_get(c->nodes[i].raft, &view);
-        if (s.applied_index > s.commit_index)
+        if (raft89_u64_cmp(s.applied_index, s.commit_index) > 0)
         {
             return "I16: applied beyond commit";
         }
@@ -259,37 +264,38 @@ static const char *check_status_bounds(const cluster *c)
         {
             return "FAULT: node is faulted";
         }
-        if (s.commit_index > s.last_log_index)
+        if (raft89_u64_cmp(s.commit_index, s.last_log_index) > 0)
         {
             return "I10: commit beyond last log index";
         }
         store = &c->nodes[i].f.store;
-        if (s.current_term > store->hard.current_term)
+        if (raft89_u64_cmp(s.current_term, store->hard.current_term) > 0)
         {
             return "I14: acknowledged term leads durable term";
         }
-        if (s.current_term == store->hard.current_term &&
+        if (raft89_u64_equal(s.current_term, store->hard.current_term) &&
             s.voted_for != RAFT89_ID_NONE &&
             s.voted_for != store->hard.voted_for)
         {
             return "I14: acknowledged vote leads durable vote";
         }
-        if (s.last_log_index > store->entry_count)
+        if (inv_ul(s.last_log_index) > store->entry_count)
         {
             action = raft89_inspect_action(c->nodes[i].raft);
             if (action == NULL || action->type != RAFT89_ACT_LOG_TRUNCATE)
             {
                 return "I14: acknowledged log leads durable log";
             }
-            if (store->entry_count < action->u.log_truncate.first_index - 1u)
+            if (store->entry_count <
+                inv_ul(action->u.log_truncate.first_index) - 1u)
             {
                 return "I14: truncate removed the acknowledged prefix";
             }
         }
-        if (s.last_log_index > 0u)
+        if (!raft89_u64_equal(s.last_log_index, RAFT89_INDEX_NONE))
         {
-            e = store_entry(store, s.last_log_index);
-            if (e != NULL && e->term != view.last_log_term)
+            e = store_entry(store, inv_ul(s.last_log_index));
+            if (e != NULL && !raft89_u64_equal(e->term, view.last_log_term))
             {
                 return "I14: acknowledged last entry mismatch";
             }
@@ -326,20 +332,20 @@ static const char *check_leader_completeness(const cluster *c)
             {
                 continue;
             }
-            if (other.commit_index == 0u)
+            if (raft89_u64_equal(other.commit_index, RAFT89_INDEX_NONE))
             {
                 continue;
             }
-            if (lead.current_term < other.current_term)
+            if (raft89_u64_cmp(lead.current_term, other.current_term) < 0)
             {
                 continue;
             }
-            if (lead.last_log_index < other.commit_index)
+            if (raft89_u64_cmp(lead.last_log_index, other.commit_index) < 0)
             {
                 return "I07: leader missing a committed entry";
             }
-            le = store_entry(&c->nodes[i].f.store, other.commit_index);
-            oe = store_entry(&c->nodes[j].f.store, other.commit_index);
+            le = store_entry(&c->nodes[i].f.store, inv_ul(other.commit_index));
+            oe = store_entry(&c->nodes[j].f.store, inv_ul(other.commit_index));
             if (le == NULL || oe == NULL || entry_equal(le, oe) == 0)
             {
                 return "I07: leader committed entry mismatch";
@@ -370,8 +376,9 @@ static const char *check_success_before_durability(const cluster *c)
             action->u.send.message.type == RAFT89_MSG_REQUEST_VOTE_RESPONSE &&
             action->u.send.message.u.request_vote_response.vote_granted != 0)
         {
-            if (store->hard.current_term !=
-                action->u.send.message.u.request_vote_response.term)
+            if (!raft89_u64_equal(
+                    store->hard.current_term,
+                    action->u.send.message.u.request_vote_response.term))
             {
                 return "I15: vote response before durable term";
             }
@@ -385,7 +392,8 @@ static const char *check_success_before_durability(const cluster *c)
             action->u.send.message.u.append_entries_response.success != 0)
         {
             if (store->entry_count <
-                action->u.send.message.u.append_entries_response.match_index)
+                inv_ul(action->u.send.message.u.append_entries_response
+                           .match_index))
             {
                 return "I15: append response before durable log";
             }
@@ -479,12 +487,12 @@ static const char *check_term_monotonic(const cluster *prev,
         {
             continue;
         }
-        if (sn.current_term < sp.current_term)
+        if (raft89_u64_cmp(sn.current_term, sp.current_term) < 0)
         {
             return "I02: acknowledged term decreased";
         }
-        if (next->nodes[i].f.store.hard.current_term <
-            prev->nodes[i].f.store.hard.current_term)
+        if (raft89_u64_cmp(next->nodes[i].f.store.hard.current_term,
+                           prev->nodes[i].f.store.hard.current_term) < 0)
         {
             return "I02: durable term decreased";
         }
@@ -508,11 +516,11 @@ static const char *check_commit_applied_monotonic(const cluster *prev,
         {
             continue;
         }
-        if (sn.commit_index < sp.commit_index)
+        if (raft89_u64_cmp(sn.commit_index, sp.commit_index) < 0)
         {
             return "I11: commit_index decreased";
         }
-        if (sn.applied_index < sp.applied_index)
+        if (raft89_u64_cmp(sn.applied_index, sp.applied_index) < 0)
         {
             return "I12: applied_index decreased";
         }
@@ -543,7 +551,7 @@ static const char *check_leader_append_only(const cluster *prev,
         {
             continue;
         }
-        if (sp.current_term != sn.current_term)
+        if (!raft89_u64_equal(sp.current_term, sn.current_term))
         {
             continue;
         }
@@ -591,7 +599,7 @@ static const char *check_match_monotonic(const cluster *prev,
         {
             continue;
         }
-        if (sp.current_term != sn.current_term)
+        if (!raft89_u64_equal(sp.current_term, sn.current_term))
         {
             continue;
         }
@@ -611,7 +619,7 @@ static const char *check_match_monotonic(const cluster *prev,
             {
                 return "I19: peer order changed";
             }
-            if (mxp > mxn)
+            if (raft89_u64_cmp(mxp, mxn) > 0)
             {
                 return "I19/I20: match_index regressed";
             }
@@ -630,7 +638,7 @@ static const char *check_vote_stability(const cluster *prev,
     {
         a = &prev->nodes[i].f.store;
         b = &next->nodes[i].f.store;
-        if (a->hard.current_term != b->hard.current_term)
+        if (!raft89_u64_equal(a->hard.current_term, b->hard.current_term))
         {
             continue;
         }
@@ -670,11 +678,11 @@ static const char *check_commit_advance(const cluster *prev,
         {
             continue;
         }
-        if (sn.commit_index <= sp.commit_index)
+        if (raft89_u64_cmp(sn.commit_index, sp.commit_index) <= 0)
         {
             continue;
         }
-        e = store_entry(&next->nodes[i].f.store, sn.commit_index);
+        e = store_entry(&next->nodes[i].f.store, inv_ul(sn.commit_index));
         if (e == NULL)
         {
             return "I13: commit beyond the durable log";
@@ -683,11 +691,11 @@ static const char *check_commit_advance(const cluster *prev,
         {
             continue;
         }
-        if (sp.current_term != sn.current_term)
+        if (!raft89_u64_equal(sp.current_term, sn.current_term))
         {
             continue;
         }
-        if (e->term != sn.current_term)
+        if (!raft89_u64_equal(e->term, sn.current_term))
         {
             return "I13: committed an old-term entry directly";
         }
@@ -698,7 +706,7 @@ static const char *check_commit_advance(const cluster *prev,
             {
                 continue;
             }
-            if (mx >= sn.commit_index)
+            if (raft89_u64_cmp(mx, sn.commit_index) >= 0)
             {
                 ++votes;
             }

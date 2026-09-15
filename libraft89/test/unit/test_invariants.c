@@ -196,11 +196,11 @@ static void case_i14_windows(void)
     c.nodes[0].raft->last_log_term = 1u;
     c.nodes[0].raft->has_action = 1;
     c.nodes[0].raft->action.type = RAFT89_ACT_LOG_TRUNCATE;
-    c.nodes[0].raft->action.u.log_truncate.first_index = 1u;
+    c.nodes[0].raft->action.u.log_truncate.first_index = test_u64(1u);
     c.nodes[0].oracle.phase = ORACLE_EFFECT_DONE;
     expect_clean();
     /* Removing below first_index - 1 breaks the acknowledged prefix. */
-    c.nodes[0].raft->action.u.log_truncate.first_index = 3u;
+    c.nodes[0].raft->action.u.log_truncate.first_index = test_u64(3u);
     expect_violation("I14");
 }
 
@@ -226,7 +226,8 @@ static void case_i15_i17(void)
     c.nodes[0].raft->action.type = RAFT89_ACT_SEND;
     c.nodes[0].raft->action.u.send.message.type =
         RAFT89_MSG_REQUEST_VOTE_RESPONSE;
-    c.nodes[0].raft->action.u.send.message.u.request_vote_response.term = 1u;
+    c.nodes[0].raft->action.u.send.message.u.request_vote_response.term =
+        test_u64(1u);
     c.nodes[0]
         .raft->action.u.send.message.u.request_vote_response.vote_granted = 1;
     expect_violation("I15");

@@ -46,7 +46,7 @@ static void send_case(int packet_accepted)
     CHECK_EQ(oracle_restart(&o, &f.config), RAFT89_OK);
     CHECK_EQ(raft89_status_get(o.raft, &status), RAFT89_OK);
     CHECK_EQ(status.role, RAFT89_FOLLOWER);
-    CHECK_EQ(status.current_term, 7u);
+    CHECK_U64(status.current_term, test_u64(7u));
     CHECK_EQ(status.voted_for, 3u);
     raft89_destroy(o.raft);
 }

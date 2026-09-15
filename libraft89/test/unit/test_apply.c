@@ -37,8 +37,8 @@ int main(void)
     if (action != NULL)
     {
         CHECK_EQ(action->type, RAFT89_ACT_APPLY);
-        CHECK_EQ(action->u.apply.entry.index, 1u);
-        CHECK_EQ(action->u.apply.entry.term, 1u);
+        CHECK_U64(action->u.apply.entry.index, test_u64(1u));
+        CHECK_U64(action->u.apply.entry.term, test_u64(1u));
         CHECK_EQ(action->u.apply.entry.size, 1u);
         CHECK(memcmp(action->u.apply.entry.data, "a", 1u) == 0);
         /* P03: events are busy while the apply is outstanding. */
@@ -53,8 +53,8 @@ int main(void)
     if (action != NULL)
     {
         CHECK_EQ(action->type, RAFT89_ACT_APPLY);
-        CHECK_EQ(action->u.apply.entry.index, 2u);
-        CHECK_EQ(action->u.apply.entry.term, 2u);
+        CHECK_U64(action->u.apply.entry.index, test_u64(2u));
+        CHECK_U64(action->u.apply.entry.term, test_u64(2u));
         CHECK_EQ(action->u.apply.entry.size, 2u);
         CHECK(memcmp(action->u.apply.entry.data, "bb", 2u) == 0);
         CHECK_EQ(raft89_action_done(node, action->id, RAFT89_ACTION_OK),
@@ -67,8 +67,8 @@ int main(void)
     if (action != NULL)
     {
         CHECK_EQ(action->type, RAFT89_ACT_APPLY);
-        CHECK_EQ(action->u.apply.entry.index, 3u);
-        CHECK_EQ(action->u.apply.entry.term, 3u);
+        CHECK_U64(action->u.apply.entry.index, test_u64(3u));
+        CHECK_U64(action->u.apply.entry.term, test_u64(3u));
         CHECK_EQ(action->u.apply.entry.size, 3u);
         CHECK(memcmp(action->u.apply.entry.data, "ccc", 3u) == 0);
         CHECK_EQ(raft89_action_done(node, action->id, RAFT89_ACTION_OK),
@@ -76,8 +76,8 @@ int main(void)
     }
 
     CHECK_EQ(raft89_status_get(node, &status), RAFT89_OK);
-    CHECK_EQ(status.applied_index, 3u);
-    CHECK_EQ(status.commit_index, 3u);
+    CHECK_U64(status.applied_index, test_u64(3u));
+    CHECK_U64(status.commit_index, test_u64(3u));
     raft89_destroy(node);
 
     /* P06: FATAL on APPLY faults the node. */

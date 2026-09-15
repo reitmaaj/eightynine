@@ -14,6 +14,18 @@ exclude:
 compatibility_paths: []
 
 pure_functions:
+    - raft89_u64_cmp
+    - raft89_u64_equal
+    - raft89_u64_zero
+    - raft89_u64_from_u32
+    - raft89__from_public
+    - raft89__to_public
+    - raft89__u64_is_zero
+    - raft89__u64_add
+    - raft89__u64_inc
+    - raft89__u64_dec
+    - raft89__u64_to_size
+    - raft89__size_to_u64
     - raft89__config_validate
     - raft89__members_valid
     - raft89__timeouts_valid

@@ -34,6 +34,29 @@ static int test_failures;
         }                                                                      \
     } while (0)
 
+/* Test-scale 64-bit scalars: support code and most tests use values below
+ * 2^32 and convert at the public boundary. */
+static raft89_u64 test_u64(unsigned long v)
+{
+    return raft89_u64_from_u32((raft89_u32)v);
+}
+
+static unsigned long test_ul(raft89_u64 v)
+{
+    return (unsigned long)v.lo;
+}
+
+#define CHECK_U64(a, b)                                                        \
+    do                                                                         \
+    {                                                                          \
+        if (!raft89_u64_equal((a), (b)))                                       \
+        {                                                                      \
+            fprintf(stderr, "CHECK failed %s:%d: %s != %s\n", __FILE__,        \
+                    __LINE__, #a, #b);                                         \
+            ++test_failures;                                                   \
+        }                                                                      \
+    } while (0)
+
 #define TEST_END                                                               \
     if (test_failures != 0)                                                    \
     {                                                                          \

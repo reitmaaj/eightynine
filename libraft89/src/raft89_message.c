@@ -7,16 +7,16 @@
 
 int raft89__request_vote_valid(const raft89_request_vote *rv)
 {
-    if (rv->last_log_index == RAFT89_INDEX_NONE)
+    if (raft89_u64_equal(rv->last_log_index, RAFT89_INDEX_NONE))
     {
-        if (rv->last_log_term != RAFT89_TERM_NONE)
+        if (!raft89_u64_equal(rv->last_log_term, RAFT89_TERM_NONE))
         {
             return 0;
         }
     }
-    if (rv->last_log_index != RAFT89_INDEX_NONE)
+    if (!raft89_u64_equal(rv->last_log_index, RAFT89_INDEX_NONE))
     {
-        if (rv->last_log_term == RAFT89_TERM_NONE)
+        if (raft89_u64_equal(rv->last_log_term, RAFT89_TERM_NONE))
         {
             return 0;
         }
@@ -39,16 +39,22 @@ int raft89__vote_response_valid(const raft89_request_vote_response *response)
 static int entry_shape_valid(const raft89_append_entries *ae, raft89_size i)
 {
     const raft89_entry *entry;
+    raft89__u64 prev;
+    raft89__u64 want;
+    raft89__u64 got;
     entry = &ae->entries[i];
-    if (entry->index == RAFT89_INDEX_NONE)
+    if (raft89_u64_equal(entry->index, RAFT89_INDEX_NONE))
     {
         return 0;
     }
-    if (entry->term == RAFT89_TERM_NONE)
+    if (raft89_u64_equal(entry->term, RAFT89_TERM_NONE))
     {
         return 0;
     }
-    if (entry->index != ae->prev_log_index + 1u + i)
+    prev = raft89__from_public(ae->prev_log_index);
+    want = prev + (raft89__u64)1 + raft89__size_to_u64(i);
+    got = raft89__from_public(entry->index);
+    if (got != want)
     {
         return 0;
     }
@@ -81,6 +87,7 @@ int raft89__append_entries_valid(const raft89_append_entries *ae,
                                  raft89_size max_entries, raft89_size max_bytes)
 {
     unsigned long total;
+    raft89__u64 prev;
     raft89_size i;
     if (ae->entry_count > max_entries)
     {
@@ -94,7 +101,8 @@ int raft89__append_entries_valid(const raft89_append_entries *ae,
     {
         return 0;
     }
-    if (ae->prev_log_index > ULONG_MAX - ae->entry_count)
+    prev = raft89__from_public(ae->prev_log_index);
+    if (prev > RAFT89__U64_MAX - raft89__size_to_u64(ae->entry_count))
     {
         return 0;
     }
@@ -113,6 +121,8 @@ int raft89__append_entries_valid(const raft89_append_entries *ae,
 int raft89__append_entries_response_valid(
     const raft89_append_entries_response *response)
 {
+    int term_none;
+    int index_none;
     if (response->success != 0)
     {
         if (response->success != 1)
@@ -120,12 +130,27 @@ int raft89__append_entries_response_valid(
             return 0;
         }
     }
-    if (response->success == 0)
+    term_none = raft89_u64_equal(response->conflict_term, RAFT89_TERM_NONE);
+    index_none = raft89_u64_equal(response->conflict_index, RAFT89_INDEX_NONE);
+    if (response->success != 0)
     {
-        if (response->match_index != RAFT89_INDEX_NONE)
+        if (!term_none)
         {
             return 0;
         }
+        if (!index_none)
+        {
+            return 0;
+        }
+        return 1;
+    }
+    if (!raft89_u64_equal(response->match_index, RAFT89_INDEX_NONE))
+    {
+        return 0;
+    }
+    if (index_none)
+    {
+        return 0;
     }
     return 1;
 }
@@ -179,9 +204,10 @@ void raft89__build_request_vote(const raft89 *node, raft89_id peer,
     msg->type = RAFT89_MSG_REQUEST_VOTE;
     msg->from = node->self;
     msg->to = peer;
-    msg->u.request_vote.term = node->current_term;
-    msg->u.request_vote.last_log_index = node->last_log_index;
-    msg->u.request_vote.last_log_term = node->last_log_term;
+    msg->u.request_vote.term = raft89__to_public(node->current_term);
+    msg->u.request_vote.last_log_index =
+        raft89__to_public(node->last_log_index);
+    msg->u.request_vote.last_log_term = raft89__to_public(node->last_log_term);
 }
 
 void raft89__build_vote_response(raft89_id from, raft89_id peer,
@@ -197,7 +223,8 @@ void raft89__build_vote_response(raft89_id from, raft89_id peer,
 
 void raft89__build_ae_response(raft89_id from, raft89_id peer, raft89_term term,
                                int success, raft89_index match_index,
-                               raft89_message *msg)
+                               raft89_term conflict_term,
+                               raft89_index conflict_index, raft89_message *msg)
 {
     msg->type = RAFT89_MSG_APPEND_ENTRIES_RESPONSE;
     msg->from = from;
@@ -205,6 +232,8 @@ void raft89__build_ae_response(raft89_id from, raft89_id peer, raft89_term term,
     msg->u.append_entries_response.term = term;
     msg->u.append_entries_response.success = success;
     msg->u.append_entries_response.match_index = match_index;
+    msg->u.append_entries_response.conflict_term = conflict_term;
+    msg->u.append_entries_response.conflict_index = conflict_index;
 }
 
 int raft89_recv(raft89 *node, const raft89_message *message)

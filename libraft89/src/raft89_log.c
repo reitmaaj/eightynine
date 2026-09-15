@@ -7,7 +7,7 @@
 
 #include "raft89_internal.h"
 
-raft89_index raft89__min_index(raft89_index a, raft89_index b)
+raft89__u64 raft89__min_index(raft89__u64 a, raft89__u64 b)
 {
     if (a < b)
     {
@@ -28,20 +28,23 @@ static unsigned long payload_total(const raft89_entry *src, raft89_size count)
     return total;
 }
 
-int raft89__log_term_at(raft89 *node, raft89_index index, raft89_term *term)
+int raft89__log_term_at(raft89 *node, raft89__u64 index, raft89__u64 *term)
 {
+    raft89_term public_term;
     int rc;
-    if (index == RAFT89_INDEX_NONE)
+    if (raft89__u64_is_zero(index))
     {
-        *term = RAFT89_TERM_NONE;
+        *term = (raft89__u64)0;
         return RAFT89_OK;
     }
-    rc = node->store.log_term(node->store.ctx, index, term);
+    rc = node->store.log_term(node->store.ctx, raft89__to_public(index),
+                              &public_term);
     if (rc != RAFT89_OK)
     {
         node->faulted = 1;
         return RAFT89_ERR_STORE;
     }
+    *term = raft89__from_public(public_term);
     return RAFT89_OK;
 }
 
@@ -181,8 +184,8 @@ static int emit_next_apply(raft89 *node)
 {
     int rc;
     raft89_entry entry;
-    entry.index = node->applied_index + 1u;
-    entry.term = RAFT89_TERM_NONE;
+    entry.index = raft89__to_public(raft89__u64_inc(node->applied_index));
+    entry.term = raft89_u64_zero();
     entry.data = NULL;
     entry.size = 0u;
     rc = load_entry_meta(node, &entry);
@@ -226,7 +229,7 @@ int raft89__apply_ack(raft89 *node)
     int rc;
     enum raft89_step after;
     apply_buffer_discard(node);
-    ++node->applied_index;
+    node->applied_index = raft89__u64_inc(node->applied_index);
     after = node->after_apply;
     node->step = RAFT89_STEP_NONE;
     rc = raft89__apply_next(node);
@@ -244,7 +247,7 @@ int raft89__apply_ack(raft89 *node)
     return rc;
 }
 
-int raft89__advance_commit(raft89 *node, raft89_index new_commit,
+int raft89__advance_commit(raft89 *node, raft89__u64 new_commit,
                            enum raft89_step after)
 {
     int rc;
