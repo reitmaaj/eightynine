@@ -141,6 +141,7 @@ void raft89__node_discard(raft89 *node);
 int raft89__node_load(raft89 *node);
 int raft89__store_read_hard_state(raft89 *node);
 int raft89__store_read_log_last(raft89 *node);
+int raft89__recover_applied(raft89 *node, raft89__u64 applied);
 raft89_time raft89__pick_timeout(raft89 *node);
 
 /* Action queue. */

@@ -225,6 +225,36 @@ int raft89__node_load(raft89 *node)
     return raft89__check_restored(node);
 }
 
+/*
+ * Accept a host-supplied application checkpoint. The checkpoint is sound
+ * only if the durable log contains that position, so the entry is probed
+ * through the store. A store failure is reported as ERR_STORE; an
+ * out-of-range checkpoint is corruption.
+ */
+int raft89__recover_applied(raft89 *node, raft89__u64 applied)
+{
+    int rc;
+    raft89_term term;
+
+    if (applied > node->last_log_index)
+    {
+        return RAFT89_ERR_CORRUPT;
+    }
+    if (raft89__u64_is_zero(applied))
+    {
+        return RAFT89_OK;
+    }
+    rc = node->store.log_term(node->store.ctx, raft89__to_public(applied),
+                              &term);
+    if (rc != RAFT89_OK)
+    {
+        return RAFT89_ERR_STORE;
+    }
+    node->applied_index = applied;
+    node->commit_index = applied;
+    return RAFT89_OK;
+}
+
 static raft89 *node_alloc(const raft89_config *config)
 {
     raft89 *node;
@@ -274,6 +304,13 @@ int raft89_create(const raft89_config *config, raft89 **out)
         return RAFT89_ERR_NOMEM;
     }
     rc = raft89__node_load(node);
+    if (rc != RAFT89_OK)
+    {
+        raft89__node_discard(node);
+        return rc;
+    }
+    rc = raft89__recover_applied(node,
+                                 raft89__from_public(config->applied_index));
     if (rc != RAFT89_OK)
     {
         raft89__node_discard(node);

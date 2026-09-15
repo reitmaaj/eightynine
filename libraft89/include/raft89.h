@@ -314,6 +314,24 @@ typedef unsigned long raft89_u32;
         raft89_size max_append_bytes;
         raft89_store store;
         raft89_random random;
+
+        /*
+         * Highest log index which the host knows was durably and
+         * successfully applied to its application state machine.
+         *
+         * Zero means no recovered application checkpoint and preserves the
+         * v1 restart behavior. A non-zero value must not exceed the durable
+         * last log index; raft89_create() verifies that and probes the
+         * durable entry through the store, failing with ERR_CORRUPT or
+         * ERR_STORE otherwise.
+         *
+         * The host MUST supply only an index previously emitted by
+         * RAFT89_ACT_APPLY whose application effect became durable before
+         * the checkpoint became durable. The library cannot independently
+         * prove that condition; it validates the checkpoint against the
+         * durable local log only.
+         */
+        raft89_index applied_index;
     } raft89_config;
 
     /*

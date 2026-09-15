@@ -18,6 +18,7 @@ void fixture_init(fixture *f, raft89_size member_count, raft89_id self)
     f->config.election_timeout_max = 30u;
     f->config.max_append_entries = 8u;
     f->config.max_append_bytes = 1024u;
+    f->config.applied_index = raft89_u64_zero();
     fake_store_bind(&f->config.store, &f->store);
     fake_random_bind(&f->config.random, &f->random);
 }
