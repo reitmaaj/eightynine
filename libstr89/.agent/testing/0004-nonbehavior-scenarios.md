@@ -36,3 +36,11 @@ SCENARIO C89, C23, and C++23
   WHEN built with gcc and clang under `-std=c89` and `-std=c23`, and the
     public header is included from `-std=c++23` translation units
   THEN every suite passes and the header compiles warning-free
+
+## ILP32 portability
+
+SCENARIO 32-bit target
+  GIVEN the same sources and the strict C89 flag set
+  WHEN built and tested with `-m32` against the 32-bit libu89 archive
+  THEN the library builds warning-free and the smoke, unit, fault, model,
+    and corpus suites all pass

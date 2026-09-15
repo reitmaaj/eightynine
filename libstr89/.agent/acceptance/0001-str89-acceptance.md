@@ -25,6 +25,7 @@ deterministic tests plus the recipes named in `Justfile`.
 | A18 | JSON surrogate handling never admits invalid Unicode scalars. | `libj89` unicode suite |
 | A19 | Parse/serialize round trips preserve exact Unicode strings. | `libj89` round-trip suite |
 | A20 | C89, C23, and C++23 builds execute the same behavioral suite. | `just matrix`, `just cpp-check` |
+| A21 | The library builds warning-free and passes the whole fast suite on ILP32. | `just build32`, `just test32` |
 
 ## Unacceptable behavior (must reject)
 
