@@ -57,6 +57,17 @@ _run dir:
 	    ./build/$name || exit 1; \
 	done
 
+# Compile and run every test program in one suite directory on ILP32.
+_run32 dir:
+	@if [ ! -f build/32/libledger89.a ]; then echo "_run32 {{dir}}: SKIPPED: no 32-bit toolchain"; exit 0; fi; \
+	for t in test/{{dir}}/test_*.c; do \
+	    [ -e "$t" ] || continue; \
+	    name=$(basename "$t" .c); \
+	    {{CC}} {{STRICT}} {{POSIX}} {{TESTFLAGS}} {{INC}} -m32 \
+	        -o "build/32/$name" "$t" test/support/*.c build/32/libledger89.a || exit 1; \
+	    ./build/32/$name || exit 1; \
+	done
+
 # Smoke test first: one end-to-end path through the library.
 smoke: build
 	{{CC}} {{STRICT}} {{POSIX}} {{TESTFLAGS}} {{INC}} -o build/smoke test/smoke.c test/support/*.c {{LIB}}
@@ -120,6 +131,29 @@ adapters-raft: build
 	    build/raft/libraft89.a {{LIB}} || exit 1; \
 	./build/raft_adapter
 
+# The same cross-repo fixture composed on ILP32.
+adapters-raft32: build32
+	@if [ ! -d ../libraft89/src ]; then \
+	    echo "adapters-raft32: SKIPPED: sibling libraft89 absent"; \
+	    exit 0; \
+	fi; \
+	if [ ! -f build/32/libledger89.a ]; then \
+	    echo "adapters-raft32: SKIPPED: no 32-bit toolchain"; \
+	    exit 0; \
+	fi; \
+	mkdir -p build/32/raft/obj; \
+	for f in ../libraft89/src/*.c; do \
+	    [ -e "$f" ] || continue; \
+	    name=$(basename "$f" .c); \
+	    {{CC}} {{STRICT}} {{POSIX}} -m32 -I../libraft89/include -I../libraft89/src -c "$f" -o "build/32/raft/obj/$name.o" || exit 1; \
+	done; \
+	rm -f build/32/raft/libraft89.a; \
+	ar rcs build/32/raft/libraft89.a build/32/raft/obj/*.o; \
+	{{CC}} {{STRICT}} {{POSIX}} {{TESTFLAGS}} {{INC}} -m32 -I../libraft89/include \
+	    -o build/32/raft_adapter test/adapters/raft_adapter_main.c test/support/*.c \
+	    build/32/raft/libraft89.a build/32/libledger89.a || exit 1; \
+	./build/32/raft_adapter
+
 # Multi-million-operation model run plus a heavy many-segment sweep.
 long: build
 	{{CC}} {{STRICT}} {{POSIX}} {{TESTFLAGS}} {{INC}} -o build/test_random_model \
@@ -132,6 +166,60 @@ long: build
 
 # Run every fast suite (smoke first).
 test: smoke unit api crash fault fault-nomem fault-eintr corrupt model adapters golden stress
+
+# Smoke test on ILP32 when the toolchain supports it.
+smoke32: build32
+	@if [ ! -f build/32/libledger89.a ]; then echo "smoke32: SKIPPED: no 32-bit toolchain"; exit 0; fi; \
+	{{CC}} {{STRICT}} {{POSIX}} {{TESTFLAGS}} {{INC}} -m32 \
+	    -o build/32/smoke test/smoke.c test/support/*.c build/32/libledger89.a || exit 1; \
+	./build/32/smoke
+
+unit32: build32
+	just _run32 unit
+
+api32: build32
+	just _run32 api
+
+crash32: build32
+	just _run32 crash
+
+fault32: build32
+	just _run32 fault
+
+# Allocation failure sweep on ILP32 (GNU ld allocator wrapping).
+fault-nomem32: build32
+	@if [ ! -f build/32/libledger89.a ]; then echo "fault-nomem32: SKIPPED: no 32-bit toolchain"; exit 0; fi; \
+	{{CC}} {{STRICT}} {{POSIX}} {{TESTFLAGS}} {{INC}} -m32 -o build/32/test_nomem \
+	    test/fault/nomem_main.c test/fault/nomem_shim.c test/support/*.c build/32/libledger89.a \
+	    -Wl,--wrap=malloc -Wl,--wrap=calloc -Wl,--wrap=realloc || exit 1; \
+	./build/32/test_nomem
+
+# EINTR retry suite on ILP32 (GNU ld syscall wrapping).
+fault-eintr32: build32
+	@if [ ! -f build/32/libledger89.a ]; then echo "fault-eintr32: SKIPPED: no 32-bit toolchain"; exit 0; fi; \
+	{{CC}} {{STRICT}} {{POSIX}} {{TESTFLAGS}} {{INC}} -m32 -o build/32/test_eintr \
+	    test/fault/eintr_main.c test/fault/eintr_shim.c test/support/*.c build/32/libledger89.a \
+	    -Wl,--wrap=pread -Wl,--wrap=pwrite -Wl,--wrap=fsync -Wl,--wrap=fdatasync \
+	    -Wl,--wrap=ftruncate -Wl,--wrap=rename -Wl,--wrap=unlink || exit 1; \
+	./build/32/test_eintr
+
+corrupt32: build32
+	just _run32 corrupt
+
+model32: build32
+	just _run32 model
+
+adapters32: build32
+	just _run32 adapters
+
+golden32: build32
+	just _run32 golden
+
+stress32: build32
+	just _run32 stress
+
+# Run every fast suite on ILP32 when the toolchain supports it.
+test32: smoke32 unit32 api32 crash32 fault32 fault-nomem32 fault-eintr32 corrupt32 model32 adapters32 golden32 stress32
 
 # Reproducible throughput baseline (not part of `just test`).
 bench: build
@@ -166,6 +254,31 @@ sanitize:
 	    {{CC}} -std=c99 -g -fsanitize=address,undefined -fno-omit-frame-pointer {{POSIX}} {{TESTFLAGS}} {{INC}} \
 	        -o "build/asan/$name" "$t" test/support/*.c build/asan/libledger89.a || exit 1; \
 	    ./build/asan/$name || exit 1; \
+	done
+
+# Rebuild the library and run the whole fast suite under ASan + UBSan on ILP32.
+sanitize32:
+	@mkdir -p build/asan32/obj; \
+	if ! printf '#include <stdio.h>\nint main(void){return 0;}\n' | {{CC}} -m32 -fsanitize=address,undefined -x c - -o build/asan32/probe 2>/dev/null; then \
+	    echo "sanitize32: SKIPPED: no 32-bit ASan/UBSan runtime (install libasan.i686 libubsan.i686)"; \
+	    exit 0; \
+	fi; \
+	for f in src/*.c; do \
+	    [ -e "$f" ] || continue; \
+	    name=$(basename "$f" .c); \
+	    {{CC}} -std=c99 -m32 -g -fsanitize=address,undefined -fno-omit-frame-pointer {{POSIX}} -Iinclude -Isrc -c "src/$name.c" -o "build/asan32/obj/$name.o" || exit 1; \
+	done; \
+	objs=""; \
+	for f in build/asan32/obj/*.o; do \
+	    objs="$objs $f"; \
+	done; \
+	ar rcs build/asan32/libledger89.a $objs; \
+	for t in {{TESTGLOB}}; do \
+	    [ -e "$t" ] || continue; \
+	    name=$(basename "$t" .c); \
+	    {{CC}} -std=c99 -m32 -g -fsanitize=address,undefined -fno-omit-frame-pointer {{POSIX}} {{TESTFLAGS}} {{INC}} \
+	        -o "build/asan32/$name" "$t" test/support/*.c build/asan32/libledger89.a || exit 1; \
+	    ./build/asan32/$name || exit 1; \
 	done
 
 # Run every fast suite under valgrind memcheck.
