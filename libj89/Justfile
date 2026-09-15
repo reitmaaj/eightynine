@@ -5,6 +5,9 @@ U89LIB := U89 + "/build/libu89.a"
 STR89 := env_var_or_default("STR89", "../libstr89")
 STR89INC := STR89 + "/include"
 STR89LIB := STR89 + "/build/libstr89.a"
+U89LIB32 := U89 + "/build/32/libu89.a"
+STR89LIB32 := STR89 + "/build/32/libstr89.a"
+SSE32 := "-msse2 -mfpmath=sse"
 STRICT := "-std=c89 -pedantic-errors -Wall -Wextra -Werror -Wconversion -Wsign-conversion -Wstrict-prototypes -Wmissing-prototypes -Wold-style-definition -Wundef -Wshadow -Wformat=2"
 
 default: build
@@ -61,6 +64,60 @@ test: build
 	    ./build/$name || exit 1; \
 	done
 	@just test-bridge
+
+# Build the sibling libstr89 dependency for ILP32 (which builds libu89).
+deps32:
+	cd {{STR89}} && just build32
+
+# Best-effort 32-bit static archive of the practical core. The SSE2 math
+# flags give i386 the same binary64 semantics as x86-64 (plain x87 keeps
+# excess precision in double comparisons).
+lib32: deps32
+	@mkdir -p build/32; \
+	if ! printf '#include <stdio.h>\nint main(void){return 0;}\n' | {{CC}} -m32 {{SSE32}} -x c - -o build/32/probe 2>/dev/null; then \
+	    echo "lib32: SKIPPED: no 32-bit SSE2 toolchain (install gcc multilib)"; \
+	    exit 0; \
+	fi; \
+	mkdir -p build/32/lib; \
+	for f in {{LIB}}; do \
+	    o=build/32/lib/$(basename "$f" .c).o; \
+	    {{CC}} {{STRICT}} -m32 {{SSE32}} -Iinclude -Isrc -I{{U89}}/include -I{{STR89INC}} -c "$f" -o "$o" || exit 1; \
+	done; \
+	ar rcs build/32/libj89.a build/32/lib/*.o; \
+	echo "lib32: ok"
+
+# Compile the 32-bit CLI (library sources + main).
+build32: lib32
+	@if [ ! -f build/32/libj89.a ]; then exit 0; fi; \
+	{{CC}} {{STRICT}} -m32 {{SSE32}} -Iinclude -Isrc -I{{U89}}/include -I{{STR89INC}} -o build/32/j89 {{SRC}} {{STR89LIB32}} {{U89LIB32}}
+
+# Unit tests, e2e scripts, alg tests, and bridge tests on ILP32.
+test32: build32
+	@if [ ! -f build/32/j89 ]; then exit 0; fi; \
+	for t in test/unit/test_*.c; do \
+	    [ -e "$t" ] || continue; \
+	    name=$(basename "$t" .c); \
+	    {{CC}} {{STRICT}} -m32 {{SSE32}} -Iinclude -I{{U89}}/include -I{{STR89INC}} -Itest/unit -o "build/32/$name" "$t" src/parse.c src/value.c src/print.c {{STR89LIB32}} {{U89LIB32}} || exit 1; \
+	    ./build/32/$name || exit 1; \
+	done; \
+	for s in test/e2e/*.sh; do \
+	    [ -e "$s" ] || continue; \
+	    sh "$s" ./build/32/j89 || exit 1; \
+	done; \
+	for t in test/alg/test_*.c test/alg/smoke.c; do \
+	    [ -e "$t" ] || continue; \
+	    [ "$(basename "$t" .c)" = "test_bridge" ] && continue; \
+	    name=alg_$(basename "$t" .c); \
+	    {{CC}} {{STRICT}} -m32 {{SSE32}} -Iinclude -Isrc -Itest/alg -o "build/32/$name" "$t" {{ALG}} || exit 1; \
+	    ./build/32/$name || exit 1; \
+	done; \
+	just test-bridge32
+
+# Bridge (j89.h -> j89_alg) tests on ILP32.
+test-bridge32: build32
+	@if [ ! -f build/32/j89 ]; then exit 0; fi; \
+	{{CC}} {{STRICT}} -m32 {{SSE32}} -Iinclude -Isrc -I{{U89}}/include -I{{STR89INC}} -Itest/alg -o build/32/alg_test_bridge test/alg/test_bridge.c src/value.c src/bridge.c {{ALG}} {{STR89LIB32}} {{U89LIB32}} || exit 1; \
+	./build/32/alg_test_bridge
 
 # Algebraic-core tests only.
 test-alg: build

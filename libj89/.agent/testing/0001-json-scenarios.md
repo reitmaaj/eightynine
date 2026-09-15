@@ -111,3 +111,12 @@ SCENARIO: reject unterminated string
 GIVEN input `"abc`
 WHEN j89_parse is called
 THEN it reports an error
+
+## ILP32 portability
+
+SCENARIO: exact integer range on a 32-bit target
+GIVEN the same integer tokens at the 2^53 boundary and beyond
+WHEN parsed on ILP32
+THEN the accepted/rejected sets and values are identical to LP64, because the
+    digit accumulator is a fixed 64-bit type and the 32-bit build uses SSE2
+    binary64 semantics rather than x87 excess precision.
