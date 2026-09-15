@@ -94,7 +94,14 @@ class Slice(ctypes.Structure):
 
 
 class Iter(ctypes.Structure):
-    _fields_ = [("ledger", ctypes.c_void_p), ("next", U64), ("revision", U64)]
+    _fields_ = [
+        ("ledger", ctypes.c_void_p),
+        ("next", U64),
+        ("revision", U64),
+        ("cursor_entry", ctypes.c_size_t),
+        ("cursor_offset", U64),
+        ("cursor_valid", ctypes.c_int),
+    ]
 
 
 def u64(value):

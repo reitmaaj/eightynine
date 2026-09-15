@@ -337,6 +337,8 @@ int led89_dir_find(ledger89 *l, led89_u64 index, size_t *entry);
 int led89_batch_read_record(ledger89 *l, const led89_batch_dir_entry *e,
                             led89_u64 index, void *data_out, size_t capacity,
                             size_t *size_out);
+int led89_iter_step(ledger89_iter *iter, led89_u64 index, void *data_out,
+                    size_t capacity, size_t *size_out);
 
 /* truncate.c */
 int led89_truncate_impl(ledger89 *l, led89_u64 from);

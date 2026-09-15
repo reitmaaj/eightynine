@@ -86,18 +86,25 @@ static void led89_skip_one(led89_u64 *offset, led89_u64 *skip, led89_u32 len)
     *skip = *skip - (led89_u64)1;
 }
 
-static int led89_read_body(ledger89 *l, led89_fd fd,
-                           const led89_batch_dir_entry *e, led89_u64 index,
-                           void *data_out, size_t capacity, size_t *size_out)
+static led89_u64 led89_next_off(led89_u64 offset, size_t size)
+{
+    return offset + (led89_u64)8 + (led89_u64)size;
+}
+
+static led89_u64 led89_first_off(const led89_batch_dir_entry *e)
+{
+    return e->offset + (led89_u64)LED89_BATCH_HEADER_SIZE;
+}
+
+static int led89_body_offset(ledger89 *l, led89_fd fd,
+                             const led89_batch_dir_entry *e, led89_u64 index,
+                             led89_u64 *offset_out)
 {
     unsigned char lenbuf[LED89_RECORD_LENGTH_SIZE];
-    unsigned char crcbuf[LED89_RECORD_CRC_SIZE];
     led89_u64 end;
     led89_u64 offset;
     led89_u64 skip;
     led89_u32 len;
-    led89_u32 stored;
-    led89_u32 crc;
     int rc;
 
     end = e->offset + e->bytes;
@@ -121,6 +128,23 @@ static int led89_read_body(ledger89 *l, led89_fd fd,
         }
         led89_skip_one(&offset, &skip, len);
     }
+    *offset_out = offset;
+    return LEDGER89_OK;
+}
+
+static int led89_body_read(ledger89 *l, led89_fd fd,
+                           const led89_batch_dir_entry *e, led89_u64 offset,
+                           void *data_out, size_t capacity, size_t *size_out)
+{
+    unsigned char lenbuf[LED89_RECORD_LENGTH_SIZE];
+    unsigned char crcbuf[LED89_RECORD_CRC_SIZE];
+    led89_u64 end;
+    led89_u32 len;
+    led89_u32 stored;
+    led89_u32 crc;
+    int rc;
+
+    end = e->offset + e->bytes;
     rc = l->io->pread(l->io->ctx, fd, lenbuf, sizeof lenbuf, offset);
     if (rc != LEDGER89_OK)
     {
@@ -169,6 +193,22 @@ static int led89_read_body(ledger89 *l, led89_fd fd,
     return LEDGER89_OK;
 }
 
+static int led89_read_body(ledger89 *l, led89_fd fd,
+                           const led89_batch_dir_entry *e, led89_u64 index,
+                           void *data_out, size_t capacity, size_t *size_out)
+{
+    led89_u64 offset;
+    int rc;
+
+    rc = led89_body_offset(l, fd, e, index, &offset);
+    if (rc != LEDGER89_OK)
+    {
+        return rc;
+    }
+    rc = led89_body_read(l, fd, e, offset, data_out, capacity, size_out);
+    return rc;
+}
+
 int led89_batch_read_record(ledger89 *l, const led89_batch_dir_entry *e,
                             led89_u64 index, void *data_out, size_t capacity,
                             size_t *size_out)
@@ -211,5 +251,164 @@ int led89_read_impl(ledger89 *l, led89_u64 index, void *data_out,
     }
     rc = led89_batch_read_record(l, &l->dir[entry], index, data_out, capacity,
                                  size_out);
+    return rc;
+}
+
+/*
+ * Return 1 when the iterator's cached position still addresses `index`,
+ * filling the batch entry and physical offset. Return 0 when the cache must
+ * be rebuilt from the batch directory.
+ */
+static int led89_cursor_match(ledger89 *l, const ledger89_iter *iter,
+                              led89_u64 index, size_t *entry, led89_u64 *offset)
+{
+    const led89_batch_dir_entry *e;
+
+    if (iter->cursor_valid == 0)
+    {
+        return 0;
+    }
+    if (iter->cursor_entry >= l->dir_count)
+    {
+        return 0;
+    }
+    e = &l->dir[iter->cursor_entry];
+    if (index < e->first)
+    {
+        return 0;
+    }
+    if (index >= e->first + e->count)
+    {
+        return 0;
+    }
+    *entry = iter->cursor_entry;
+    *offset = led89_from_public(iter->cursor_offset);
+    return 1;
+}
+
+/* Physical offset of the first record of a batch, or zero when `index` is
+ * not that record. */
+static led89_u64 led89_entry_start(const led89_batch_dir_entry *e,
+                                   led89_u64 index)
+{
+    if (index != e->first)
+    {
+        return (led89_u64)0;
+    }
+    return led89_first_off(e);
+}
+
+/* Resolve `index` to a batch entry and physical offset, preferring the
+ * iterator cache. have_offset is 0 when the offset still needs a scan. */
+static int led89_iter_locate(ledger89 *l, const ledger89_iter *iter,
+                             led89_u64 index, size_t *entry, led89_u64 *offset,
+                             int *have_offset)
+{
+    int matched;
+    int rc;
+
+    matched = led89_cursor_match(l, iter, index, entry, offset);
+    if (matched != 0)
+    {
+        *have_offset = 1;
+        return LEDGER89_OK;
+    }
+    rc = led89_dir_find(l, index, entry);
+    if (rc != LEDGER89_OK)
+    {
+        return LEDGER89_ECORRUPT;
+    }
+    *offset = led89_entry_start(&l->dir[*entry], index);
+    *have_offset = 0;
+    if (*offset != (led89_u64)0)
+    {
+        *have_offset = 1;
+    }
+    return LEDGER89_OK;
+}
+
+static void led89_cursor_clear(ledger89_iter *iter)
+{
+    iter->cursor_valid = 0;
+}
+
+static void led89_cursor_set(ledger89_iter *iter, size_t entry,
+                             led89_u64 offset)
+{
+    iter->cursor_entry = entry;
+    iter->cursor_offset = led89_to_public(offset);
+    iter->cursor_valid = 1;
+}
+
+static void led89_iter_advance(ledger89_iter *iter,
+                               const led89_batch_dir_entry *e, size_t entry,
+                               led89_u64 offset, size_t size)
+{
+    led89_u64 next;
+    led89_u64 end;
+
+    next = led89_next_off(offset, size);
+    end = e->offset + e->bytes;
+    if (next >= end)
+    {
+        led89_cursor_clear(iter);
+        return;
+    }
+    led89_cursor_set(iter, entry, next);
+}
+
+/*
+ * Read the record at `index` for an iterator, reusing the iterator's cached
+ * batch entry and physical record offset when they still address `index`.
+ * Sequential iteration therefore advances linearly instead of rescanning
+ * each batch from its start.
+ */
+int led89_iter_step(ledger89_iter *iter, led89_u64 index, void *data_out,
+                    size_t capacity, size_t *size_out)
+{
+    ledger89 *l;
+    const led89_batch_dir_entry *e;
+    size_t entry;
+    led89_u64 offset;
+    led89_fd fd;
+    int opened;
+    int have_offset;
+    int rc;
+
+    l = iter->ledger;
+    entry = 0u;
+    offset = (led89_u64)0;
+    have_offset = 0;
+    rc = led89_iter_locate(l, iter, index, &entry, &offset, &have_offset);
+    if (rc != LEDGER89_OK)
+    {
+        return rc;
+    }
+    e = &l->dir[entry];
+    rc = led89_part_fd(l, e->part, &fd, &opened);
+    if (rc != LEDGER89_OK)
+    {
+        return rc;
+    }
+    if (have_offset == 0)
+    {
+        rc = led89_body_offset(l, fd, e, index, &offset);
+    }
+    if (rc == LEDGER89_OK)
+    {
+        rc = led89_body_read(l, fd, e, offset, data_out, capacity, size_out);
+    }
+    if (rc == LEDGER89_OK)
+    {
+        led89_iter_advance(iter, e, entry, offset, *size_out);
+    }
+    else if (rc == LEDGER89_ETOOSMALL)
+    {
+        led89_cursor_set(iter, entry, offset);
+    }
+    if (opened != 0)
+    {
+        led89_close_quiet(l, fd);
+    }
     return rc;
 }

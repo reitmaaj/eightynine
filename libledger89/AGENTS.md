@@ -1,6 +1,6 @@
 # libledger89 — agentic workflow
 
-A green-compliant, standalone ISO C89 library for a durable, ordered,
+A green-compliant, standalone C89-API library for a durable, ordered,
 rewindable sequence of opaque byte records addressed by stable logical
 positions. It owns the local durability core and nothing around it: no Raft
 terms, leaders, replication, message queues, SQL, indexes, queries,
@@ -8,10 +8,12 @@ capabilities, or application semantics.
 
 ## Hard constraints
 
-- **ISO C89 only**, clean under the green baseline for both GCC and Clang in
-  both C89 and C23 modes, plus the green clang-tidy semantic checks and the
-  canonical Allman format (`.clang-format`). Verified via the sibling `green`
-  driver (`just green` / `just check`).
+- **ISO C89 public API and source dialect**; internal 64-bit arithmetic uses
+  the GCC/Clang `unsigned long long` extension and the storage backend is
+  POSIX. Clean under the green baseline for both GCC and Clang in both C89
+  and C23 modes, plus the green clang-tidy semantic checks and the canonical
+  Allman format (`.clang-format`). Verified via the sibling `green` driver
+  (`just green` / `just check`).
 - **Standalone**: libledger89 includes no sibling headers and never links
   another library. libc and POSIX file primitives only. No Raft, query, or
   application code in `include/` or `src/`.
@@ -65,8 +67,8 @@ Use `just` for all actions: `just build`, `just smoke`, `just unit`,
 `just gen-strict-tables`, `just strict-fast`, `just strict`,
 `just strict-long`, `just strict-sanitize`, `just strict-valgrind`,
 `just ratio`, `just coverage`, `just coverage-report`, `just green`,
-`just green-fix`, `just check`, `just lint`, `just format`, `just doctor`,
-`just clean`.
+`just green-fix`, `just check`, `just test32`, `just release-check`,
+`just lint`, `just format`, `just doctor`, `just clean`.
 
 ## Git
 

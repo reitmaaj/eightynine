@@ -46,12 +46,12 @@ Traceability: each criterion maps to scenarios in
 4. `truncate_from` on a dirty ledger returns `EUNSTABLE`; out-of-range
    positions return `EGONE`/`ERANGE`. (S01)
 5. `prune_before` past `stable_end` returns `EUNSTABLE`. (S03)
-6. Corruption in stable history returns `ECORRUPT`; recovery never silently
-   truncates it, and `CURRENT` never falls back to an older manifest. (C03,
-   C05, X01)
+6. Framing corruption required for recovery returns `ECORRUPT`; recovery
+   never silently truncates it, and `CURRENT` never falls back to an older
+   manifest. (C03, C05, X01)
 7. A partial batch is never visible after any crash. (C01, C04)
 8. A poisoned handle never reports success for a mutation. (A05)
 9. Payload corruption is reported by `read`/`verify` rather than repaired.
-   (G01, X01)
+   (G01, X01, C07)
 10. Indices below `first` return `EGONE`, never stale or invented data. (R01,
     R02)

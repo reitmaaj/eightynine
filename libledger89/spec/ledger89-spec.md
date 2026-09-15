@@ -64,9 +64,15 @@ Exactly one of `RDONLY`/`RDWR` is required; `CREATE` requires `RDWR`; `EXCL`
 requires `CREATE`. A writable open takes exclusive ownership (`EBUSY` on
 conflict) and physically discards the unstable tail; a read-only open takes
 shared ownership, never mutates, and returns `EROFS` for mutations. Open
-performs recovery before returning. Corruption before the last durable
-frontier returns `ECORRUPT`; unsupported versions return `EFORMAT`. On every
-failure path `*out` is NULL.
+performs recovery before returning. Recovery validates the metadata,
+structure, and framing needed to reconstruct the ledger and its durable
+frontier; corruption detected while doing so returns `ECORRUPT`, and
+unsupported versions return `EFORMAT`. Open is not an exhaustive integrity
+check: payload corruption not needed for recovery may remain undetected until
+the affected record is read or `verify` runs (section 8). On every failure
+path `*out` is NULL. A writable open removes obsolete manifest generations
+best-effort after recovery, retaining only the generation `CURRENT` names; a
+failed cleanup never affects recoverability.
 
 ## 5. Append
 
@@ -94,15 +100,53 @@ frontier only if its prefix validates.
 
 `read` returns `EGONE` for `index < first`, `ENOENT` for `index >= end`,
 `ETOOSMALL` (with the required size) when the buffer is short, and supports a
-NULL buffer for size-only queries. Reading `[stable_end, end)` is permitted;
-those records may disappear after crash/reopen.
+NULL buffer for size-only queries. A read that returns payload bytes verifies
+the record payload checksum and returns `ECORRUPT` if it does not match. A
+size-only read, or a read that returns `ETOOSMALL` before reading the payload,
+does not verify that checksum. Reading `[stable_end, end)` is permitted; those
+records may disappear after crash/reopen.
 
 `iter_init` returns `EGONE` for `from < first`, `ERANGE` for `from > end`,
 and accepts `from == end`. `iter_next` precedence is `EGONE`, `ESTALE`,
-`DONE`; `DONE` is not permanent. `append`, `sync`, and pruning that does not
-pass the iterator do not invalidate it; `truncate_from` always does.
+`DONE`; `DONE` is not permanent. `iter_next` follows the payload buffer and
+integrity-checking rules of `read`. `append`, `sync`, and pruning that does
+not pass the iterator do not invalidate it; `truncate_from` always does.
 
-## 8. Structural operations
+## 8. Integrity validation
+
+Integrity validation is operation-local.
+
+`open` performs the validation necessary to recover the authoritative logical
+state of the ledger. It validates the committed physical topology, the
+structural framing traversed during recovery, and the information needed to
+determine `first`, `stable_end`, `end`, and `revision`. It is not an
+exhaustive integrity check: successful open does not guarantee that every
+recovered record payload has been read or that every record payload checksum
+has been verified. Payload corruption that does not prevent structural
+recovery may remain undetected after open.
+
+`read` validates the payload checksum of the record whose payload it actually
+reads. A read with `data_out == NULL`, or one that returns `ETOOSMALL` before
+reading the payload, does not verify that payload checksum.
+
+`verify` performs exhaustive integrity verification of the current ledger,
+including sealed-part digests, batch checksums, record payload checksums, and
+the recovered active prefix.
+
+Therefore:
+
+- successful `open` establishes that the ledger was structurally
+  recoverable, not that all stored payload data is valid;
+- successful payload-returning `read(i)` establishes the integrity checked
+  for record `i`, not for other records;
+- successful `verify` establishes that all integrity checks defined by the
+  current ledger format succeeded.
+
+`ECORRUPT` means that corruption was detected by the requested operation. It
+does not imply that every other operation must have detected the same
+corruption earlier.
+
+## 9. Structural operations
 
 `truncate_from(from)` requires a clean ledger (`EUNSTABLE` otherwise), keeps
 `[first, from)`, sets `end = stable_end = from`, and increments `revision`
@@ -116,17 +160,28 @@ change. It may run while the active tail is dirty.
 `rotate` seals the active part and starts a new one; rotating an empty active
 part is a no-op.
 
-`verify` recomputes sealed digests and batch checksums, returning `OK`,
-`ECORRUPT`, or an I/O error.
+`verify` performs the exhaustive integrity check described in section 8,
+returning `OK`, `ECORRUPT`, or an I/O error.
 
-## 9. Errors
+## 10. Errors
 
 `LEDGER89_OK`, `LEDGER89_DONE`, `EINVAL`, `ENOMEM`, `EIO`, `ENOENT`,
 `EEXIST`, `EBUSY`, `EROFS`, `ECORRUPT`, `EFORMAT`, `ESTALE`, `EGONE`,
 `ERANGE`, `EUNSTABLE`, `ETOOSMALL`, `EOVERFLOW`, `EPOISONED`.
 
-## 10. Limits
+## 11. Limits
 
 Maximum record payload 16 MiB. Maximum batch record count `UINT32_MAX`.
 Automatic rotation target 64 MiB (internal; explicit `rotate` is always
 available). Indices and revisions are 64-bit.
+
+## 12. Portability
+
+The public API and the library sources are ISO C89. Internal 64-bit
+arithmetic uses the GCC/Clang `unsigned long long` extension because C89 has
+no exact 64-bit integer type; the public 64-bit type is a portable two-field
+structure. The storage backend requires POSIX file primitives, atomic
+`rename`, `flock`-style exclusivity, and directory syncing. The verified
+compiler matrix is GCC and Clang in C89 and C23 modes under the green
+baseline. `just test32` exercises the C suites under `-m32` when a multilib
+toolchain is present and reports a skip otherwise.

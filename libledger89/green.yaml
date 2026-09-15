@@ -60,6 +60,8 @@ pure_functions:
     - led89_dir_probe
     - led89_part_take
     - led89_skip_one
+    - led89_next_off
+    - led89_first_off
     - led89_alloc_bytes
     - led89_manifest_has_part
     - led89_desc_id

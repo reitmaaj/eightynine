@@ -1,0 +1,151 @@
+#!/bin/sh
+# release-check - run the full libledger89 release gate and record evidence.
+#
+# Usage: scripts/release-check
+#
+# Runs every release gate in order, stops at the first failure, and writes
+# build/release/summary.json plus build/release/summary.txt. Each gate keeps
+# its own log under build/release/. The long tiers run last, so an interrupted
+# run still records every completed gate.
+set -eu
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$root"
+
+release_dir="build/release"
+status_file="$release_dir/status.tsv"
+start_time=$(date +%s)
+
+mkdir -p "$release_dir"
+
+write_summary() {
+    code="$1"
+    end_time=$(date +%s)
+    elapsed=$((end_time - start_time))
+    python3 - "$status_file" "$release_dir" "$code" "$elapsed" <<'PY'
+import json
+import os
+import subprocess
+import sys
+import time
+
+status_file, release_dir, code, elapsed = sys.argv[1:5]
+
+def capture(args):
+    try:
+        out = subprocess.check_output(args, stderr=subprocess.STDOUT)
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return out.decode("utf-8", "replace").strip().splitlines()[0]
+
+gates = []
+with open(status_file) as handle:
+    for line in handle:
+        name, status, seconds, command = line.rstrip("\n").split("\t")
+        gates.append(
+            {
+                "name": name,
+                "status": status,
+                "seconds": int(seconds),
+                "command": command,
+                "log": os.path.join(release_dir, name + ".log"),
+            }
+        )
+
+dirty = False
+try:
+    dirty = bool(
+        subprocess.check_output(["git", "status", "--porcelain"]).strip()
+    )
+except (OSError, subprocess.CalledProcessError):
+    dirty = None
+
+environment = {
+    "commit": capture(["git", "rev-parse", "HEAD"]),
+    "branch": capture(["git", "rev-parse", "--abbrev-ref", "HEAD"]),
+    "dirty": dirty,
+    "date": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    "machine": os.uname().machine,
+    "system": os.uname().sysname,
+    "cc": capture(["cc", "--version"]),
+    "clang": capture(["clang", "--version"]),
+    "python": capture(["python3", "--version"]),
+}
+
+summary = {
+    "result": "pass" if int(code) == 0 else "fail",
+    "exit_code": int(code),
+    "seconds": int(elapsed),
+    "environment": environment,
+    "gates": gates,
+}
+
+with open(os.path.join(release_dir, "summary.json"), "w") as handle:
+    json.dump(summary, handle, indent=2, sort_keys=True)
+
+lines = [
+    "libledger89 release-check: %s" % summary["result"],
+    "commit: %s%s" % (environment["commit"], " (dirty)" if dirty else ""),
+    "date: %s" % environment["date"],
+    "machine: %s %s" % (environment["system"], environment["machine"]),
+    "cc: %s" % environment["cc"],
+    "clang: %s" % environment["clang"],
+    "python: %s" % environment["python"],
+    "seconds: %d" % summary["seconds"],
+    "",
+]
+for gate in gates:
+    lines.append(
+        "%-16s %-4s %6ss  %s"
+        % (gate["name"], gate["status"], gate["seconds"], gate["command"])
+    )
+lines.append("")
+with open(os.path.join(release_dir, "summary.txt"), "w") as handle:
+    handle.write("\n".join(lines))
+print("\n".join(lines))
+PY
+}
+
+run_gate() {
+    name="$1"
+    shift
+    log="$release_dir/$name.log"
+    printf 'release-check: %s\n' "$name"
+    t0=$(date +%s)
+    if "$@" > "$log" 2>&1; then
+        status="pass"
+    else
+        status="fail"
+    fi
+    t1=$(date +%s)
+    printf '%s\t%s\t%s\t%s\n' "$name" "$status" "$((t1 - t0))" "$*" \
+        >> "$status_file"
+    if [ "$status" = "fail" ]; then
+        printf 'release-check: FAIL %s (log: %s)\n' "$name" "$log" >&2
+        write_summary 1
+        exit 1
+    fi
+    printf 'release-check: pass %s (%ss)\n' "$name" "$((t1 - t0))"
+}
+
+# A clean build tree keeps the gate independent of local residue.
+just clean
+mkdir -p "$release_dir"
+: > "$status_file"
+
+run_gate doctor just doctor
+run_gate green just green
+run_gate lint just lint
+run_gate test just test
+run_gate strict just strict
+run_gate strict-sanitize just strict-sanitize
+run_gate strict-valgrind just strict-valgrind
+run_gate ratio just ratio
+run_gate coverage just coverage
+run_gate adapters-raft just adapters-raft
+run_gate test32 just test32
+run_gate bench just bench
+run_gate long just long
+run_gate strict-long just strict-long
+
+write_summary 0

@@ -48,6 +48,35 @@ build32:
 	ar rcs build/32/libledger89.a $objs; \
 	echo "build32: ok"
 
+# Best-effort 32-bit C suite run; reports a skip when multilib is absent.
+test32:
+	@mkdir -p build/32/obj build/32/tests; \
+	if ! printf '#include <stdio.h>\nint main(void){return 0;}\n' | {{CC}} -m32 -x c - -o build/32/probe 2>/dev/null; then \
+	    echo "test32: SKIPPED: no 32-bit toolchain (install gcc multilib)"; \
+	    exit 0; \
+	fi; \
+	for f in src/*.c; do \
+	    [ -e "$f" ] || continue; \
+	    name=$(basename "$f" .c); \
+	    {{CC}} {{STRICT}} {{POSIX}} -m32 -Iinclude -Isrc -c "src/$name.c" -o "build/32/obj/$name.o" || exit 1; \
+	done; \
+	objs=""; \
+	for f in build/32/obj/*.o; do \
+	    objs="$objs $f"; \
+	done; \
+	rm -f build/32/libledger89.a; \
+	ar rcs build/32/libledger89.a $objs; \
+	for t in {{TESTGLOB}}; do \
+	    [ -e "$t" ] || continue; \
+	    name=$(basename "$t" .c); \
+	    {{CC}} {{STRICT}} {{POSIX}} {{TESTFLAGS}} -m32 {{INC}} \
+	        -o "build/32/tests/$name" "$t" test/support/*.c build/32/libledger89.a || exit 1; \
+	    ./build/32/tests/$name || exit 1; \
+	done; \
+	{{CC}} {{STRICT}} {{POSIX}} {{TESTFLAGS}} {{INC}} -m32 \
+	    -o build/32/strictrun test/strict/strictrun.c build/32/libledger89.a || exit 1; \
+	echo "test32: ok"
+
 # Compile and run every test program in one suite directory.
 _run dir:
 	@for t in test/{{dir}}/test_*.c; do \
@@ -83,15 +112,15 @@ gen-strict-tables:
 
 # Fast strict tier: smoke, API tables, state, format, shim self-test.
 strict-fast: build-shared strictrun
-	{{PY}} test/strict/run.py --tier fast
+	{{PY}} test/strict/run.py --tier fast --json build/strict/report-fast.json
 
 # Full strict tier: fault, crash, corruption, model, adversarial.
 strict: build-shared strictrun
-	{{PY}} test/strict/run.py --tier full
+	{{PY}} test/strict/run.py --tier full --json build/strict/report-full.json
 
 # Long strict tier: large fuzz, 2M-op model, exhaustive corruption, latency.
 strict-long: build-shared strictrun
-	{{PY}} test/strict/run.py --tier long
+	{{PY}} test/strict/run.py --tier long --json build/strict/report-long.json
 
 # Strict runner subset under ASan + UBSan.
 strict-sanitize:
@@ -189,10 +218,20 @@ long: build
 # Run every fast suite (smoke first, strict-fast last).
 test: smoke unit api crash fault fault-nomem fault-eintr corrupt model adapters golden stress strict-fast
 
-# Reproducible throughput baseline (not part of `just test`).
+# Reproducible throughput, cold-open, and iteration-scaling baselines (not
+# part of `just test`).
 bench: build
 	{{CC}} -O2 {{STRICT}} {{POSIX}} {{TESTFLAGS}} {{INC}} -o build/bench test/bench/bench_main.c test/support/*.c {{LIB}}
 	./build/bench
+	{{CC}} -O2 {{STRICT}} {{POSIX}} {{TESTFLAGS}} {{INC}} -o build/bench_iter test/bench/bench_iter.c test/support/*.c {{LIB}}
+	./build/bench_iter
+	{{CC}} -O2 {{STRICT}} {{POSIX}} {{TESTFLAGS}} {{INC}} -o build/bench_open test/bench/bench_open.c test/support/*.c {{LIB}}
+	./build/bench_open 1000 1 1
+	./build/bench_open 10000 1 1
+	./build/bench_open 100000 1 1
+	./build/bench_open 10000 1 10
+	./build/bench_open 10000 1 100
+	./build/bench_open 10000 1 1000
 
 # Regenerate the committed golden fixtures (review the diff before commit).
 golden-gen: build
@@ -247,6 +286,12 @@ green-fix:
 
 # Full local gate: green profile, lint, the fast suite, ratio, and coverage.
 check: green lint test ratio coverage
+
+# Full release gate: clean tree, every suite including the long tiers, with a
+# machine-readable summary under build/release/. Multi-hour; stops on the
+# first failure.
+release-check:
+	sh scripts/release-check
 
 # Lint shell scripts, Python tables, and check C/header formatting.
 lint:

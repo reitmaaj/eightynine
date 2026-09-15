@@ -24,7 +24,8 @@ recover(path, writable):
     state = {uuid, revision, first, stable_end = marker.end, end = marker.end}
     if writable:
         physically truncate the active part after the marker; fsync
-        garbage-collect unreferenced parts and CURRENT.tmp
+        garbage-collect unreferenced parts, obsolete manifests, and
+        CURRENT.tmp; only the generation CURRENT names is retained
     return CLEAN
 ```
 
@@ -46,6 +47,7 @@ frontier. A marker that fails any check is treated as torn and skipped.
 | framing corruption before the chosen marker | ECORRUPT |
 | corrupt or missing manifest referenced by CURRENT | ECORRUPT (no fallback) |
 | orphan newer manifest or orphan part | ignore; GC when writable |
+| obsolete manifest generations | unlinked best-effort by writable recovery; the CURRENT generation always remains |
 | interrupted truncate/prune/rotate before publication | old topology |
 | after publication | new topology (truncate also bumps revision) |
 | payload corruption in stable history | ECORRUPT on read/verify |
@@ -62,3 +64,8 @@ manifest; greater-generation manifests are orphans.
 
 Recovery is idempotent: reopening a recovered ledger performs no additional
 logical change, and the writable tail cleanup is safe to repeat.
+
+Writable recovery retains exactly one manifest generation, the one CURRENT
+names. Obsolete generations are removed best-effort during recovery; a failed
+unlink leaves an unreferenced file behind but never affects the manifest
+CURRENT names, so recoverability is independent of cleanup success.

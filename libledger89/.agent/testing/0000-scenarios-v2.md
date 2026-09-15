@@ -125,6 +125,12 @@ SCENARIO C03 stable corruption
   WHEN open runs
   THEN ECORRUPT is returned and nothing is repaired
 
+SCENARIO C07 payload corruption
+  GIVEN durable payload corruption that recovery does not need to inspect
+  WHEN open, read, and verify run
+  THEN open succeeds, a size-only read succeeds, a payload read returns
+       ECORRUPT, and verify returns ECORRUPT
+
 SCENARIO C04 topology publication
   GIVEN a structural operation
   WHEN a crash occurs at any syscall

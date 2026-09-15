@@ -43,6 +43,12 @@
  *     A handle is not internally synchronized; the caller serializes calls
  *     on one handle. A writable open owns the ledger exclusively; read-only
  *     opens may coexist.
+ *
+ * Portability:
+ *
+ *     The public API is ISO C89. The implementation uses the GCC/Clang
+ *     unsigned-long-long extension for internal 64-bit arithmetic and a
+ *     POSIX storage backend; see the README for the exact contract.
  */
 
 #include <limits.h>
@@ -123,6 +129,13 @@ typedef unsigned long ledger89_u32;
         LEDGER89_EEXIST = -5,
         LEDGER89_EBUSY = -6,
         LEDGER89_EROFS = -7,
+        /*
+         * Corruption detected while performing the requested operation.
+         *
+         * Integrity checking is operation-specific: open validates what
+         * recovery requires, read validates a payload when it is read, and
+         * verify performs exhaustive validation of the ledger.
+         */
         LEDGER89_ECORRUPT = -8,
         LEDGER89_EFORMAT = -9,
         LEDGER89_ESTALE = -10,
@@ -212,7 +225,14 @@ typedef unsigned long ledger89_u32;
      *
      * Open performs recovery before returning.
      *
-     * Corruption before the last durable frontier returns ECORRUPT.
+     * Recovery validates the metadata, structure, and framing needed to
+     * reconstruct the ledger and its durable frontier. Corruption detected
+     * while doing so returns ECORRUPT.
+     *
+     * Open does not verify every record payload. Payload corruption not
+     * needed to reconstruct the ledger may therefore remain undetected
+     * until the affected record is read or ledger89_verify() is called.
+     *
      * Incomplete/unstable tail data is discarded logically during recovery.
      *
      * A writable open obtains exclusive writer ownership and physically
@@ -349,13 +369,23 @@ typedef unsigned long ledger89_u32;
      * size_out is required and receives the complete record size.
      *
      * If data_out == NULL:
-     *     no bytes are copied;
-     *     returns OK after reporting the record size.
+     *     no payload bytes are read or copied;
+     *     returns OK after reporting the record size;
+     *     the record payload checksum is not verified.
      *
      * If data_out != NULL and capacity < record size:
      *     returns ETOOSMALL;
      *     copies nothing;
-     *     size_out still receives the required size.
+     *     size_out still receives the required size;
+     *     the record payload checksum is not verified.
+     *
+     * If data_out != NULL and capacity is sufficient:
+     *     reads the complete payload and verifies its record checksum;
+     *     returns ECORRUPT if the stored record framing or payload
+     *     checksum is invalid.
+     *
+     * Successful open does not imply that every record payload has already
+     * been verified.
      *
      * Reading an unstable record in [stable_end, end) is permitted. Such a
      * record may disappear after crash/reopen.
@@ -371,14 +401,22 @@ typedef unsigned long ledger89_u32;
     /*
      * Iterator state deliberately remains small and caller-owned.
      *
-     * Applications must initialize it only through ledger89_iter_init().
-     * An iterator must not outlive its ledger handle.
+     * Applications must initialize it only through ledger89_iter_init() and
+     * must not read or modify any field. An iterator must not outlive its
+     * ledger handle.
+     *
+     * The trailing fields are private cursor state that lets sequential
+     * iteration advance without rescanning a batch from its start.
      */
     typedef struct ledger89_iter
     {
         ledger89 *ledger;
         ledger89_index next;
         ledger89_revision revision;
+
+        size_t cursor_entry;
+        ledger89_u64 cursor_offset;
+        int cursor_valid;
     } ledger89_iter;
 
     /*
@@ -398,11 +436,11 @@ typedef unsigned long ledger89_u32;
      * index_out may be NULL.
      * size_out is required.
      *
-     * Payload buffer rules match ledger89_read().
+     * Payload buffer and integrity-checking rules match ledger89_read().
      *
-     * If data_out == NULL, the iterator reports metadata and advances without
-     * copying payload bytes. The caller may subsequently call ledger89_read()
-     * using index_out.
+     * In particular, if data_out == NULL, the iterator reports metadata and
+     * advances without reading or verifying the record payload. The caller
+     * may subsequently call ledger89_read() using index_out.
      *
      * If capacity is insufficient:
      *     returns ETOOSMALL
@@ -519,8 +557,13 @@ typedef unsigned long ledger89_u32;
     int ledger89_rotate(ledger89 *ledger);
 
     /*
+     * Perform an exhaustive integrity check of the current ledger.
+     *
      * Recompute every checksum in the ledger: sealed part digests, batch
      * checksums, record payload checksums, and the recovered active prefix.
+     *
+     * This is stronger than the validation performed by ledger89_open().
+     * Successful open does not imply that ledger89_verify() will succeed.
      *
      * Returns LEDGER89_OK when every checksum matches, LEDGER89_ECORRUPT
      * when any does not, or a negative I/O error.

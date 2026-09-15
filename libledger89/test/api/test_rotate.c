@@ -42,6 +42,7 @@ int main(void)
     rc = ledger89_rotate(f.l);
     CHECK_EQ(rc, LEDGER89_OK);
     CHECK_EQ(fx_count_parts(&f), 2);
+    CHECK_EQ(fx_count_manifests(&f), 2);
     rc = ledger89_get_state(f.l, &st);
     CHECK_EQ(rc, LEDGER89_OK);
     CHECK_U64(st.first, test_u64(1));
@@ -54,6 +55,7 @@ int main(void)
     rc = ledger89_rotate(f.l);
     CHECK_EQ(rc, LEDGER89_OK);
     CHECK_EQ(fx_count_parts(&f), 3);
+    CHECK_EQ(fx_count_manifests(&f), 3);
     rc = ledger89_rotate(f.l);
     CHECK_EQ(rc, LEDGER89_OK);
     CHECK_EQ(fx_count_parts(&f), 3);
@@ -95,6 +97,8 @@ int main(void)
     CHECK_EQ(rc, LEDGER89_OK);
     CHECK_U64(st.end, test_u64(6));
     CHECK_EQ(fx_count_parts(&f), 3);
+    /* Writable recovery retains only the manifest CURRENT names. */
+    CHECK_EQ(fx_count_manifests(&f), 1);
     fx_close(&f);
     TEST_END;
 }

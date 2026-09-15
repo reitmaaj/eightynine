@@ -432,6 +432,9 @@ int ledger89_iter_init(ledger89_iter *iter, ledger89 *ledger,
     iter->ledger = ledger;
     iter->next = from;
     iter->revision = led89_to_public(ledger->revision);
+    iter->cursor_entry = 0u;
+    iter->cursor_offset = ledger89_u64_zero();
+    iter->cursor_valid = 0;
     if (at < ledger->first)
     {
         return LEDGER89_EGONE;
@@ -476,7 +479,7 @@ int ledger89_iter_next(ledger89_iter *iter, ledger89_index *index_out,
     {
         return LEDGER89_DONE;
     }
-    rc = led89_read_impl(l, index, data_out, capacity, size_out);
+    rc = led89_iter_step(iter, index, data_out, capacity, size_out);
     if (rc != LEDGER89_OK)
     {
         return rc;

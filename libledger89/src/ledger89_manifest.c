@@ -270,6 +270,7 @@ int led89_gc_orphans(ledger89 *l, const led89_manifest *keep)
     while (done == 0)
     {
         led89_u64 file_id;
+        led89_u64 generation;
 
         rc = l->io->list_next(l->io->ctx, dir, name, sizeof name, &done);
         if (rc != LEDGER89_OK)
@@ -284,6 +285,14 @@ int led89_gc_orphans(ledger89 *l, const led89_manifest *keep)
         if (strcmp(name, LED89_CURRENT_TMP_NAME) == 0)
         {
             led89_unlink_name(l, name);
+            continue;
+        }
+        if (led89_manifest_name_parse(name, &generation) != 0)
+        {
+            if (generation != keep->generation)
+            {
+                led89_unlink_name(l, name);
+            }
             continue;
         }
         if (led89_part_name_parse(name, &file_id) == 0)

@@ -144,6 +144,7 @@ proven unreachable by a documented probe.
 | `strict-long` | large fuzz, 2M-op model, exhaustive corruption, latency scaling |
 | `strict-sanitize` | runner-based subset against ASan+UBSan |
 | `strict-valgrind` | runner-based subset under memcheck |
+| `release-check` | the whole gate from a clean tree, including the long tiers, with `build/release/summary.json` evidence |
 
 ## 11. Findings and fixes
 

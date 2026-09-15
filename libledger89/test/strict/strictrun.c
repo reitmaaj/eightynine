@@ -21,18 +21,83 @@
 static char g_root[PATH_CAP];
 static int g_have_root;
 
-static unsigned long u64_to_ul(ledger89_u64 v)
-{
-    return ((unsigned long)v.hi << 32) | (unsigned long)v.lo;
-}
+/*
+ * The runner needs exact 64-bit arithmetic. GCC and Clang provide the
+ * unsigned-long-long extension in C89 mode, as the library internals do.
+ * Output uses a local decimal printer because the C89 format rules reject
+ * the "%llu" length modifier.
+ */
+__extension__ typedef unsigned long long led89_ull;
 
-static ledger89_u64 ul_to_u64(unsigned long v)
+static ledger89_u64 ull_to_u64(led89_ull v)
 {
     ledger89_u64 out;
 
     out.hi = (ledger89_u32)(v >> 32);
     out.lo = (ledger89_u32)(v & 0xFFFFFFFFul);
     return out;
+}
+
+static int parse_ull(const char *text, led89_ull *out)
+{
+    char *end;
+    led89_ull value;
+
+    if (text == NULL)
+    {
+        return 0;
+    }
+    errno = 0;
+    end = NULL;
+    value = strtoull(text, &end, 0);
+    if (errno != 0)
+    {
+        return 0;
+    }
+    if (end == text)
+    {
+        return 0;
+    }
+    if (*end != '\0')
+    {
+        return 0;
+    }
+    *out = value;
+    return 1;
+}
+
+static void print_u64(ledger89_u64 v)
+{
+    char digits[21];
+    led89_ull hi;
+    led89_ull lo;
+    size_t n;
+
+    hi = (led89_ull)v.hi;
+    lo = (led89_ull)v.lo;
+    n = 0u;
+    for (;;)
+    {
+        led89_ull cur;
+        led89_ull rem;
+
+        rem = hi % 10u;
+        hi = hi / 10u;
+        cur = (rem << 32) | lo;
+        lo = cur / 10u;
+        rem = cur % 10u;
+        digits[n] = (char)('0' + (int)rem);
+        ++n;
+        if (hi == 0u && lo == 0u)
+        {
+            break;
+        }
+    }
+    while (n > 0u)
+    {
+        --n;
+        putchar(digits[n]);
+    }
 }
 
 static int parse_ul(const char *text, unsigned long *out)
@@ -114,9 +179,14 @@ static size_t parse_hex(const char *text, unsigned char *out, size_t cap)
     return len;
 }
 
-static unsigned long lcg_next(unsigned long *state)
+static led89_ull lcg_next(led89_ull *state)
 {
-    *state = (*state * 6364136223846793005ul) + 1442695040888963407ul;
+    led89_ull mul;
+    led89_ull add;
+
+    mul = ((led89_ull)0x5851F42Dul << 32) | (led89_ull)0x4C957F2Dul;
+    add = ((led89_ull)0x14057B7Eul << 32) | (led89_ull)0xF767814Ful;
+    *state = (*state * mul) + add;
     return *state;
 }
 
@@ -264,7 +334,9 @@ static int cmd_append(ledger89 *handle, char *args)
         return 0;
     }
     rc = ledger89_append(handle, len == 0u ? NULL : payload, len, &index);
-    printf("rc=%d idx=%lu\n", rc, u64_to_ul(index));
+    printf("rc=%d idx=", rc);
+    print_u64(index);
+    printf("\n");
     free(payload);
     return 1;
 }
@@ -304,7 +376,9 @@ static int cmd_append_fill(ledger89 *handle, char *args)
         memset(payload, (int)(byte_value & 0xFFul), (size_t)len_value);
     }
     rc = ledger89_append(handle, payload, (size_t)len_value, &index);
-    printf("rc=%d idx=%lu\n", rc, u64_to_ul(index));
+    printf("rc=%d idx=", rc);
+    print_u64(index);
+    printf("\n");
     free(payload);
     return 1;
 }
@@ -314,7 +388,7 @@ static int cmd_append_pattern(ledger89 *handle, char *args)
     char *seed_text;
     char *len_text;
     char *count_text;
-    unsigned long seed;
+    led89_ull seed;
     unsigned long len_value;
     unsigned long count;
     unsigned char *payload;
@@ -329,7 +403,7 @@ static int cmd_append_pattern(ledger89 *handle, char *args)
     {
         return 0;
     }
-    if (!parse_ul(seed_text, &seed) || !parse_ul(len_text, &len_value) ||
+    if (!parse_ull(seed_text, &seed) || !parse_ul(len_text, &len_value) ||
         !parse_ul(count_text, &count))
     {
         return 0;
@@ -343,7 +417,7 @@ static int cmd_append_pattern(ledger89 *handle, char *args)
     {
         return 0;
     }
-    first = ul_to_u64(0ul);
+    first = ull_to_u64((led89_ull)0);
     rc = LEDGER89_OK;
     for (i = 0ul; i < count; ++i)
     {
@@ -364,7 +438,9 @@ static int cmd_append_pattern(ledger89 *handle, char *args)
             first = index;
         }
     }
-    printf("rc=%d idx=%lu\n", rc, u64_to_ul(first));
+    printf("rc=%d idx=", rc);
+    print_u64(first);
+    printf("\n");
     free(payload);
     return 1;
 }
@@ -382,7 +458,7 @@ static int cmd_appendv(ledger89 *handle, char *args)
 
     count = 0u;
     save = NULL;
-    first = ul_to_u64(0ul);
+    first = ull_to_u64((led89_ull)0);
     token = strtok_r(args, ",", &save);
     while (token != NULL && count < 4096u)
     {
@@ -415,7 +491,9 @@ static int cmd_appendv(ledger89 *handle, char *args)
     {
         rc = ledger89_appendv(handle, slices, count, &first);
     }
-    printf("rc=%d idx=%lu\n", rc, u64_to_ul(first));
+    printf("rc=%d idx=", rc);
+    print_u64(first);
+    printf("\n");
     for (i = 0u; i < count; ++i)
     {
         free(buffers[i]);
@@ -428,8 +506,8 @@ static int cmd_appendv_at(ledger89 *handle, char *args)
     char *rev_text;
     char *end_text;
     char *list;
-    unsigned long rev;
-    unsigned long end;
+    led89_ull rev;
+    led89_ull end;
     ledger89_slice slices[4096];
     unsigned char *buffers[4096];
     size_t count;
@@ -446,13 +524,13 @@ static int cmd_appendv_at(ledger89 *handle, char *args)
     {
         return 0;
     }
-    if (!parse_ul(rev_text, &rev) || !parse_ul(end_text, &end))
+    if (!parse_ull(rev_text, &rev) || !parse_ull(end_text, &end))
     {
         return 0;
     }
     count = 0u;
     save = NULL;
-    first = ul_to_u64(0ul);
+    first = ull_to_u64((led89_ull)0);
     token = strtok_r(list, ",", &save);
     while (token != NULL && count < 4096u)
     {
@@ -483,10 +561,12 @@ static int cmd_appendv_at(ledger89 *handle, char *args)
     rc = LEDGER89_EINVAL;
     if (token == NULL && count > 0u)
     {
-        rc = ledger89_appendv_at(handle, ul_to_u64(rev), ul_to_u64(end), slices,
-                                 count, &first);
+        rc = ledger89_appendv_at(handle, ull_to_u64(rev), ull_to_u64(end),
+                                 slices, count, &first);
     }
-    printf("rc=%d idx=%lu\n", rc, u64_to_ul(first));
+    printf("rc=%d idx=", rc);
+    print_u64(first);
+    printf("\n");
     for (i = 0u; i < count; ++i)
     {
         free(buffers[i]);
@@ -500,7 +580,9 @@ static int cmd_sync(ledger89 *handle)
     int rc;
 
     rc = ledger89_sync(handle, &stable);
-    printf("rc=%d stable=%lu\n", rc, u64_to_ul(stable));
+    printf("rc=%d stable=", rc);
+    print_u64(stable);
+    printf("\n");
     return 1;
 }
 
@@ -508,7 +590,7 @@ static int cmd_read(ledger89 *handle, char *args)
 {
     char *index_text;
     char *cap_text;
-    unsigned long index;
+    led89_ull index;
     unsigned long cap;
     unsigned char *buffer;
     size_t size;
@@ -520,14 +602,14 @@ static int cmd_read(ledger89 *handle, char *args)
     {
         return 0;
     }
-    if (!parse_ul(index_text, &index))
+    if (!parse_ull(index_text, &index))
     {
         return 0;
     }
     size = 0u;
     if (strcmp(cap_text, "-") == 0)
     {
-        rc = ledger89_read(handle, ul_to_u64(index), NULL, 0u, &size);
+        rc = ledger89_read(handle, ull_to_u64(index), NULL, 0u, &size);
         printf("rc=%d size=%lu\n", rc, (unsigned long)size);
         return 1;
     }
@@ -541,7 +623,7 @@ static int cmd_read(ledger89 *handle, char *args)
         return 0;
     }
     memset(buffer, 0x5Au, (size_t)cap + 1u);
-    rc = ledger89_read(handle, ul_to_u64(index), buffer, (size_t)cap, &size);
+    rc = ledger89_read(handle, ull_to_u64(index), buffer, (size_t)cap, &size);
     if (rc == LEDGER89_OK)
     {
         printf("rc=%d size=%lu data=", rc, (unsigned long)size);
@@ -559,7 +641,7 @@ static int cmd_read(ledger89 *handle, char *args)
 static int cmd_read_crc(ledger89 *handle, char *args)
 {
     char *index_text;
-    unsigned long index;
+    led89_ull index;
     unsigned char *buffer;
     size_t size;
     size_t capacity;
@@ -570,7 +652,7 @@ static int cmd_read_crc(ledger89 *handle, char *args)
     {
         return 0;
     }
-    if (!parse_ul(index_text, &index))
+    if (!parse_ull(index_text, &index))
     {
         return 0;
     }
@@ -581,7 +663,7 @@ static int cmd_read_crc(ledger89 *handle, char *args)
         return 0;
     }
     size = 0u;
-    rc = ledger89_read(handle, ul_to_u64(index), buffer, capacity, &size);
+    rc = ledger89_read(handle, ull_to_u64(index), buffer, capacity, &size);
     if (rc == LEDGER89_OK)
     {
         printf("rc=%d size=%lu crc=%08lx\n", rc, (unsigned long)size,
@@ -597,14 +679,14 @@ static int cmd_read_crc(ledger89 *handle, char *args)
 
 static int cmd_iter_init(ledger89_iter *iter, ledger89 *handle, char *args)
 {
-    unsigned long from;
+    led89_ull from;
     int rc;
 
-    if (!parse_ul(args, &from))
+    if (!parse_ull(args, &from))
     {
         return 0;
     }
-    rc = ledger89_iter_init(iter, handle, ul_to_u64(from));
+    rc = ledger89_iter_init(iter, handle, ull_to_u64(from));
     printf("rc=%d\n", rc);
     return 1;
 }
@@ -631,15 +713,17 @@ static int cmd_iter_next(ledger89_iter *iter, char *args)
                             (size_t)cap, &size);
     if (rc == LEDGER89_OK)
     {
-        printf("rc=%d idx=%lu size=%lu data=", rc, u64_to_ul(index),
-               (unsigned long)size);
+        printf("rc=%d idx=", rc);
+        print_u64(index);
+        printf(" size=%lu data=", (unsigned long)size);
         print_hex(buffer, size);
         printf("\n");
     }
     else
     {
-        printf("rc=%d idx=%lu size=%lu\n", rc, u64_to_ul(index),
-               (unsigned long)size);
+        printf("rc=%d idx=", rc);
+        print_u64(index);
+        printf(" size=%lu\n", (unsigned long)size);
     }
     free(buffer);
     return 1;
@@ -647,30 +731,32 @@ static int cmd_iter_next(ledger89_iter *iter, char *args)
 
 static int cmd_truncate(ledger89 *handle, char *args)
 {
-    unsigned long from;
+    led89_ull from;
     int rc;
 
-    if (!parse_ul(args, &from))
+    if (!parse_ull(args, &from))
     {
         return 0;
     }
-    rc = ledger89_truncate_from(handle, ul_to_u64(from));
+    rc = ledger89_truncate_from(handle, ull_to_u64(from));
     printf("rc=%d\n", rc);
     return 1;
 }
 
 static int cmd_prune(ledger89 *handle, char *args)
 {
-    unsigned long requested;
+    led89_ull requested;
     ledger89_index actual;
     int rc;
 
-    if (!parse_ul(args, &requested))
+    if (!parse_ull(args, &requested))
     {
         return 0;
     }
-    rc = ledger89_prune_before(handle, ul_to_u64(requested), &actual);
-    printf("rc=%d actual=%lu\n", rc, u64_to_ul(actual));
+    rc = ledger89_prune_before(handle, ull_to_u64(requested), &actual);
+    printf("rc=%d actual=", rc);
+    print_u64(actual);
+    printf("\n");
     return 1;
 }
 
@@ -704,9 +790,15 @@ static int cmd_state(ledger89 *handle)
         printf("rc=%d\n", rc);
         return 1;
     }
-    printf("rc=0 first=%lu stable=%lu end=%lu rev=%lu id=",
-           u64_to_ul(state.first), u64_to_ul(state.stable_end),
-           u64_to_ul(state.end), u64_to_ul(state.revision));
+    printf("rc=0 first=");
+    print_u64(state.first);
+    printf(" stable=");
+    print_u64(state.stable_end);
+    printf(" end=");
+    print_u64(state.end);
+    printf(" rev=");
+    print_u64(state.revision);
+    printf(" id=");
     for (i = 0u; i < 16u; ++i)
     {
         printf("%02x", (unsigned)state.id.bytes[i]);

@@ -1,7 +1,7 @@
 # libledger89
 
 A durable, ordered, rewindable sequence of opaque byte records addressed by
-stable logical positions, in strict ISO C89.
+stable logical positions, in ISO C89.
 
 ```text
                      index space
@@ -42,6 +42,33 @@ interprets record payloads.
 | semantic record envelopes (WAL/MQ/Raft/IPC) | higher layers |
 | secondary indexes, SQL, queries, projections | external query engine |
 
+## Recovery and integrity
+
+Opening a ledger performs crash recovery and validates the structure needed
+to reconstruct its authoritative state. It is deliberately not a full data
+scrub: a ledger may open successfully even when a payload that recovery did
+not need to inspect is corrupt.
+
+Record payloads are checksum-verified when their payloads are read, and
+`ledger89_verify()` performs an exhaustive integrity check of the whole
+ledger. See `spec/ledger89-spec.md` section 8 for the normative rules.
+
+## Portability
+
+- **Public API and source dialect**: ISO C89. The installed header and the
+  library sources use no C99/C11 language features.
+- **Internal 64-bit arithmetic**: the GCC/Clang `unsigned long long`
+  extension (`__extension__`), because ISO C89 has no exact 64-bit integer
+  type. The public 64-bit types remain portable two-field structures.
+- **Storage backend**: POSIX (`pread`, `pwrite`, `fsync`, `rename`, `flock`,
+  directory sync). See `spec/ledger89-spec.md` section 12.
+- **Verified matrix**: GCC and Clang in C89 and C23 modes plus the green
+  clang-tidy checks. `just release-check` records the exact compiler
+  versions.
+- **32-bit targets**: `just test32` builds and runs the C suites under `-m32`
+  when a multilib toolchain is present and reports a skip otherwise. A skip
+  means ILP32 was not exercised for that run.
+
 ## Build and test
 
 - `just build` — build `build/libledger89.a`.
@@ -54,7 +81,9 @@ interprets record payloads.
 - `just corrupt` — structural corruption classification.
 - `just model` — randomized reference-model comparison.
 - `just golden` — frozen byte fixtures; regenerate with `just golden-gen`.
-- `just stress` — many parts, huge payload, large batches.
+- `just stress` — many parts, huge payload, large batches, retained ledger.
+- `just bench` — throughput, cold-open/recovery, and iteration-scaling
+  baselines (not part of `just test`).
 - `just test` — all fast suites, including the strict fast tier.
 - `just long` — multi-hundred-thousand-operation model run plus a many-part sweep.
 - `just sanitize` — fast suites under ASan + UBSan.
@@ -70,6 +99,12 @@ interprets record payloads.
   coverage of `src/` and print the HTML report.
 - `just green` — green conformance matrix (see the status note below).
 - `just check` — green profile, lint, all fast suites, ratio, and coverage.
+- `just release-check` — clean-tree release gate: green, lint, every fast
+  suite, full strict, sanitizers, Valgrind, ratio, coverage, adapters, 32-bit
+  probe, bench, and the long tiers. Multi-hour; writes
+  `build/release/summary.json`.
+- `just test32` — best-effort 32-bit C suite run; reports a skip when no
+  32-bit toolchain is installed.
 
 ## Green conformance
 
