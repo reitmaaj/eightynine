@@ -21,3 +21,19 @@
   `RAFT89_ERR_LIMIT` without emitting an action.
 - No arithmetic on terms or indices may truncate to 32 bits, wrap silently, or
   depend on the host `unsigned long` width.
+
+## ILP32 verification (2026-09-15)
+
+Host: Fedora 43, GCC 15.3.1, `cc -m32` multilib present.
+
+- `just build32` — `build32: ok`.
+- `just test32` — the whole fast suite (smoke, 16 unit, 5 crash, 2 sim, and
+  the allocation-failure sweep) passes under `-m32`, all linking
+  `build/32/libraft89.a`.
+- `just sanitize32` — wired for `-m32 -fsanitize=address,undefined`; on this
+  host it reports `sanitize32: SKIPPED: no 32-bit ASan/UBSan runtime (install
+  libasan.i686 libubsan.i686)` because the i686 sanitizer runtimes are absent.
+  It runs the same suites plus the failalloc sweep once they are installed.
+
+`just check` (the seven-cell green matrix) remains the LP64 release gate; the
+32-bit recipes are additive and skip cleanly when the toolchain is absent.

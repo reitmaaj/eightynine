@@ -41,15 +41,24 @@ build32:
 	ar rcs build/32/libraft89.a build/32/*.o; \
 	echo "build32: ok"
 
-# Run the unit suite on ILP32 when the toolchain supports it.
+# Run the whole fast suite (smoke, unit, crash, sim, failalloc) on ILP32.
 test32: build32
 	@if [ ! -f build/32/libraft89.a ]; then exit 0; fi; \
-	for t in test/unit/test_*.c; do \
+	{{CC}} {{STRICT}} {{TESTFLAGS}} -m32 -Iinclude -Itest/support -Isrc \
+	    -o build/32/smoke test/smoke.c test/support/*.c build/32/libraft89.a || exit 1; \
+	./build/32/smoke || exit 1; \
+	for t in test/unit/test_*.c test/crash/test_*.c test/sim/test_*.c; do \
+	    [ -e "$t" ] || continue; \
 	    name=$(basename "$t" .c); \
 	    {{CC}} {{STRICT}} {{TESTFLAGS}} -m32 -Iinclude -Itest/support -Isrc \
 	        -o "build/32/$name" "$t" test/support/*.c build/32/libraft89.a || exit 1; \
 	    ./build/32/$name || exit 1; \
-	done
+	done; \
+	{{CC}} {{STRICT}} {{TESTFLAGS}} -m32 -Iinclude -Itest/support -Isrc \
+	    -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free \
+	    -o build/32/test_alloc_failure test/failalloc/test_alloc_failure.c \
+	    test/failalloc/fail_alloc.c test/support/*.c build/32/libraft89.a || exit 1; \
+	./build/32/test_alloc_failure
 
 # Smoke test first: one end-to-end path through the library.
 smoke: build
@@ -156,6 +165,35 @@ sanitize:
 	        -o "build/asan/$name" "$t" test/support/*.c build/asan/libraft89.a || exit 1; \
 	    ./build/asan/$name || exit 1; \
 	done
+
+# Rebuild the library and run the whole fast suite under ASan + UBSan on ILP32.
+sanitize32:
+	@mkdir -p build/asan32; \
+	if ! printf '#include <stdio.h>\nint main(void){return 0;}\n' | {{CC}} -m32 -fsanitize=address,undefined -x c - -o build/asan32/probe 2>/dev/null; then \
+	    echo "sanitize32: SKIPPED: no 32-bit ASan/UBSan runtime (install libasan.i686 libubsan.i686)"; \
+	    exit 0; \
+	fi; \
+	for f in src/*.c; do \
+	    name=$(basename "$f" .c); \
+	    {{CC}} -std=c99 -m32 -g -fsanitize=address,undefined -fno-omit-frame-pointer -Iinclude -c "src/$name.c" -o "build/asan32/$name.o" || exit 1; \
+	done; \
+	objs=""; \
+	for f in build/asan32/*.o; do \
+	    objs="$objs $f"; \
+	done; \
+	ar rcs build/asan32/libraft89.a $objs; \
+	for t in test/smoke.c test/unit/test_*.c test/crash/test_*.c test/sim/test_*.c; do \
+	    [ -e "$t" ] || continue; \
+	    name=$(basename "$t" .c); \
+	    {{CC}} -std=c99 -m32 -g -fsanitize=address,undefined -fno-omit-frame-pointer -Iinclude -Itest/support -Isrc -Wno-unused-function \
+	        -o "build/asan32/$name" "$t" test/support/*.c build/asan32/libraft89.a || exit 1; \
+	    ./build/asan32/$name || exit 1; \
+	done; \
+	{{CC}} -std=c99 -m32 -g -fsanitize=address,undefined -fno-omit-frame-pointer -Iinclude -Itest/support -Isrc -Wno-unused-function \
+	    -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free \
+	    -o build/asan32/test_alloc_failure test/failalloc/test_alloc_failure.c \
+	    test/failalloc/fail_alloc.c test/support/*.c build/asan32/libraft89.a || exit 1; \
+	./build/asan32/test_alloc_failure
 
 # Generate the GCC and Clang compilation databases, then run the seven-cell
 # green matrix from this project root.

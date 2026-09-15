@@ -53,8 +53,9 @@ branch, then crash, simulation, and exhaustive testing.
 
 Use `just` for all actions: `just build`, `just smoke`, `just unit`,
 `just crash`, `just sim`, `just test`, `just exhaustive`, `just sanitize`,
-`just green`, `just check`, `just lint`, `just format`, `just doctor`,
-`just clean`.
+`just build32`, `just test32`, `just sanitize32` (best-effort ILP32; skip
+cleanly without multilib or the i686 sanitizer runtimes), `just green`,
+`just check`, `just lint`, `just format`, `just doctor`, `just clean`.
 
 ## Git
 
