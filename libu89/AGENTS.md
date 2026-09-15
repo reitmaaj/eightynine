@@ -8,6 +8,9 @@ ICU cannot (strict validation) plus an orthogonal code/terminal feature set
 
 - `just build` — compile `libu89.a`.
 - `just test` — run the unit + acceptance test suite.
+- `just build32` — best-effort ILP32 build of `build/32/libu89.a`; skips
+  cleanly when 32-bit multilib is absent.
+- `just test32` — run the unit + acceptance test suite under `-m32`.
 - `just check` — full green profile gate (C89 ∩ C23, GCC and Clang, green
   semantic checks, canonical Allman format) via the sibling `green` toolchain.
 - `just conform-norm` — run the complete Unicode `NormalizationTest.txt` suite.

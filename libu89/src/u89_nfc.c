@@ -778,7 +778,7 @@ static int mul_overflow(size_t a, size_t b)
 {
     if (a != 0)
     {
-        if (b > 0xFFFFFFFFFFFFFFFFUL / a)
+        if (b > (size_t)-1 / a)
         {
             return 1;
         }

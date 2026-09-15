@@ -56,3 +56,7 @@ reported as errors. Each maps to an automated test.
 - F. NFC/NFD are canonical and mutually inverse for canonical sequences.
 - G. NFKC/NFKD fold compatibility characters (e.g. full-width forms).
 - H. Hangul syllables compose (L+V+T) and decompose (to L,V,T jamo).
+- I. The library builds warning-free under the strict C89 flag set on ILP32
+  and the full unit suite passes under `-m32` (`just build32`,
+  `just test32`), including the normalization work-bound overflow guard,
+  which uses the host `size_t` maximum rather than a 64-bit literal.

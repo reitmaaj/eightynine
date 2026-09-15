@@ -145,5 +145,14 @@ THEN it reports 1..4 for valid leads and 0 for continuation bytes, overlong
     leads (C0, C1), and leads above F4, so callers can distinguish a
     truncated sequence from a malformed one.
 
+## 0011 — ILP32 portability
+SCENARIO build and test on a 32-bit target
+GIVEN the same sources and the strict C89 flag set
+WHEN compiled and tested with -m32
+THEN the library builds warning-free and every unit check passes, with no
+    arithmetic that depends on the host unsigned long width: the
+    normalization work-bound guard compares against the size_t maximum, and
+    the grapheme random generator selects a native-width LCG.
+
 
 

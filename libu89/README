@@ -58,6 +58,8 @@ C89 static ranges.
 
     just build      # compile libu89.a
     just test       # unit + acceptance tests
+    just build32    # best-effort ILP32 build (skips without multilib)
+    just test32     # unit + acceptance tests under -m32
     just check      # green gate: C89∩C23, GCC+Clang, tidy checks, format
 
 ## Conventions
