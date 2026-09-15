@@ -31,8 +31,11 @@ Host: Fedora 43, GCC 15.3.1, `cc -m32` multilib present.
   the allocation-failure sweep) passes under `-m32`, all linking
   `build/32/libraft89.a`.
 - `just sanitize32` — the same suites plus the failalloc sweep under
-  `-m32 -fsanitize=address,undefined`; passes on GCC 15.3.1 with the i686
-  runtimes (`libasan.i686`, `libubsan.i686`) installed.
+  `-m32 -fsanitize=address,undefined`; passes with GCC 15.3.1 (i686
+  `libasan`/`libubsan`) and with clang 21.1.8 (`just CC=clang sanitize32`,
+  `compiler-rt.i686`).
+- `just valgrind32` — every 32-bit fast-suite binary under valgrind 3.27.1
+  memcheck (`valgrind.i686`); no errors or definite leaks.
 
 `just check` (the seven-cell green matrix) remains the LP64 release gate; the
 32-bit recipes are additive and skip cleanly when the toolchain is absent.

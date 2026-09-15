@@ -87,8 +87,11 @@ Host: Fedora 43, GCC 15.3.1, `cc -m32` multilib present.
   ILP32 (envelope boundary, 4 KiB payload, `proposev` batch mapping, 64-bit
   term, index conversion).
 - `just sanitize32` — the full fast suite under
-  `-m32 -fsanitize=address,undefined`; passes on GCC 15.3.1 with the i686
-  runtimes (`libasan.i686`, `libubsan.i686`) installed.
+  `-m32 -fsanitize=address,undefined`; passes with GCC 15.3.1 (i686
+  `libasan`/`libubsan`) and with clang 21.1.8 (`just CC=clang sanitize32`,
+  `compiler-rt.i686`).
+- `just valgrind32` — the smoke, unit, and api suites under valgrind 3.27.1
+  memcheck (`valgrind.i686`); no errors or definite leaks.
 
 `just check` (green, lint, and the LP64 fast suite) remains the release gate;
 the 32-bit recipes are additive and skip cleanly when the toolchain is absent.

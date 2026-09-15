@@ -143,6 +143,18 @@ valgrind: test
 	        --errors-for-leak-kinds=definite "$t" || exit 1; \
 	done
 
+# Run every 32-bit fast-suite binary under valgrind.
+valgrind32: test32
+	@command -v valgrind >/dev/null 2>&1 || { echo "missing: valgrind"; exit 1; }
+	@if [ ! -f build/32/libraft89.a ]; then echo "valgrind32: SKIPPED: no 32-bit toolchain"; exit 0; fi; \
+	for t in build/32/smoke build/32/test_*; do \
+	    [ -e "$t" ] || continue; \
+	    case "$t" in *test_model3) continue;; esac; \
+	    echo "valgrind $t"; \
+	    valgrind --quiet --error-exitcode=1 --leak-check=full \
+	        --errors-for-leak-kinds=definite "$t" || exit 1; \
+	done
+
 # Run every fast suite (smoke first, then unit, crash, and sim).
 test: smoke unit crash sim failalloc
 
