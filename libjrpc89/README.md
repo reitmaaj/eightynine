@@ -90,6 +90,9 @@ just e2e-suite   # parameterized exchange suite only
 just green       # generate compile DBs and run the seven-cell green matrix
 just check       # green gate (matrix + tidy + format)
 just sanitize    # ASan/UBSan build of the library and tests
+just build32     # compile the 32-bit CLI (best effort; skips without multilib)
+just test32      # smoke, unit, fault, and e2e suites under -m32
+just sanitize32  # 32-bit ASan/UBSan (skips when the runtime is absent)
 just ci          # test + check + sanitize
 just lint        # shellcheck + clang-format dry-run
 just format      # apply canonical formatting

@@ -17,6 +17,8 @@
 - `*out` is unchanged on every non-OK return from a builder or decoder.
 - Error codes are exact `j89_int` values, including values outside the C `int`
   range.
+- The protocol core builds warning-free on ILP32 and passes the whole suite
+  (smoke, unit, fault, allocation-failure, and e2e) under `-m32`.
 
 ## Unacceptable behaviors (must reject / refuse)
 

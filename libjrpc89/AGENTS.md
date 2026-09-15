@@ -47,7 +47,9 @@ branch, then broader testing.
 Use `just` for all actions. Recipes are declared in the root `Justfile`.
 `just build` compiles, `just test` runs the suite, `just green` runs the
 seven-cell green matrix, `just check` is the green gate, `just lint` runs
-shellcheck + clang-format.
+shellcheck + clang-format. `just build32`, `just lib32`, `just test32`, and
+`just sanitize32` are the best-effort ILP32 recipes; they skip cleanly when
+32-bit multilib or the 32-bit sanitizer runtime is absent.
 
 ## Git
 
