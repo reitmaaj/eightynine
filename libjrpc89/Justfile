@@ -171,17 +171,18 @@ sanitize: deps
 	    -Wl,--wrap=malloc -Wl,--wrap=calloc -Wl,--wrap=realloc || exit 1
 	ASAN_OPTIONS=detect_leaks=1 build/asan/alloc_main
 
-# ASan + UBSan build of the library and tests on ILP32 (clang runtime; not C89).
+# ASan + UBSan build of the library and tests on ILP32 (uses the default
+# compiler; GCC i686 runtimes are present where clang i386 runtimes are not).
 sanitize32: deps32
 	@mkdir -p build/asan32; \
-	if ! printf '#include <stdio.h>\nint main(void){return 0;}\n' | clang -m32 {{SSE32}} -fsanitize=address,undefined -x c - -o build/asan32/probe 2>/dev/null; then \
-	    echo "sanitize32: SKIPPED: no 32-bit clang ASan/UBSan runtime"; \
+	if ! printf '#include <stdio.h>\nint main(void){return 0;}\n' | {{CC}} -m32 {{SSE32}} -fsanitize=address,undefined -x c - -o build/asan32/probe 2>/dev/null; then \
+	    echo "sanitize32: SKIPPED: no 32-bit ASan/UBSan runtime"; \
 	    exit 0; \
 	fi; \
 	for t in test/unit/test_*.c; do \
 	    [ -e "$t" ] || continue; \
 	    name=$(basename "$t" .c); \
-	    clang -std=c99 -m32 {{SSE32}} -fsanitize=address,undefined -fno-omit-frame-pointer -g \
+	    {{CC}} -std=c99 -m32 {{SSE32}} -fsanitize=address,undefined -fno-omit-frame-pointer -g \
 	        -Iinclude -I{{LIBJ89}}/include -I{{U89}}/include -I{{STR89INC}} -Itest/unit \
 	        -o "build/asan32/$name" "$t" {{LIB}} {{LIBJ89LIB32}} {{STR89LIB32}} {{U89LIB32}} -lm || exit 1; \
 	    ASAN_OPTIONS=detect_leaks=1 "build/asan32/$name" || exit 1; \
@@ -189,12 +190,12 @@ sanitize32: deps32
 	for t in test/fault/test_*.c; do \
 	    [ -e "$t" ] || continue; \
 	    name=$(basename "$t" .c); \
-	    clang -std=c99 -m32 {{SSE32}} -fsanitize=address,undefined -fno-omit-frame-pointer -g \
+	    {{CC}} -std=c99 -m32 {{SSE32}} -fsanitize=address,undefined -fno-omit-frame-pointer -g \
 	        -Iinclude -Isrc -I{{LIBJ89}}/include -I{{U89}}/include -I{{STR89INC}} -Itest/fault \
 	        -o "build/asan32/$name" "$t" {{LIB_NO_POSIX}} {{LIBJ89LIB32}} {{STR89LIB32}} {{U89LIB32}} -lm || exit 1; \
 	    ASAN_OPTIONS=detect_leaks=1 "build/asan32/$name" || exit 1; \
 	done; \
-	clang -std=c99 -m32 {{SSE32}} -fsanitize=address,undefined -fno-omit-frame-pointer -g \
+	{{CC}} -std=c99 -m32 {{SSE32}} -fsanitize=address,undefined -fno-omit-frame-pointer -g \
 	    -Iinclude -Isrc -I{{LIBJ89}}/include -I{{U89}}/include -I{{STR89INC}} -Itest/fault \
 	    -o build/asan32/alloc_main test/fault/alloc_main.c test/fault/alloc_shim.c \
 	    {{LIB}} {{LIBJ89LIB32}} {{STR89LIB32}} {{U89LIB32}} -lm \

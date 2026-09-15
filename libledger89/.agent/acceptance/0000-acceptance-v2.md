@@ -86,9 +86,9 @@ Host: Fedora 43, GCC 15.3.1, `cc -m32` multilib present.
 - `just adapters-raft32` — the libraft89 + libledger89 fixture passes on
   ILP32 (envelope boundary, 4 KiB payload, `proposev` batch mapping, 64-bit
   term, index conversion).
-- `just sanitize32` — wired for `-m32 -fsanitize=address,undefined`; on this
-  host it reports `sanitize32: SKIPPED: no 32-bit ASan/UBSan runtime (install
-  libasan.i686 libubsan.i686)` because the i686 sanitizer runtimes are absent.
+- `just sanitize32` — the full fast suite under
+  `-m32 -fsanitize=address,undefined`; passes on GCC 15.3.1 with the i686
+  runtimes (`libasan.i686`, `libubsan.i686`) installed.
 
 `just check` (green, lint, and the LP64 fast suite) remains the release gate;
 the 32-bit recipes are additive and skip cleanly when the toolchain is absent.
