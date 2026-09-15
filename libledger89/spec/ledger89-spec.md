@@ -41,6 +41,8 @@ int ledger89_append(ledger89 *l, const void *data, size_t size,
 int ledger89_sync(ledger89 *l, ledger89_index *stable_end_out);
 int ledger89_read(ledger89 *l, ledger89_index index, void *data_out,
                   size_t capacity, size_t *size_out);
+int ledger89_read_at(ledger89 *l, ledger89_index index, size_t offset,
+                     void *data_out, size_t size);
 int ledger89_iter_init(ledger89_iter *it, ledger89 *l, ledger89_index from);
 int ledger89_iter_next(ledger89_iter *it, ledger89_index *index_out,
                        void *data_out, size_t capacity, size_t *size_out);
@@ -96,6 +98,13 @@ frontier only if its prefix validates.
 `ETOOSMALL` (with the required size) when the buffer is short, and supports a
 NULL buffer for size-only queries. Reading `[stable_end, end)` is permitted;
 those records may disappear after crash/reopen.
+
+`read_at` copies exactly `size` bytes beginning at `offset` within one record.
+`size == 0` permits a NULL buffer and succeeds whenever `offset <= record
+size`. `offset` past the record end, or a range crossing the record end,
+returns `ERANGE` and copies nothing. A non-zero copy verifies the complete
+record checksum before reporting success, so corruption outside the requested
+range is still reported as `ECORRUPT`. `read_at` never mutates ledger state.
 
 `iter_init` returns `EGONE` for `from < first`, `ERANGE` for `from > end`,
 and accepts `from == end`. `iter_next` precedence is `EGONE`, `ESTALE`,

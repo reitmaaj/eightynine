@@ -280,6 +280,56 @@ static void sweep_rotate(void)
     CHECK(i > 0);
 }
 
+static int make_wide_ledger(const char *path)
+{
+    ledger89 *l;
+    ledger89_slice s;
+
+    s.data = "abcdefgh";
+    s.size = 8u;
+    l = NULL;
+    if (open_ledger(path, &l) != LEDGER89_OK)
+    {
+        return 0;
+    }
+    if (ledger89_appendv(l, &s, 1u, NULL) != LEDGER89_OK)
+    {
+        ledger89_close(l);
+        return 0;
+    }
+    if (ledger89_sync(l, NULL) != LEDGER89_OK)
+    {
+        ledger89_close(l);
+        return 0;
+    }
+    ledger89_close(l);
+    return 1;
+}
+
+static void sweep_read_at(void)
+{
+    char path[64];
+    ledger89 *l;
+    unsigned char buf[2];
+    int rc;
+    int fired;
+
+    CHECK(tmpdir_create(path, sizeof path) == 0);
+    CHECK(make_wide_ledger(path) != 0);
+    CHECK_EQ(open_ledger(path, &l), LEDGER89_OK);
+
+    /* Open preallocates the scratch buffer, so a partial read that must
+     * checksum the record tail performs no allocation of its own. */
+    nomem_arm(0);
+    rc = ledger89_read_at(l, test_u64(1), 0u, buf, 1u);
+    fired = nomem_fired();
+    nomem_disarm();
+    CHECK_EQ(fired, 0);
+    CHECK_EQ(rc, LEDGER89_OK);
+    CHECK_EQ(buf[0], (unsigned char)'a');
+    ledger89_close(l);
+}
+
 int main(void)
 {
     char path[64];
@@ -290,6 +340,7 @@ int main(void)
     sweep_truncate();
     sweep_prune();
     sweep_rotate();
+    sweep_read_at();
 
     TEST_END;
 }

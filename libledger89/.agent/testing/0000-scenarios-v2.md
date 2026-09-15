@@ -83,6 +83,22 @@ SCENARIO R03 DONE is not permanent
   WHEN appendv extends the ledger
   THEN the next call returns the new record
 
+SCENARIO R04 exact partial reads
+  GIVEN a record of length L
+  WHEN read_at is called with offset O and size N such that O + N <= L
+  THEN exactly bytes [O, O + N) are copied
+  AND N == 0 succeeds without touching the destination
+  WHEN O > L or N does not fit beginning at O
+  THEN ERANGE is returned and nothing is copied
+  AND index < first yields EGONE and index >= end yields ENOENT
+  AND a partial read performs no allocation after open
+
+SCENARIO R05 partial read integrity
+  GIVEN a corrupted record whose requested byte range is intact
+  WHEN read_at copies any bytes from that record
+  THEN the whole-record checksum is verified and ECORRUPT is returned
+  AND the ledger state is unchanged by any read_at call
+
 ## Structural operations
 
 SCENARIO S01 truncate requires clean

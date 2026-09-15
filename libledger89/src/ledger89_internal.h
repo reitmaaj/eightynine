@@ -333,6 +333,8 @@ int led89_clean_dir_for_create(ledger89 *l);
 /* read.c */
 int led89_read_impl(ledger89 *l, led89_u64 index, void *data_out,
                     size_t capacity, size_t *size_out);
+int led89_read_at_impl(ledger89 *l, led89_u64 index, size_t offset,
+                       void *data_out, size_t size);
 int led89_dir_find(ledger89 *l, led89_u64 index, size_t *entry);
 int led89_batch_read_record(ledger89 *l, const led89_batch_dir_entry *e,
                             led89_u64 index, void *data_out, size_t capacity,

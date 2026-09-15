@@ -34,6 +34,12 @@ Traceability: each criterion maps to scenarios in
 14. Frozen byte fixtures rebuild identically and decode correctly. (G01)
 15. WAL-style, replicated-log-style, and checkpoint consumers are expressible
     with only the public API. (AB01)
+16. `read_at` copies exactly the requested byte range of one record, treats
+    `size == 0` as a valid no-copy query, and reports `EGONE`/`ENOENT` with the
+    same conventions as `read`. (R04)
+17. `read_at` verifies the whole-record checksum before reporting success for
+    a non-empty copy, performs no allocation after open, and never mutates
+    `revision`, `first`, `stable_end`, or `end`. (R05)
 
 ## Must reject / fail safely
 
@@ -55,3 +61,6 @@ Traceability: each criterion maps to scenarios in
    (G01, X01)
 10. Indices below `first` return `EGONE`, never stale or invented data. (R01,
     R02)
+11. `read_at` with `offset` past the record end, a range crossing the record
+    end, or NULL data with non-zero size returns `ERANGE`/`EINVAL` and copies
+    nothing. (R04)

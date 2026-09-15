@@ -17,6 +17,7 @@ sync         advances the stable edge
 truncate     moves the right edge left (revision++)
 prune        moves the left edge right
 read         addresses one retained position
+read_at      addresses an exact byte range within one position
 iterate      walks retained positions
 ```
 

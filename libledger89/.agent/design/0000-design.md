@@ -42,7 +42,7 @@ with a greater generation is an orphan.
 | `ledger89_manifest.c` | CURRENT and manifest publication, orphan GC |
 | `ledger89_segment.c` | part creation/scanning, batches, markers, sealing, rotation |
 | `ledger89_recover.c` | open-time recovery, marker scan, forward validation |
-| `ledger89_read.c` | batch directory lookup and random read |
+| `ledger89_read.c` | batch directory lookup, random read, exact byte-range read |
 | `ledger89_truncate.c` | copy-on-write truncation and pruning |
 | `ledger89_util.c` | pure name/path helpers, buffer growth, state guards |
 | `ledger89.c` | public API glue, state, poisoning, `strerror` |

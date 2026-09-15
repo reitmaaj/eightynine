@@ -54,7 +54,7 @@ extern "C"
 #endif
 
 #define LEDGER89_VERSION_MAJOR 2
-#define LEDGER89_VERSION_MINOR 0
+#define LEDGER89_VERSION_MINOR 1
 #define LEDGER89_VERSION_PATCH 0
 
 /* Maximum record payload accepted by the append operations. */
@@ -362,6 +362,39 @@ typedef unsigned long ledger89_u32;
      */
     int ledger89_read(ledger89 *ledger, ledger89_index index, void *data_out,
                       size_t capacity, size_t *size_out);
+
+    /*
+     * Copy exactly `size` bytes beginning at byte offset `offset` within one
+     * record. Record addressing and lifetime semantics match ledger89_read().
+     *
+     * size == 0:
+     *     data_out may be NULL;
+     *     succeeds when offset <= record size.
+     *
+     * size > 0:
+     *     data_out must not be NULL.
+     *
+     * If index < first:
+     *     returns EGONE.
+     *
+     * If index >= end:
+     *     returns ENOENT.
+     *
+     * If offset > record size, or if `size` bytes do not fit beginning at
+     * offset:
+     *     returns ERANGE;
+     *     copies nothing.
+     *
+     * Reading from [stable_end, end) is permitted with the same
+     * crash-survival qualification as ledger89_read().
+     *
+     * When bytes are copied, the complete record checksum is verified before
+     * success is reported, exactly as for a complete ledger89_read() of that
+     * record. read_at performs no mutation and never changes revision, first,
+     * stable_end, or end.
+     */
+    int ledger89_read_at(ledger89 *ledger, ledger89_index index, size_t offset,
+                         void *data_out, size_t size);
 
     /* -------------------------------------------------------------------------
      * Sequential iteration

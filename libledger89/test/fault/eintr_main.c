@@ -188,6 +188,9 @@ static void case_read(void)
     CHECK_EQ(ledger89_read(l, test_u64(1), buf, sizeof buf, &size),
              LEDGER89_OK);
     CHECK(eintr_fired() != 0);
+    eintr_arm(EINTR_PREAD, 0);
+    CHECK_EQ(ledger89_read_at(l, test_u64(2), 0u, buf, 1u), LEDGER89_OK);
+    CHECK(eintr_fired() != 0);
     ledger89_close(l);
 }
 

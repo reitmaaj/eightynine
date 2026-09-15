@@ -415,6 +415,27 @@ int ledger89_read(ledger89 *ledger, ledger89_index index, void *data_out,
     return rc;
 }
 
+int ledger89_read_at(ledger89 *ledger, ledger89_index index, size_t offset,
+                     void *data_out, size_t size)
+{
+    int rc;
+
+    if (ledger == NULL)
+    {
+        return LEDGER89_EINVAL;
+    }
+    if (data_out == NULL)
+    {
+        if (size > 0u)
+        {
+            return LEDGER89_EINVAL;
+        }
+    }
+    rc = led89_read_at_impl(ledger, led89_from_public(index), offset, data_out,
+                            size);
+    return rc;
+}
+
 int ledger89_iter_init(ledger89_iter *iter, ledger89 *ledger,
                        ledger89_index from)
 {

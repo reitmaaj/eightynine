@@ -210,6 +210,14 @@ static void test_decode_freeze(void)
              LEDGER89_OK);
     CHECK_EQ(size, 2u);
     CHECK(memcmp(buf, "zz", 2u) == 0);
+
+    /* Frozen fixtures remain addressable by exact byte range. */
+    CHECK_EQ(ledger89_read_at(l, test_u64(1), 1u, buf, 3u), LEDGER89_OK);
+    CHECK(memcmp(buf, "lph", 3u) == 0);
+    CHECK_EQ(ledger89_read_at(l, test_u64(4), 2u, buf, 3u), LEDGER89_OK);
+    CHECK(memcmp(buf, "lta", 3u) == 0);
+    CHECK_EQ(ledger89_read_at(l, test_u64(5), 2u, NULL, 0u), LEDGER89_OK);
+    CHECK_EQ(ledger89_read_at(l, test_u64(5), 3u, buf, 1u), LEDGER89_ERANGE);
     ledger89_close(l);
 }
 
