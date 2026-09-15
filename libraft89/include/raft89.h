@@ -210,16 +210,35 @@ typedef unsigned long raft89_u32;
     } raft89_append_entries;
 
     /*
-     * AppendEntries response. success must contain either 0 or 1. When
-     * success != 0, match_index names the highest index matched by this
-     * AppendEntries RPC. When success == 0, match_index carries no meaning
-     * in v1 and must contain RAFT89_INDEX_NONE.
+     * AppendEntries response. success must contain either 0 or 1.
+     *
+     * success != 0:
+     *     match_index names the highest index matched by this RPC;
+     *     conflict_term  == RAFT89_TERM_NONE;
+     *     conflict_index == RAFT89_INDEX_NONE.
+     *
+     * success == 0 because prev_log_index is absent (the follower log is
+     * too short):
+     *     match_index    == RAFT89_INDEX_NONE;
+     *     conflict_term  == RAFT89_TERM_NONE;
+     *     conflict_index == follower_last_log_index + 1.
+     *
+     * success == 0 because prev_log_term mismatches:
+     *     match_index    == RAFT89_INDEX_NONE;
+     *     conflict_term  == follower term at prev_log_index;
+     *     conflict_index == first local index carrying conflict_term.
+     *
+     * A leader may use the hints to jump next_index directly instead of
+     * decrementing one position per round. Conflict hints change
+     * performance only; they never alter committed-log semantics.
      */
     typedef struct raft89_append_entries_response
     {
         raft89_term term;
         int success;
         raft89_index match_index;
+        raft89_term conflict_term;
+        raft89_index conflict_index;
     } raft89_append_entries_response;
 
     /*

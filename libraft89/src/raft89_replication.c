@@ -9,8 +9,10 @@ static int send_ae_failure(raft89 *node, raft89_id leader, raft89__u64 term)
 {
     raft89_message msg;
     int rc;
-    raft89__build_ae_response(node->self, leader, raft89__to_public(term), 0,
-                              RAFT89_INDEX_NONE, &msg);
+    raft89__build_ae_response(
+        node->self, leader, raft89__to_public(term), 0, RAFT89_INDEX_NONE,
+        RAFT89_TERM_NONE,
+        raft89__to_public(raft89__u64_inc(node->last_log_index)), &msg);
     rc = raft89__emit_send(node, &msg);
     return rc;
 }
@@ -26,6 +28,8 @@ static int ae_stash(raft89 *node, const raft89_message *msg)
     node->ae_leader_id = msg->from;
     node->ae_match_index = raft89__from_public(ae->prev_log_index);
     node->ae_truncate_first = (raft89__u64)0;
+    node->ae_conflict_term = (raft89__u64)0;
+    node->ae_conflict_index = (raft89__u64)0;
     node->ae_append_offset = 0u;
     node->ae_reply_success = 0;
     rc = raft89__entries_stash(node, ae->entries, ae->entry_count);
@@ -91,7 +95,9 @@ int raft89__ae_send_reply(raft89 *node)
     node->step = RAFT89_STEP_NONE;
     raft89__build_ae_response(
         node->self, node->ae_leader_id, raft89__to_public(node->current_term),
-        node->ae_reply_success, raft89__to_public(node->ae_match_index), &msg);
+        node->ae_reply_success, raft89__to_public(node->ae_match_index),
+        raft89__to_public(node->ae_conflict_term),
+        raft89__to_public(node->ae_conflict_index), &msg);
     rc = raft89__emit_send(node, &msg);
     return rc;
 }
@@ -227,11 +233,101 @@ static int ae_apply_entries(raft89 *node)
     return rc;
 }
 
+/* One backward step of the conflicting-term search. Returns 1 when the
+ * run start has been found, 0 to continue, or -1 on a store failure. */
+static int conflict_walk(raft89 *node, raft89__u64 *first)
+{
+    raft89_term term;
+    int rc;
+    rc = node->store.log_term(
+        node->store.ctx, raft89__to_public(raft89__u64_dec(*first)), &term);
+    if (rc != RAFT89_OK)
+    {
+        node->faulted = 1;
+        return -1;
+    }
+    if (raft89__from_public(term) != node->ae_conflict_term)
+    {
+        return 1;
+    }
+    *first = raft89__u64_dec(*first);
+    return 0;
+}
+
+/* One loop iteration of the conflicting-term search. Returns 0 to
+ * continue, 1 when the run start is known, or -1 on a store failure. */
+static int conflict_search(raft89 *node, raft89__u64 *first, int *step)
+{
+    if (*step != 0)
+    {
+        return 1;
+    }
+    *step = conflict_walk(node, first);
+    if (*step < 0)
+    {
+        return -1;
+    }
+    return 0;
+}
+
+/* A follower log shorter than prev_log_index points the leader at the
+ * follower's end. */
+static int conflict_short_log(raft89 *node)
+{
+    node->ae_conflict_term = (raft89__u64)0;
+    node->ae_conflict_index = raft89__u64_inc(node->last_log_index);
+    return RAFT89_OK;
+}
+
+/* Compute conflict acceleration hints for a rejected prefix. */
+static int conflict_hints(raft89 *node)
+{
+    raft89_term term;
+    raft89__u64 first;
+    int step;
+    int result;
+    int rc;
+    if (node->ae_prev_index > node->last_log_index)
+    {
+        rc = conflict_short_log(node);
+        return rc;
+    }
+    rc = node->store.log_term(node->store.ctx,
+                              raft89__to_public(node->ae_prev_index), &term);
+    if (rc != RAFT89_OK)
+    {
+        node->faulted = 1;
+        return RAFT89_ERR_STORE;
+    }
+    node->ae_conflict_term = raft89__from_public(term);
+    first = node->ae_prev_index;
+    step = 0;
+    while (first > (raft89__u64)1)
+    {
+        result = conflict_search(node, &first, &step);
+        if (result != 0)
+        {
+            break;
+        }
+    }
+    if (step < 0)
+    {
+        return RAFT89_ERR_STORE;
+    }
+    node->ae_conflict_index = first;
+    return RAFT89_OK;
+}
+
 static int reply_prefix_failure(raft89 *node)
 {
     int rc;
     node->ae_reply_success = 0;
     node->ae_match_index = (raft89__u64)0;
+    rc = conflict_hints(node);
+    if (rc != RAFT89_OK)
+    {
+        return rc;
+    }
     rc = raft89__ae_send_reply(node);
     return rc;
 }

@@ -32,7 +32,9 @@ static void entry_set(raft89_entry *entry, unsigned long index,
     entry->size = size;
 }
 
-static void expect_ae_reply(raft89 *node, int success, unsigned long match)
+static void expect_ae_reply(raft89 *node, int success, unsigned long match,
+                            unsigned long conflict_term,
+                            unsigned long conflict_index)
 {
     raft89_message msg;
     int rc;
@@ -46,6 +48,10 @@ static void expect_ae_reply(raft89 *node, int success, unsigned long match)
     CHECK_EQ(msg.type, RAFT89_MSG_APPEND_ENTRIES_RESPONSE);
     CHECK_EQ(msg.u.append_entries_response.success, success);
     CHECK_U64(msg.u.append_entries_response.match_index, test_u64(match));
+    CHECK_U64(msg.u.append_entries_response.conflict_term,
+              test_u64(conflict_term));
+    CHECK_U64(msg.u.append_entries_response.conflict_index,
+              test_u64(conflict_index));
 }
 
 static void expect_log_append(fake_store *store, raft89 *node,
@@ -121,7 +127,7 @@ int main(void)
     CHECK(node != NULL);
     driver_build_ae(2u, 1u, 1u, 0u, 0u, 0u, NULL, 0u, &msg);
     CHECK_EQ(raft89_recv(node, &msg), RAFT89_OK);
-    expect_ae_reply(node, 1, 0u);
+    expect_ae_reply(node, 1, 0u, 0u, 0u);
     raft89_destroy(node);
 
     /* F02: an existing matching prefix is accepted and commits. */
@@ -135,7 +141,7 @@ int main(void)
     CHECK_EQ(raft89_recv(node, &msg), RAFT89_OK);
     expect_apply(node, 1u, 1u, "a", 1u);
     expect_apply(node, 2u, 1u, "a", 1u);
-    expect_ae_reply(node, 1, 2u);
+    expect_ae_reply(node, 1, 2u, 0u, 0u);
     raft89_destroy(node);
 
     /* F03/F05/F06: a missing prefix fails without mutating the log. */
@@ -143,7 +149,7 @@ int main(void)
     CHECK(node != NULL);
     driver_build_ae(2u, 1u, 1u, 3u, 1u, 0u, NULL, 0u, &msg);
     CHECK_EQ(raft89_recv(node, &msg), RAFT89_OK);
-    expect_ae_reply(node, 0, 0u);
+    expect_ae_reply(node, 0, 0u, 0u, 1u);
     CHECK_EQ(f.store.entry_count, 0u);
     raft89_destroy(node);
 
@@ -156,7 +162,7 @@ int main(void)
     CHECK(node != NULL);
     driver_build_ae(2u, 1u, 1u, 2u, 2u, 0u, NULL, 0u, &msg);
     CHECK_EQ(raft89_recv(node, &msg), RAFT89_OK);
-    expect_ae_reply(node, 0, 0u);
+    expect_ae_reply(node, 0, 0u, 1u, 1u);
     CHECK_EQ(f.store.entry_count, 2u);
     raft89_destroy(node);
 
@@ -171,7 +177,7 @@ int main(void)
     CHECK_U64(f.store.entries[0].term, test_u64(1u));
     CHECK_EQ(raft89_status_get(node, &status), RAFT89_OK);
     CHECK_U64(status.last_log_index, test_u64(1u));
-    expect_ae_reply(node, 1, 1u);
+    expect_ae_reply(node, 1, 1u, 0u, 0u);
     raft89_destroy(node);
 
     /* F09: append several entries in one action. */
@@ -184,7 +190,7 @@ int main(void)
     CHECK_EQ(raft89_recv(node, &msg), RAFT89_OK);
     expect_log_append(&f.store, node, 1u, 3u);
     CHECK_EQ(f.store.entry_count, 3u);
-    expect_ae_reply(node, 1, 3u);
+    expect_ae_reply(node, 1, 3u, 0u, 0u);
     raft89_destroy(node);
 
     /* F11: identical entries already present are not rewritten. */
@@ -198,7 +204,7 @@ int main(void)
     entry_set(&entries[1], 2u, 1u, "b", 1u);
     driver_build_ae(2u, 1u, 1u, 0u, 0u, 0u, entries, 2u, &msg);
     CHECK_EQ(raft89_recv(node, &msg), RAFT89_OK);
-    expect_ae_reply(node, 1, 2u);
+    expect_ae_reply(node, 1, 2u, 0u, 0u);
     raft89_destroy(node);
 
     /* F12: only the missing suffix is appended. */
@@ -212,7 +218,7 @@ int main(void)
     CHECK_EQ(raft89_recv(node, &msg), RAFT89_OK);
     expect_log_append(&f.store, node, 2u, 1u);
     expect_apply(node, 1u, 1u, "a", 1u);
-    expect_ae_reply(node, 1, 2u);
+    expect_ae_reply(node, 1, 2u, 0u, 0u);
     raft89_destroy(node);
 
     /* F13/F16/F17/F19: conflict at the first new entry. */
@@ -236,7 +242,7 @@ int main(void)
     CHECK_U64(f.store.entries[1].term, test_u64(1u));
     CHECK_U64(f.store.entries[2].term, test_u64(3u));
     CHECK_U64(f.store.entries[3].term, test_u64(3u));
-    expect_ae_reply(node, 1, 4u);
+    expect_ae_reply(node, 1, 4u, 0u, 0u);
     raft89_destroy(node);
 
     /* F14: conflict in the middle of a batch. */
@@ -257,7 +263,7 @@ int main(void)
     CHECK_EQ(raft89_recv(node, &msg), RAFT89_OK);
     expect_log_truncate(&f.store, node, 4u);
     expect_log_append(&f.store, node, 4u, 2u);
-    expect_ae_reply(node, 1, 5u);
+    expect_ae_reply(node, 1, 5u, 0u, 0u);
     raft89_destroy(node);
 
     /* F15: conflict at the final entry. */
@@ -275,7 +281,7 @@ int main(void)
     expect_log_append(&f.store, node, 3u, 1u);
     CHECK_EQ(f.store.entry_count, 3u);
     CHECK_U64(f.store.entries[2].term, test_u64(3u));
-    expect_ae_reply(node, 1, 3u);
+    expect_ae_reply(node, 1, 3u, 0u, 0u);
     raft89_destroy(node);
 
     /* F20: a lower leader_commit does not regress commit. */
@@ -289,10 +295,10 @@ int main(void)
     CHECK_EQ(raft89_recv(node, &msg), RAFT89_OK);
     expect_apply(node, 1u, 1u, "a", 1u);
     expect_apply(node, 2u, 1u, "a", 1u);
-    expect_ae_reply(node, 1, 2u);
+    expect_ae_reply(node, 1, 2u, 0u, 0u);
     driver_build_ae(2u, 1u, 1u, 2u, 1u, 1u, NULL, 0u, &msg);
     CHECK_EQ(raft89_recv(node, &msg), RAFT89_OK);
-    expect_ae_reply(node, 1, 2u);
+    expect_ae_reply(node, 1, 2u, 0u, 0u);
     CHECK_EQ(raft89_status_get(node, &status), RAFT89_OK);
     CHECK_U64(status.commit_index, test_u64(2u));
     CHECK_U64(status.applied_index, test_u64(2u));
@@ -307,7 +313,7 @@ int main(void)
     driver_build_ae(2u, 1u, 1u, 1u, 1u, 5u, NULL, 0u, &msg);
     CHECK_EQ(raft89_recv(node, &msg), RAFT89_OK);
     expect_apply(node, 1u, 1u, "a", 1u);
-    expect_ae_reply(node, 1, 1u);
+    expect_ae_reply(node, 1, 1u, 0u, 0u);
     CHECK_EQ(raft89_status_get(node, &status), RAFT89_OK);
     CHECK_U64(status.commit_index, test_u64(1u));
     raft89_destroy(node);
@@ -325,7 +331,7 @@ int main(void)
     expect_apply(node, 1u, 1u, "a", 1u);
     expect_apply(node, 2u, 1u, "b", 1u);
     expect_apply(node, 3u, 1u, "c", 1u);
-    expect_ae_reply(node, 1, 3u);
+    expect_ae_reply(node, 1, 3u, 0u, 0u);
     CHECK_EQ(raft89_status_get(node, &status), RAFT89_OK);
     CHECK_U64(status.applied_index, test_u64(3u));
     raft89_destroy(node);
@@ -340,7 +346,7 @@ int main(void)
     expect_log_append(&f.store, node, 1u, 2u);
     expect_apply(node, 1u, 1u, "a", 1u);
     expect_apply(node, 2u, 1u, "b", 1u);
-    expect_ae_reply(node, 1, 2u);
+    expect_ae_reply(node, 1, 2u, 0u, 0u);
     raft89_destroy(node);
 
     /* Stale term is refused with the current term and no log change. */
@@ -360,6 +366,12 @@ int main(void)
                       test_u64(5u));
             CHECK_EQ(action->u.send.message.u.append_entries_response.success,
                      0);
+            CHECK_U64(
+                action->u.send.message.u.append_entries_response.conflict_term,
+                RAFT89_TERM_NONE);
+            CHECK_U64(
+                action->u.send.message.u.append_entries_response.conflict_index,
+                test_u64(1u));
             CHECK_EQ(raft89_action_done(node, action->id, RAFT89_ACTION_OK),
                      RAFT89_OK);
         }

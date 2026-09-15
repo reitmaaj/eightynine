@@ -331,6 +331,8 @@ int main(void)
     msg.u.append_entries_response.term = host_u64(1u);
     msg.u.append_entries_response.success = 1;
     msg.u.append_entries_response.match_index = index;
+    msg.u.append_entries_response.conflict_term = raft89_u64_zero();
+    msg.u.append_entries_response.conflict_index = raft89_u64_zero();
     if (raft89_recv(node, &msg) != RAFT89_OK || drain(node, &store, &net) != 0)
     {
         fprintf(stderr, "host_loop: append response failed\n");

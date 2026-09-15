@@ -138,6 +138,8 @@ static void snap_message(writer *w, const raft89_message *msg)
         w_public_u64(w, msg->u.append_entries_response.term);
         w_ulong(w, (unsigned long)msg->u.append_entries_response.success);
         w_public_u64(w, msg->u.append_entries_response.match_index);
+        w_public_u64(w, msg->u.append_entries_response.conflict_term);
+        w_public_u64(w, msg->u.append_entries_response.conflict_index);
     }
 }
 

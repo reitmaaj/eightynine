@@ -353,14 +353,100 @@ static void advance_next(raft89 *node, raft89_size idx, raft89__u64 match)
     node->next_index[idx] = raft89__u64_inc(match);
 }
 
-static int handle_ae_failure(raft89 *node, raft89_size idx, raft89_id from)
+/* One downward step of the leader's conflicting-term search. */
+static int leader_term_step(raft89 *node, raft89__u64 term, raft89__u64 *index,
+                            int *found)
 {
+    raft89__u64 got;
     int rc;
-    if (node->next_index[idx] > (raft89__u64)1)
+    rc = raft89__log_term_at(node, *index, &got);
+    if (rc != RAFT89_OK)
     {
-        node->next_index[idx] = raft89__u64_dec(node->next_index[idx]);
+        return rc;
     }
-    rc = raft89__leader_send_to(node, from);
+    if (got == term)
+    {
+        *found = 1;
+        return RAFT89_OK;
+    }
+    *index = raft89__u64_dec(*index);
+    return RAFT89_OK;
+}
+
+/* Find the last leader index carrying term; *next_out is 0 when absent. */
+static int leader_find_term(raft89 *node, raft89__u64 term, raft89__u64 from,
+                            raft89__u64 *next_out)
+{
+    raft89__u64 index;
+    int found;
+    int rc;
+    index = from;
+    found = 0;
+    while (index > (raft89__u64)0)
+    {
+        rc = leader_term_step(node, term, &index, &found);
+        if (rc != RAFT89_OK)
+        {
+            return rc;
+        }
+        if (found != 0)
+        {
+            break;
+        }
+    }
+    *next_out = (raft89__u64)0;
+    if (found != 0)
+    {
+        *next_out = raft89__u64_inc(index);
+    }
+    return RAFT89_OK;
+}
+
+static raft89__u64 clamp_next(raft89 *node, raft89__u64 next)
+{
+    raft89__u64 limit;
+    limit = raft89__u64_inc(node->last_log_index);
+    if (next < (raft89__u64)1)
+    {
+        return (raft89__u64)1;
+    }
+    if (next > limit)
+    {
+        return limit;
+    }
+    return next;
+}
+
+static int handle_ae_failure(raft89 *node, raft89_size idx,
+                             const raft89_message *msg)
+{
+    raft89__u64 conflict_term;
+    raft89__u64 conflict_index;
+    raft89__u64 next;
+    int rc;
+    conflict_term =
+        raft89__from_public(msg->u.append_entries_response.conflict_term);
+    conflict_index =
+        raft89__from_public(msg->u.append_entries_response.conflict_index);
+    if (raft89__u64_is_zero(conflict_term))
+    {
+        next = conflict_index;
+    }
+    else
+    {
+        rc = leader_find_term(node, conflict_term,
+                              raft89__u64_dec(node->next_index[idx]), &next);
+        if (rc != RAFT89_OK)
+        {
+            return rc;
+        }
+        if (raft89__u64_is_zero(next))
+        {
+            next = conflict_index;
+        }
+    }
+    node->next_index[idx] = clamp_next(node, next);
+    rc = raft89__leader_send_to(node, msg->from);
     return rc;
 }
 
@@ -387,7 +473,7 @@ int raft89__recv_ae_response(raft89 *node, const raft89_message *msg)
     idx = raft89__member_index(node, msg->from);
     if (msg->u.append_entries_response.success == 0)
     {
-        rc = handle_ae_failure(node, idx, msg->from);
+        rc = handle_ae_failure(node, idx, msg);
         return rc;
     }
     match = raft89__from_public(msg->u.append_entries_response.match_index);

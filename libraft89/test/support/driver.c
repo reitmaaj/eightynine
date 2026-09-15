@@ -156,6 +156,21 @@ void driver_build_ae(raft89_id from, raft89_id to, unsigned long term,
     msg->u.append_entries.entry_count = entry_count;
 }
 
+void driver_build_ae_response(raft89_id from, raft89_id to, unsigned long term,
+                              int success, unsigned long match,
+                              unsigned long conflict_term,
+                              unsigned long conflict_index, raft89_message *msg)
+{
+    msg->type = RAFT89_MSG_APPEND_ENTRIES_RESPONSE;
+    msg->from = from;
+    msg->to = to;
+    msg->u.append_entries_response.term = driver_u64(term);
+    msg->u.append_entries_response.success = success;
+    msg->u.append_entries_response.match_index = driver_u64(match);
+    msg->u.append_entries_response.conflict_term = driver_u64(conflict_term);
+    msg->u.append_entries_response.conflict_index = driver_u64(conflict_index);
+}
+
 void driver_store_effect(fake_store *store, const raft89_action *action)
 {
     unsigned long i;

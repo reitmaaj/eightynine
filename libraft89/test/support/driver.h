@@ -42,6 +42,11 @@ void driver_build_ae(raft89_id from, raft89_id to, unsigned long term,
                      unsigned long prev_index, unsigned long prev_term,
                      unsigned long leader_commit, const raft89_entry *entries,
                      raft89_size entry_count, raft89_message *msg);
+void driver_build_ae_response(raft89_id from, raft89_id to, unsigned long term,
+                              int success, unsigned long match,
+                              unsigned long conflict_term,
+                              unsigned long conflict_index,
+                              raft89_message *msg);
 
 /* Perform the durable part of an action on the fake store, emulating a
  * host. LOG_APPEND and LOG_TRUNCATE are supported; other actions are

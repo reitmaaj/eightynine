@@ -94,6 +94,8 @@ struct raft89
     raft89_id ae_leader_id;
     raft89__u64 ae_match_index;
     raft89__u64 ae_truncate_first;
+    raft89__u64 ae_conflict_term;
+    raft89__u64 ae_conflict_index;
     raft89_size ae_append_offset;
     int ae_reply_success;
 
@@ -182,6 +184,8 @@ void raft89__build_vote_response(raft89_id from, raft89_id peer,
                                  raft89_message *msg);
 void raft89__build_ae_response(raft89_id from, raft89_id peer, raft89_term term,
                                int success, raft89_index match_index,
+                               raft89_term conflict_term,
+                               raft89_index conflict_index,
                                raft89_message *msg);
 
 /* Log copying, commit, and application. */
