@@ -823,6 +823,20 @@ j89_len j89_bool_new(j89_arena *a, int v)
     return node;
 }
 
+j89_len j89_null_new(j89_arena *a)
+{
+    j89_len node;
+    int bad;
+    node = j89_new_node(a);
+    bad = j89_is_bad(node);
+    if (bad)
+    {
+        return J89_BAD;
+    }
+    j89_node_set_kind(a, node, J89_NULL);
+    return node;
+}
+
 void j89_array_set(j89_arena *a, j89_len array, j89_len index, j89_len child)
 {
     int badarray;

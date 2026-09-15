@@ -20,12 +20,26 @@ ALG := "src/alg/alloc.c src/alg/str.c src/alg/list.c src/alg/object.c src/alg/js
 # j89.h -> j89_alg import bridge (non-core).
 BRIDGE := "src/bridge.c"
 
+# Practical core archive consumed by downstream projects (libjrpc89 and
+# friends) so they depend on the public header plus build/libj89.a instead of
+# individual source files.
+LIB := "src/parse.c src/value.c src/print.c"
+
 SRC := "src/parse.c src/value.c src/print.c src/main.c src/alg/alloc.c src/alg/str.c src/alg/list.c src/alg/object.c src/alg/json.c src/alg/fold.c src/alg/map.c src/bridge.c"
 
 # Compile the CLI (library sources + main).
 build: deps
 	mkdir -p build
 	{{CC}} {{STRICT}} -Iinclude -Isrc -I{{U89}}/include -I{{STR89INC}} -o build/j89 {{SRC}} {{STR89LIB}} {{U89LIB}}
+
+# Build the static archive of the practical core.
+lib: deps
+	mkdir -p build/lib
+	@for f in {{LIB}}; do \
+	    o=build/lib/$(basename "$f" .c).o; \
+	    {{CC}} {{STRICT}} -Iinclude -Isrc -I{{U89}}/include -I{{STR89INC}} -c "$f" -o "$o" || exit 1; \
+	done
+	ar rcs build/libj89.a build/lib/*.o
 
 # Unit tests, each linked with the non-main library sources.
 test: build

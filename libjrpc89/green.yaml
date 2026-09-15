@@ -6,6 +6,7 @@ compile_commands:
 
 project_roots:
     - src
+    - tool
 
 exclude:
     - build/**

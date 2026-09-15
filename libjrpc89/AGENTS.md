@@ -1,11 +1,11 @@
 # libjrpc89 — agentic workflow
 
-A green-compliant JSON-RPC 2.0 client library and CLI demo written in strict
-ISO C89, using the sibling `libj89` project for all JSON processing. `libj89`
-delegates Unicode scalar/UTF-8/UTF-16 facts to the sibling `libu89` and owns
-strings and keys through the sibling `libstr89`, so builds link all three
-(`just deps` builds `libstr89`, which builds `libu89`). It is a sibling git
-repository.
+A green-compliant JSON-RPC 2.0 protocol core library and CLI demo written in
+strict ISO C89, using the sibling `libj89` project for all JSON processing.
+`libj89` delegates Unicode scalar/UTF-8/UTF-16 facts to the sibling `libu89`
+and owns strings and keys through the sibling `libstr89`, so builds link all
+three (`just deps` builds `libstr89`, which builds `libu89`). It is a sibling
+git repository.
 
 ## Hard constraints
 
@@ -17,11 +17,15 @@ repository.
   compilation databases.
 - **JSON-RPC 2.0**: request, notification, response, and error objects;
   `jsonrpc: "2.0"`; string/integer/null ids echoed back; notifications
-  omit `id`. Standard error codes `-32700`, `-32600`, `-32601`, `-32602`,
-  `-32603`, and the `-32000..-32099` server range. No batching in V1.
-- Transport: the library operates on an already-open Unix socket file
-  descriptor; it does not connect, accept, or manage socket lifecycle.
-  Framing over the byte stream is newline-delimited JSON (NDJSON).
+  omit `id`. Both directions are supported: request construction and
+  decoding, response construction and decoding. Standard error codes
+  `-32700`, `-32600`, `-32601`, `-32602`, `-32603`, and the
+  `-32000..-32099` server range. No batching in V1.
+- Transport: the library operates on an already-open, blocking, connected
+  POSIX stream-socket file descriptor (for example AF_UNIX or a loopback
+  TCP `SOCK_STREAM`); it does not connect, accept, or manage socket
+  lifecycle. Framing over the byte stream is newline-delimited JSON
+  (NDJSON).
 - Four-space indentation.
 
 ## `.agent` directory

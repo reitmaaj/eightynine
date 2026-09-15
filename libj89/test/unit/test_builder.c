@@ -372,6 +372,39 @@ static void test_build_embedded_nul_key(void)
     j89_arena_destroy(&a);
 }
 
+static void test_build_null(void)
+{
+    j89_arena a;
+    j89_arena out;
+    j89_len node;
+    j89_kind k;
+    j89_arena_init(&a);
+    j89_arena_init(&out);
+    node = j89_null_new(&a);
+    if (node == J89_BAD)
+    {
+        fail("null node");
+    }
+    else
+    {
+        k = j89_kind_of(&a, node);
+        if (k != J89_NULL)
+        {
+            fail("null kind");
+        }
+        else if (j89_render(&a, node, 1, &out) != 0)
+        {
+            fail("null render");
+        }
+        else
+        {
+            expect_render("null", &out, "null");
+        }
+    }
+    j89_arena_destroy(&out);
+    j89_arena_destroy(&a);
+}
+
 int main(void)
 {
     failures = 0;
@@ -380,6 +413,7 @@ int main(void)
     test_build_escaping();
     test_build_numbers();
     test_build_bool();
+    test_build_null();
     test_build_roundtrip();
     test_build_utf8_string();
     test_build_bad_inputs();

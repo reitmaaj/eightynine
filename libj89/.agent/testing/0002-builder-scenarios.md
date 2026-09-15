@@ -36,6 +36,12 @@ WHEN a builder function cannot complete
 THEN it records an error via j89_error / marks the arena failed rather than
 corrupting the tree
 
+SCENARIO: build a null value
+GIVEN an empty libj89 arena
+WHEN j89_null_new is called
+THEN it returns a node whose kind is NULL
+AND j89_render produces the text `null`
+
 SCENARIO: builder output is NUL-terminated
 GIVEN a rendered object
 WHEN the output arena is read via j89_render
