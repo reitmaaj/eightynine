@@ -1,7 +1,7 @@
 # libjrpc89
 
-A **green-compliant JSON-RPC 2.0 client** library and CLI demo in strict
-ISO C89, using the sibling `libj89` project for all JSON processing.
+A **green-compliant JSON-RPC 2.0 protocol core** library and CLI demo in
+strict ISO C89, using the sibling `libj89` project for all JSON processing.
 
 `green` compliance means every translation unit passes the seven-cell
 matrix — GCC C89, GCC C23, Clang C89, Clang C23, clang-tidy C89,
@@ -27,10 +27,15 @@ clang-tidy C23, and canonical formatting.
 - Request building takes the method as bytes plus an explicit length, so
   embedded NUL bytes are preserved and zero-length methods are allowed.
   `params`, when present, must be an array or object.
-- NDJSON framing over an already-open Unix socket file descriptor, with typed
-  statuses for EOF, truncation, oversized frames, and I/O failure. An
-  oversized frame is drained through its newline so the next read starts on a
-  frame boundary, and failed reads clear the output state.
+- Symmetric protocol core: `jrpc89_request_decode` decodes a parsed request
+  or notification into a checked view, and the response builders construct
+  result and error responses that `jrpc89_response_decode` accepts. The
+  error builder omits `data` when it is `J89_BAD`.
+- NDJSON framing over an already-open connected stream-socket file
+  descriptor (AF_UNIX or TCP `SOCK_STREAM`), with typed statuses for EOF,
+  truncation, oversized frames, and I/O failure. An oversized frame is
+  drained through its newline so the next read starts on a frame boundary,
+  and failed reads clear the output state.
 - A CLI demo that sends one request on a provided fd and prints the result
   or a structured error; it rejects invalid `params` JSON (rather than
   silently omitting params) and rejects a mismatched response id.
@@ -41,6 +46,9 @@ No batching in V1.
 
 ```text
 jrpc89_request_new        build a request/notification node
+jrpc89_request_decode     decode a parsed request into jrpc89_request
+jrpc89_response_result_new  build a result response
+jrpc89_response_error_new   build an error response
 jrpc89_response_decode    decode a parsed response into jrpc89_response
 jrpc89_id_equal           structural id equality
 jrpc89_error_code_reserved  reserved interval -32768..-32000
@@ -48,14 +56,15 @@ jrpc89_fd_write_frame    write one NDJSON frame
 jrpc89_fd_read_frame     read one NDJSON frame
 ```
 
-Types: `jrpc89_status`, `jrpc89_id`, `jrpc89_response`, `jrpc89_error`.
-The protocol core is ISO C89 and POSIX-free; the framing functions are the
-POSIX transport profile.
+Types: `jrpc89_status`, `jrpc89_id`, `jrpc89_request`, `jrpc89_response`,
+`jrpc89_error`. The protocol core is ISO C89 and POSIX-free; the framing
+functions are the POSIX transport profile.
 
 ## Transport contract
 
-The library operates on an **already-open, blocking, connected Unix socket
-`int fd`**. It does not `connect`, `accept`, or manage socket lifecycle.
+The library operates on an **already-open, blocking, connected POSIX stream
+socket `int fd`** (for example AF_UNIX or a loopback TCP `SOCK_STREAM`). It
+does not `connect`, `accept`, or manage socket lifecycle.
 Frames are newline-delimited JSON (NDJSON): one message per line. The CLI
 demo reads into an 8192-byte buffer, so a response frame may be up to 8191
 bytes; a larger frame is drained and reported as too long, leaving the

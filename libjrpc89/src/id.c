@@ -29,7 +29,7 @@ static int jrpc89_bytes_equal(const char *x, j89_len xlen, const char *y,
 }
 
 /* True when v is an exact integer in libj89's representable domain. */
-static int jrpc89_int_exact(j89_int v)
+int jrpc89_int_exact(j89_int v)
 {
     j89_int fl;
     int isint;

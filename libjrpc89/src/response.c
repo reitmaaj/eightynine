@@ -1,82 +1,8 @@
-/* response.c - decode JSON-RPC 2.0 response objects. */
+/* response.c - decode and build JSON-RPC 2.0 response objects. */
 #include <jrpc89.h>
 
+#include "id.h"
 #include "jrpc89_internal.h"
-
-static int jrpc89_str_is(j89_arena *a, j89_len node, const char *expect,
-                         j89_len expect_len)
-{
-    j89_kind k;
-    j89_len len;
-    const char *s;
-    j89_len i;
-    k = j89_kind_of(a, node);
-    if (k != J89_STRING)
-    {
-        return 0;
-    }
-    len = j89_string_length(a, node);
-    if (len != expect_len)
-    {
-        return 0;
-    }
-    s = j89_string_value(a, node);
-    for (i = 0; i < len; i = i + 1)
-    {
-        if (s[i] != expect[i])
-        {
-            return 0;
-        }
-    }
-    return 1;
-}
-
-static int jrpc89_member_has(j89_arena *a, j89_len node, const char *key)
-{
-    j89_len v;
-    int r;
-    v = j89_object_find(a, node, key);
-    r = jrpc89_has_node(v);
-    return r;
-}
-
-static void jrpc89_id_set_int(j89_arena *a, j89_len node, jrpc89_id *out)
-{
-    out->kind = JRPC89_ID_INT;
-    out->num = j89_int_value(a, node);
-}
-
-static void jrpc89_id_set_string(j89_arena *a, j89_len node, jrpc89_id *out)
-{
-    out->kind = JRPC89_ID_STRING;
-    out->str = j89_string_value(a, node);
-    out->len = j89_string_length(a, node);
-}
-
-/* Convert one node to an id. Returns JRPC89_OK for integer, string, or
- * null, and JRPC89_EPROTO for every other node kind. */
-static jrpc89_status jrpc89_id_from_node(j89_arena *a, j89_len node,
-                                         jrpc89_id *out)
-{
-    j89_kind k;
-    k = j89_kind_of(a, node);
-    if (k == J89_INTEGER)
-    {
-        jrpc89_id_set_int(a, node, out);
-        return JRPC89_OK;
-    }
-    if (k == J89_STRING)
-    {
-        jrpc89_id_set_string(a, node, out);
-        return JRPC89_OK;
-    }
-    if (k == J89_NULL)
-    {
-        out->kind = JRPC89_ID_NULL;
-        return JRPC89_OK;
-    }
-    return JRPC89_EPROTO;
-}
 
 static void jrpc89_error_zero(jrpc89_error *out)
 {
@@ -226,32 +152,6 @@ static jrpc89_status jrpc89_decode_id(j89_arena *a, j89_len resp,
     return st;
 }
 
-/* Check the fixed parts of a response: object root and a "2.0" version. */
-static jrpc89_status jrpc89_check_head(j89_arena *a, j89_len node)
-{
-    j89_len version;
-    j89_kind k;
-    int has;
-    int ok;
-    k = j89_kind_of(a, node);
-    if (k != J89_OBJECT)
-    {
-        return JRPC89_EPROTO;
-    }
-    version = j89_object_find(a, node, "jsonrpc");
-    has = jrpc89_has_node(version);
-    if (!has)
-    {
-        return JRPC89_EPROTO;
-    }
-    ok = jrpc89_str_is(a, version, "2.0", 3);
-    if (!ok)
-    {
-        return JRPC89_EPROTO;
-    }
-    return JRPC89_OK;
-}
-
 jrpc89_status jrpc89_response_decode(j89_arena *a, j89_len node,
                                      jrpc89_response *out)
 {
@@ -292,5 +192,223 @@ jrpc89_status jrpc89_response_decode(j89_arena *a, j89_len node,
         return st;
     }
     *out = tmp;
+    return JRPC89_OK;
+}
+
+/* ------------------------------------------------------------------ */
+/* response construction                                               */
+/* ------------------------------------------------------------------ */
+
+/* Shared argument checks for both response builders. */
+static jrpc89_status jrpc89_response_args_check(j89_arena *a,
+                                                const jrpc89_id *id,
+                                                const j89_len *out)
+{
+    int valid;
+    int dirty;
+    if (a == NULL)
+    {
+        return JRPC89_EINVAL;
+    }
+    if (out == NULL)
+    {
+        return JRPC89_EINVAL;
+    }
+    if (id == NULL)
+    {
+        return JRPC89_EINVAL;
+    }
+    if (id->kind == JRPC89_ID_NONE)
+    {
+        return JRPC89_EINVAL;
+    }
+    valid = jrpc89_id_valid(id);
+    if (!valid)
+    {
+        return JRPC89_EINVAL;
+    }
+    dirty = jrpc89_arena_dirty(a);
+    if (dirty)
+    {
+        return JRPC89_EINVAL;
+    }
+    return JRPC89_OK;
+}
+
+static jrpc89_status jrpc89_error_message_check(const char *message,
+                                                j89_len message_len)
+{
+    if (message == NULL)
+    {
+        if (message_len != 0)
+        {
+            return JRPC89_EINVAL;
+        }
+    }
+    return JRPC89_OK;
+}
+
+static j89_len jrpc89_error_member_count(j89_len data)
+{
+    j89_len count;
+    int have_data;
+    have_data = jrpc89_has_node(data);
+    count = (j89_len)(have_data + 2);
+    return count;
+}
+
+static jrpc89_status jrpc89_set_data(j89_arena *a, j89_len err, j89_len data)
+{
+    jrpc89_status st;
+    j89_object_set(a, err, 2, "data", 4, data);
+    st = jrpc89_builder_check(a);
+    return st;
+}
+
+/* Fill the error object: code, message, and optional data. */
+static jrpc89_status jrpc89_fill_error(j89_arena *a, j89_len err, j89_int code,
+                                       const char *message, j89_len message_len,
+                                       j89_len data)
+{
+    j89_len cnode;
+    j89_len mnode;
+    jrpc89_status st;
+    int have_data;
+    cnode = j89_integer_new(a, code);
+    j89_object_set(a, err, 0, "code", 4, cnode);
+    st = jrpc89_builder_check(a);
+    if (st != JRPC89_OK)
+    {
+        return st;
+    }
+    mnode = j89_string_new(a, message, message_len);
+    j89_object_set(a, err, 1, "message", 7, mnode);
+    st = jrpc89_builder_check(a);
+    if (st != JRPC89_OK)
+    {
+        return st;
+    }
+    have_data = jrpc89_has_node(data);
+    if (have_data)
+    {
+        st = jrpc89_set_data(a, err, data);
+        if (st != JRPC89_OK)
+        {
+            return st;
+        }
+    }
+    return JRPC89_OK;
+}
+
+jrpc89_status jrpc89_response_result_new(j89_arena *a, const jrpc89_id *id,
+                                         j89_len result, j89_len *out)
+{
+    j89_len obj;
+    jrpc89_status st;
+    int ok;
+    st = jrpc89_response_args_check(a, id, out);
+    if (st != JRPC89_OK)
+    {
+        return st;
+    }
+    ok = jrpc89_has_node(result);
+    if (!ok)
+    {
+        return JRPC89_EINVAL;
+    }
+    obj = j89_object_new(a, 3);
+    ok = jrpc89_has_node(obj);
+    if (!ok)
+    {
+        st = jrpc89_status_from_arena(a);
+        return st;
+    }
+    st = jrpc89_set_version(a, obj, 0);
+    if (st != JRPC89_OK)
+    {
+        return st;
+    }
+    j89_object_set(a, obj, 1, "result", 6, result);
+    st = jrpc89_builder_check(a);
+    if (st != JRPC89_OK)
+    {
+        return st;
+    }
+    st = jrpc89_set_id_member(a, obj, 2, id);
+    if (st != JRPC89_OK)
+    {
+        return st;
+    }
+    *out = obj;
+    return JRPC89_OK;
+}
+
+jrpc89_status jrpc89_response_error_new(j89_arena *a, const jrpc89_id *id,
+                                        j89_int code, const char *message,
+                                        j89_len message_len, j89_len data,
+                                        j89_len *out)
+{
+    j89_len obj;
+    j89_len err;
+    j89_len count;
+    jrpc89_status st;
+    int exact;
+    int ok;
+    st = jrpc89_response_args_check(a, id, out);
+    if (st != JRPC89_OK)
+    {
+        return st;
+    }
+    st = jrpc89_error_message_check(message, message_len);
+    if (st != JRPC89_OK)
+    {
+        return st;
+    }
+    exact = jrpc89_int_exact(code);
+    if (!exact)
+    {
+        return JRPC89_EINVAL;
+    }
+    if (message == NULL)
+    {
+        message = "";
+    }
+    count = jrpc89_error_member_count(data);
+    obj = j89_object_new(a, 3);
+    ok = jrpc89_has_node(obj);
+    if (!ok)
+    {
+        st = jrpc89_status_from_arena(a);
+        return st;
+    }
+    st = jrpc89_set_version(a, obj, 0);
+    if (st != JRPC89_OK)
+    {
+        return st;
+    }
+    err = j89_object_new(a, count);
+    ok = jrpc89_has_node(err);
+    if (!ok)
+    {
+        st = jrpc89_status_from_arena(a);
+        return st;
+    }
+    st = jrpc89_fill_error(a, err, code, message, message_len, data);
+    if (st != JRPC89_OK)
+    {
+        return st;
+    }
+    j89_object_set(a, obj, 1, "error", 5, err);
+    st = jrpc89_builder_check(a);
+    if (st != JRPC89_OK)
+    {
+        return st;
+    }
+    st = jrpc89_set_id_member(a, obj, 2, id);
+    if (st != JRPC89_OK)
+    {
+        return st;
+    }
+    *out = obj;
     return JRPC89_OK;
 }

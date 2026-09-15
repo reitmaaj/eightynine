@@ -3,21 +3,25 @@
 
 #include <j89.h>
 
-/* libjrpc89: a green-compliant JSON-RPC 2.0 client in strict ISO C89.
+/* libjrpc89: a green-compliant JSON-RPC 2.0 protocol core in strict ISO C89.
  *
- * Builds request and notification objects, decodes responses into a checked
- * result-or-error view, and classifies error codes. All JSON processing is
- * delegated to libj89; the caller owns the j89_arena memory.
+ * Builds and decodes request, notification, response, and error objects, and
+ * classifies error codes. All JSON processing is delegated to libj89; the
+ * caller owns the j89_arena memory.
  *
  * The protocol core declared here is ISO C89 and POSIX-free. The optional
  * transport profile in <jrpc89_io.h> is POSIX-specific.
  *
- * Scope (V1): request, notification, response, and error objects; string,
- * integer, and null ids; notifications omit the id member. No batching.
+ * Scope (V1): request construction and decoding; notification construction
+ * and decoding; response construction and decoding; string, integer, and
+ * null ids; error-code classification. No batching.
+ *
+ * Out of scope: method dispatch, method registries, connections/listeners,
+ * authentication/authorization, threading, event loops, retry policy,
+ * request correlation tables, and JSON-RPC batching.
  *
  * A decoded response never carries JRPC89_ID_NONE; NONE is legal only for
- * request construction, where it means "notification".
- */
+ * request construction and decoding, where it means "notification". */
 
 /* ------------------------------------------------------------------ */
 /* status                                                              */
@@ -76,6 +80,88 @@ int jrpc89_id_equal(const jrpc89_id *x, const jrpc89_id *y);
 jrpc89_status jrpc89_request_new(j89_arena *a, const char *method,
                                  j89_len method_len, j89_len params,
                                  const jrpc89_id *id, j89_len *out);
+
+/* ------------------------------------------------------------------ */
+/* request decoding                                                    */
+/* ------------------------------------------------------------------ */
+
+typedef struct
+{
+    /* Borrowed bytes in arena a; never NULL after JRPC89_OK. */
+    const char *method;
+    j89_len method_len;
+
+    /* J89_BAD when the params member is absent; otherwise an array or an
+     * object node. */
+    j89_len params;
+
+    /* JRPC89_ID_NONE when the id member is absent (a notification);
+     * otherwise an integer, string, or null id. */
+    jrpc89_id id;
+} jrpc89_request;
+
+/* Decode one parsed JSON-RPC request or notification node:
+ *
+ *   the root must be an object;
+ *   jsonrpc must exist and equal "2.0";
+ *   method must exist and be a string;
+ *   params must be absent, an array, or an object;
+ *   id must be absent, an integer, a string, or null.
+ *
+ * Unknown additional object members are ignored. Duplicate object keys are
+ * rejected by libj89's parser, so no duplicate protocol member is ever
+ * observed here.
+ *
+ * Missing id:     out->id.kind == JRPC89_ID_NONE
+ * Missing params: out->params == J89_BAD
+ *
+ * Borrowed strings and node indices remain valid while a lives.
+ *
+ * Precondition: a is clean; node is J89_BAD or a valid node index in a.
+ * *out is unchanged on any non-OK return. */
+jrpc89_status jrpc89_request_decode(j89_arena *a, j89_len node,
+                                    jrpc89_request *out);
+
+/* ------------------------------------------------------------------ */
+/* response construction                                               */
+/* ------------------------------------------------------------------ */
+
+/* Build {"jsonrpc":"2.0","result":RESULT,"id":ID} in arena a and store the
+ * object node in *out.
+ *
+ * result must name a valid JSON node and may contain any JSON value.
+ * id must be an integer, a string, or null; JRPC89_ID_NONE is invalid for
+ * responses.
+ *
+ * Precondition: a has no failed flag and no pending error message.
+ * *out is unchanged on any non-OK return. */
+jrpc89_status jrpc89_response_result_new(j89_arena *a, const jrpc89_id *id,
+                                         j89_len result, j89_len *out);
+
+/* Build
+ *
+ *   {
+ *     "jsonrpc":"2.0",
+ *     "error":{"code":CODE,"message":MESSAGE,"data":DATA},
+ *     "id":ID
+ *   }
+ *
+ * and store the object node in *out. The data member is omitted when
+ * data == J89_BAD; otherwise data names a valid JSON node.
+ *
+ * code must be an exact integer in libj89's representable domain.
+ * message may be NULL only when message_len is zero; embedded NUL bytes are
+ * preserved by exact length.
+ * id must be an integer, a string, or null; JRPC89_ID_NONE is invalid.
+ *
+ * Reserved and application-defined error codes are both accepted.
+ *
+ * Precondition: a has no failed flag and no pending error message.
+ * *out is unchanged on any non-OK return. */
+jrpc89_status jrpc89_response_error_new(j89_arena *a, const jrpc89_id *id,
+                                        j89_int code, const char *message,
+                                        j89_len message_len, j89_len data,
+                                        j89_len *out);
 
 /* ------------------------------------------------------------------ */
 /* response decoding                                                   */

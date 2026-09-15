@@ -88,13 +88,13 @@ distinction is deterministic.
 ## Dependency
 
 libj89 provides all JSON: `j89_parse`, node accessors, the object/array/
-string/integer/bool/null builders, and `j89_render`. The client stores
-message trees in `j89_arena`s the caller owns; it never owns JSON memory
-itself.
+string/integer/bool/null builders, and `j89_render`. The protocol core
+stores message trees in `j89_arena`s the caller owns; it never owns JSON
+memory itself.
 
 ## Transport contract
 
-The library's I/O functions take an already-open `int fd` to a Unix socket.
-They add/consume a trailing newline to delimit frames (NDJSON). Socket
-creation, connection, and teardown are the caller's (or the CLI demo's)
-responsibility.
+The library's I/O functions take an already-open `int fd` to a blocking,
+connected stream socket (AF_UNIX or TCP `SOCK_STREAM`). They add/consume a
+trailing newline to delimit frames (NDJSON). Socket creation, connection,
+and teardown are the caller's (or the CLI demo's) responsibility.

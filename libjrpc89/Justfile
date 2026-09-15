@@ -57,6 +57,11 @@ fault: build
 	    ./build/$name || exit 1; \
 	done
 
+# Allocation-failure sweep for the protocol-core builders (GNU ld wrapping).
+fault-alloc: build
+	{{CC}} {{STRICT}} -Iinclude -Isrc -I{{LIBJ89}}/include -I{{U89}}/include -I{{STR89INC}} -Itest/fault -o build/alloc_main test/fault/alloc_main.c test/fault/alloc_shim.c {{LIB}} {{LIBJ89LIB}} {{STR89LIB}} {{U89LIB}} -lm -Wl,--wrap=malloc -Wl,--wrap=calloc -Wl,--wrap=realloc
+	./build/alloc_main
+
 # End-to-end tests against a mock Unix-socket server (small scripts).
 e2e: build
 	@for s in test/e2e/smoke.sh test/e2e/error.sh test/e2e/mismatch.sh test/e2e/sigpipe.sh; do \
@@ -72,7 +77,7 @@ smoke: build
 	sh test/e2e/smoke.sh ./build/jrpc89
 
 # Run every test (smoke runs first, then unit and fault, then e2e).
-test: smoke unit fault e2e e2e-suite
+test: smoke unit fault fault-alloc e2e e2e-suite
 
 # Generate the GCC and Clang compilation databases, then run the seven-cell
 # green matrix from this project root.
@@ -104,6 +109,12 @@ sanitize: deps
 	        -o "build/asan/$name" "$t" {{LIB_NO_POSIX}} {{LIBJ89LIB}} {{STR89LIB}} {{U89LIB}} -lm || exit 1; \
 	    ASAN_OPTIONS=detect_leaks=1 "build/asan/$name" || exit 1; \
 	done
+	clang -std=c99 -fsanitize=address,undefined -fno-omit-frame-pointer -g \
+	    -Iinclude -Isrc -I{{LIBJ89}}/include -I{{U89}}/include -I{{STR89INC}} -Itest/fault \
+	    -o build/asan/alloc_main test/fault/alloc_main.c test/fault/alloc_shim.c \
+	    {{LIB}} {{LIBJ89LIB}} {{STR89LIB}} {{U89LIB}} -lm \
+	    -Wl,--wrap=malloc -Wl,--wrap=calloc -Wl,--wrap=realloc || exit 1
+	ASAN_OPTIONS=detect_leaks=1 build/asan/alloc_main
 
 # Full local gate: tests, green conformance, and sanitizers.
 ci: test check sanitize

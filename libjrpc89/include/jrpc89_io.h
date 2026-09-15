@@ -4,7 +4,9 @@
 #include <jrpc89.h>
 
 /* Optional POSIX transport profile: newline-delimited JSON over an open,
- * blocking, connected Unix-socket fd.
+ * blocking, connected POSIX stream-socket fd (for example AF_UNIX or a
+ * loopback TCP SOCK_STREAM). Datagram, message-oriented, and nonblocking
+ * descriptors are out of scope.
  *
  * The caller owns fd. The library never opens, connects, accepts, or closes
  * it, and simultaneous calls on one fd require external serialization.
