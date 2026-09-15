@@ -157,7 +157,6 @@ int main(int argc, char **argv)
     char buf[JRPC89_BUF_LEN];
     int fd;
     int r;
-    int w;
     int match;
     int params_ok;
     const char *wmem;
@@ -206,15 +205,15 @@ int main(int argc, char **argv)
     }
     wmem = out.mem;
     woff = out.off;
-    w = jrpc89_write_frame(fd, wmem, woff);
-    if (w != 0)
+    st = jrpc89_write_frame(fd, wmem, woff);
+    if (st != JRPC89_OK)
     {
         int rc;
         rc = jrpc89_die_plain(fd, &a, &out, "jrpc89: write failed");
         return rc;
     }
-    r = jrpc89_read_frame(fd, buf, JRPC89_BUF_LEN, &len);
-    if (r != 0)
+    st = jrpc89_read_frame(fd, buf, JRPC89_BUF_LEN, &len);
+    if (st != JRPC89_OK)
     {
         int rc;
         rc = jrpc89_die_plain(fd, &a, &out, "jrpc89: read failed");

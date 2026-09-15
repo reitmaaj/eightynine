@@ -51,9 +51,14 @@
 - A response whose `error` object lacks an integer `code` or a string
   `message` MUST be rejected.
 - `jrpc89_read_frame` MUST accept a frame of up to `cap-1` payload bytes, MUST
-  report a frame that fills the buffer without a newline as too long, and MUST
-  report a truncated frame (peer closed before a newline) distinctly from a
-  too-long frame.
+  return `JRPC89_ETOOLONG` for a frame that exceeds the buffer and drain
+  through the next newline so the following call starts on a frame boundary,
+  MUST return `JRPC89_EOF` for EOF before any byte, and MUST return
+  `JRPC89_ETRUNC` for EOF inside a frame.
+- `jrpc89_read_frame` MUST set `*out_len` to zero and `buf[0]` to `'\0'` on
+  every non-OK return (except `JRPC89_EINVAL`, which touches nothing).
+- `jrpc89_write_frame` MUST refuse input containing a raw `'\n'` or a
+  zero-length frame with `JRPC89_EINVAL`, writing nothing.
 - The CLI MUST reject a `params` argument that is not valid JSON by reporting
   an error and exiting nonzero, rather than silently omitting params.
 - The e2e suite MUST cover at least 100 passing exchanges (valid responses,

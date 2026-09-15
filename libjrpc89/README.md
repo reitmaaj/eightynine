@@ -27,9 +27,10 @@ clang-tidy C23, and canonical formatting.
 - Request building takes the method as bytes plus an explicit length, so
   embedded NUL bytes are preserved and zero-length methods are allowed.
   `params`, when present, must be an array or object.
-- NDJSON framing over an already-open Unix socket file descriptor, with
-  distinct return codes for end-of-file, frame-too-long, read error, and
-  truncated frame.
+- NDJSON framing over an already-open Unix socket file descriptor, with typed
+  statuses for EOF, truncation, oversized frames, and I/O failure. An
+  oversized frame is drained through its newline so the next read starts on a
+  frame boundary, and failed reads clear the output state.
 - A CLI demo that sends one request on a provided fd and prints the result
   or a structured error; it rejects invalid `params` JSON (rather than
   silently omitting params) and rejects a mismatched response id.

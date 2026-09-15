@@ -186,17 +186,49 @@ GIVEN a JSON string
 WHEN jrpc89_write_frame writes it and jrpc89_read_frame reads the socket
 THEN the read bytes equal the written JSON without the trailing newline.
 
+SCENARIO: reject a frame containing a raw newline
+GIVEN JSON bytes containing a raw '\n'
+WHEN jrpc89_write_frame runs
+THEN it returns JRPC89_EINVAL and writes nothing, so one call cannot become
+two NDJSON frames.
+
 SCENARIO: read a frame that exactly fills the buffer
 GIVEN a payload of cap-1 bytes followed by a newline
 WHEN jrpc89_read_frame reads it into a cap-byte buffer
 THEN it succeeds and reports the full cap-1 byte payload.
 
+SCENARIO: read an empty frame
+GIVEN a bare newline
+WHEN jrpc89_read_frame reads it
+THEN it returns JRPC89_OK with a zero-length payload.
+
 SCENARIO: report a frame too long for the buffer
-GIVEN a payload of cap or more bytes with no newline before the buffer fills
+GIVEN a payload of cap or more bytes
 WHEN jrpc89_read_frame reads it into a cap-byte buffer
-THEN it reports the frame as too long.
+THEN it returns JRPC89_ETOOLONG and drains through the next newline.
+
+SCENARIO: recover after an oversized frame
+GIVEN an oversized frame followed immediately by a valid frame
+WHEN jrpc89_read_frame is called twice
+THEN the first call returns JRPC89_ETOOLONG and the second returns the valid
+frame, proving the reader resynchronized on a frame boundary.
+
+SCENARIO: report a clean EOF
+GIVEN the peer closes before sending any byte
+WHEN jrpc89_read_frame runs
+THEN it returns JRPC89_EOF and clears the output state.
 
 SCENARIO: report a truncated frame
 GIVEN the peer closes after sending partial bytes and no newline
 WHEN jrpc89_read_frame reads the socket
-THEN it reports the frame as truncated rather than as too long or success.
+THEN it returns JRPC89_ETRUNC rather than JRPC89_EOF or success.
+
+SCENARIO: clear output state on failure
+GIVEN a buffer holding stale bytes
+WHEN jrpc89_read_frame returns a non-OK status
+THEN *out_len is zero and buf[0] is '\0'.
+
+SCENARIO: reject invalid read arguments
+GIVEN a NULL buffer, a NULL length pointer, or cap == 0
+WHEN jrpc89_read_frame runs
+THEN it returns JRPC89_EINVAL and touches nothing.
