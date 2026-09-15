@@ -1,12 +1,27 @@
 GREEN := env_var_or_default("GREEN", "../../green/.agent/tmp/build/green")
 GREEN_FORMAT := env_var_or_default("GREEN_FORMAT", "../../green/share/green/clang-format.yaml")
 UCD := env_var_or_default("UCD", "unicode-testdata/17.0.0")
+CC := env_var_or_default("CC", "cc")
 
 build:
 	make libu89
 
 test: build
 	make test
+
+# Best-effort 32-bit library build; reports a skip when multilib is absent.
+build32:
+	@mkdir -p build/32; \
+	if ! printf '#include <stdio.h>\nint main(void){return 0;}\n' | {{CC}} -m32 -x c - -o build/32/probe 2>/dev/null; then \
+	    echo "build32: SKIPPED: no 32-bit toolchain (install gcc multilib)"; \
+	    exit 0; \
+	fi; \
+	make CC="{{CC}} -m32" BUILD=build/32 libu89
+
+# Run the unit suite on ILP32 when the toolchain supports it.
+test32: build32
+	@if [ ! -f build/32/libu89.a ]; then exit 0; fi; \
+	make CC="{{CC}} -m32" BUILD=build/32 test
 
 # Generate the GCC and Clang compilation databases the green gate reads.
 setup-green:

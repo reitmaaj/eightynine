@@ -1,3 +1,4 @@
+#include <limits.h>
 #include <stdio.h>
 #include <string.h>
 #include "test.h"
@@ -99,7 +100,11 @@ static void check_clusters(const unsigned char *s, size_t n, size_t want,
 
 static unsigned long rnd_next(unsigned long x)
 {
+#if ULONG_MAX > 0xFFFFFFFFUL
     return x * 6364136223846793005UL + 1442695040888963407UL;
+#else
+    return x * 1664525UL + 1013904223UL;
+#endif
 }
 
 static const u89_cp rnd_pool[] = {
