@@ -5,6 +5,7 @@ GREEN := env_var_or_default("GREEN", "../../green/.agent/tmp/build/green")
 U89 := env_var_or_default("U89", "../libu89")
 U89INC := U89 + "/include"
 U89LIB := U89 + "/build/libu89.a"
+U89LIB32 := U89 + "/build/32/libu89.a"
 
 STRICT := "-std=c89 -pedantic-errors -Wall -Wextra -Werror -Wconversion -Wsign-conversion -Wstrict-prototypes -Wmissing-prototypes -Wold-style-definition -Wundef -Wshadow -Wformat=2"
 TESTFLAGS := "-Wno-unused-function"
@@ -12,6 +13,7 @@ TESTINC := "-Iinclude -I" + U89INC + " -Isrc -Itest/support"
 
 SRC := "src/alloc.c src/view.c src/string.c src/buf.c"
 LIB := "build/libstr89.a"
+LIB32 := "build/32/libstr89.a"
 
 default: build
 
@@ -32,6 +34,43 @@ build: deps
 	done; \
 	rm -f {{LIB}}; \
 	ar rcs {{LIB}} $objs
+
+# Build the sibling libu89 dependency for ILP32.
+deps32:
+	cd {{U89}} && just build32
+
+# Best-effort 32-bit library build; reports a skip when multilib is absent.
+build32: deps32
+	@mkdir -p build/32; \
+	if ! printf '#include <stdio.h>\nint main(void){return 0;}\n' | {{CC}} -m32 -x c - -o build/32/probe 2>/dev/null; then \
+	    echo "build32: SKIPPED: no 32-bit toolchain (install gcc multilib)"; \
+	    exit 0; \
+	fi; \
+	for f in {{SRC}}; do \
+	    name=$(basename "$f" .c); \
+	    {{CC}} {{STRICT}} -m32 -Iinclude -I{{U89INC}} -c "$f" -o "build/32/$name.o" || exit 1; \
+	done; \
+	objs=""; \
+	for f in build/32/*.o; do \
+	    objs="$objs $f"; \
+	done; \
+	rm -f {{LIB32}}; \
+	ar rcs {{LIB32}} $objs; \
+	echo "build32: ok"
+
+# Run the whole fast suite on ILP32 when the toolchain supports it.
+test32: build32
+	@if [ ! -f {{LIB32}} ]; then exit 0; fi; \
+	{{CC}} {{STRICT}} {{TESTFLAGS}} {{TESTINC}} -m32 \
+	    -o build/32/smoke test/smoke.c test/support/str89_test.c {{LIB32}} {{U89LIB32}} || exit 1; \
+	./build/32/smoke || exit 1; \
+	for t in test/unit/test_*.c test/fault/test_*.c test/model/test_*.c test/corpus/test_*.c; do \
+	    [ -e "$t" ] || continue; \
+	    name=$(basename "$t" .c); \
+	    {{CC}} {{STRICT}} {{TESTFLAGS}} {{TESTINC}} -m32 \
+	        -o "build/32/$name" "$t" test/support/str89_test.c {{LIB32}} {{U89LIB32}} || exit 1; \
+	    ./build/32/$name || exit 1; \
+	done
 
 # Smoke test first: one end-to-end path through the library.
 smoke: build

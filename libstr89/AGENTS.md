@@ -59,8 +59,9 @@ branch, then fault, model, corpus, and guard-page testing.
 
 Use `just` for all actions: `just build`, `just smoke`, `just unit`,
 `just fault`, `just model`, `just corpus`, `just guard`, `just cpp-check`,
-`just test`, `just matrix`, `just sanitize`, `just valgrind`, `just green`,
-`just check`, `just lint`, `just format`, `just clean`.
+`just test`, `just build32`, `just test32` (best-effort ILP32; skip cleanly
+without multilib), `just matrix`, `just sanitize`, `just valgrind`,
+`just green`, `just check`, `just lint`, `just format`, `just clean`.
 
 ## Git
 

@@ -46,6 +46,9 @@ are never stored inside a value; a NULL allocator means libc.
 - `just guard` — guard-page tests (POSIX; not part of the green gate).
 - `just cpp-check` — C++23 header compile checks.
 - `just test` — smoke, unit, fault, model, corpus.
+- `just build32` — best-effort ILP32 build of `build/32/libstr89.a` (builds
+  the 32-bit libu89 first); skips cleanly when 32-bit multilib is absent.
+- `just test32` — the whole fast suite under `-m32`.
 - `just matrix` — gcc/clang x C89/C23 behavioral matrix.
 - `just sanitize` — ASan + UBSan run of the fast suite.
 - `just check` — green gate plus the no-Unicode-codec audit.
