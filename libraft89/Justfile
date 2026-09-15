@@ -26,6 +26,31 @@ build:
 	rm -f build/libraft89.a; \
 	ar rcs build/libraft89.a $objs
 
+# Best-effort 32-bit library build; reports a skip when multilib is absent.
+build32:
+	@mkdir -p build/32; \
+	if ! printf '#include <stdio.h>\nint main(void){return 0;}\n' | {{CC}} -m32 -x c - -o build/32/probe 2>/dev/null; then \
+	    echo "build32: SKIPPED: no 32-bit toolchain (install gcc multilib)"; \
+	    exit 0; \
+	fi; \
+	for f in src/*.c; do \
+	    name=$(basename "$f" .c); \
+	    {{CC}} {{STRICT}} -m32 -Iinclude -c "src/$name.c" -o "build/32/$name.o" || exit 1; \
+	done; \
+	rm -f build/32/libraft89.a; \
+	ar rcs build/32/libraft89.a build/32/*.o; \
+	echo "build32: ok"
+
+# Run the unit suite on ILP32 when the toolchain supports it.
+test32: build32
+	@if [ ! -f build/32/libraft89.a ]; then exit 0; fi; \
+	for t in test/unit/test_*.c; do \
+	    name=$(basename "$t" .c); \
+	    {{CC}} {{STRICT}} {{TESTFLAGS}} -m32 -Iinclude -Itest/support -Isrc \
+	        -o "build/32/$name" "$t" test/support/*.c build/32/libraft89.a || exit 1; \
+	    ./build/32/$name || exit 1; \
+	done
+
 # Smoke test first: one end-to-end path through the library.
 smoke: build
 	{{CC}} {{STRICT}} {{TESTFLAGS}} -Iinclude -Itest/support -Isrc \
