@@ -154,6 +154,98 @@ int jrpc89_sys_write(int fd, const void *buf, j89_len len, j89_len *put)
     return JRPC89_SYS_OK;
 }
 
+static void test_read_multiple_eintr(void)
+{
+    char buf[8];
+    j89_len len;
+    jrpc89_status st;
+    r_reset();
+    r_kind(JRPC89_SYS_INTR);
+    r_kind(JRPC89_SYS_INTR);
+    r_kind(JRPC89_SYS_INTR);
+    r_byte('a');
+    r_byte('\n');
+    len = 99;
+    st = jrpc89_fd_read_frame(3, buf, sizeof(buf), &len);
+    if (st != JRPC89_OK || len != 1 || buf[0] != 'a')
+    {
+        fail("read multiple eintr");
+    }
+}
+
+static void test_read_error_after_payload(void)
+{
+    char buf[8];
+    j89_len len;
+    jrpc89_status st;
+    r_reset();
+    r_byte('a');
+    r_kind(JRPC89_SYS_ERR);
+    buf[0] = 'x';
+    len = 99;
+    st = jrpc89_fd_read_frame(3, buf, sizeof(buf), &len);
+    if (st != JRPC89_EIO)
+    {
+        fail("read error after payload: status");
+    }
+    if (len != 0 || buf[0] != '\0')
+    {
+        fail("read error after payload: output not cleared");
+    }
+}
+
+static void test_read_eof_after_drain(void)
+{
+    char buf[4];
+    j89_len len;
+    jrpc89_status st;
+    r_reset();
+    r_byte('a');
+    r_byte('b');
+    r_byte('c');
+    st = jrpc89_fd_read_frame(3, buf, 3, &len);
+    if (st != JRPC89_ETOOLONG)
+    {
+        fail("drain eof: status");
+    }
+}
+
+static void test_read_drain_then_error(void)
+{
+    char buf[4];
+    j89_len len;
+    jrpc89_status st;
+    r_reset();
+    r_byte('a');
+    r_byte('b');
+    r_byte('c');
+    r_kind(JRPC89_SYS_ERR);
+    st = jrpc89_fd_read_frame(3, buf, 3, &len);
+    if (st != JRPC89_EIO)
+    {
+        fail("drain error: status");
+    }
+}
+
+static void test_write_eintr_mid_frame(void)
+{
+    jrpc89_status st;
+    w_reset();
+    w_ok(1);
+    w_kind(JRPC89_SYS_INTR);
+    w_ok(2);
+    w_ok(1);
+    st = jrpc89_fd_write_frame(3, "abc", 3);
+    if (st != JRPC89_OK)
+    {
+        fail("write eintr mid frame: status");
+    }
+    if (written_len != 4 || strncmp(written, "abc\n", 4) != 0)
+    {
+        fail("write eintr mid frame: bytes");
+    }
+}
+
 static void test_read_eintr(void)
 {
     char buf[8];
@@ -336,10 +428,15 @@ static void test_write_rejects_before_seam(void)
 int main(void)
 {
     test_read_eintr();
+    test_read_multiple_eintr();
     test_read_eintr_during_drain();
     test_read_hard_error();
+    test_read_error_after_payload();
     test_read_eof();
+    test_read_eof_after_drain();
+    test_read_drain_then_error();
     test_write_eintr();
+    test_write_eintr_mid_frame();
     test_write_short();
     test_write_hard_error();
     test_write_partial_then_error();

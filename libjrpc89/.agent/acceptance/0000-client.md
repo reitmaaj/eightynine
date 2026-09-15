@@ -10,7 +10,7 @@
   permitted by the kind is usable without further structural checks.
 - `jrpc89_response_decode` leaves `*out` unchanged on every non-OK return.
 - `jrpc89_id_equal` compares ids structurally, including embedded NUL bytes.
-- `jrpc89_write_frame` and `jrpc89_read_frame` round-trip a JSON message as
+- `jrpc89_fd_write_frame` and `jrpc89_fd_read_frame` round-trip a JSON message as
   newline-delimited bytes over an fd.
 - The CLI demo connects to a Unix socket, sends a request, and prints the
   result or a structured error, exiting 0 on a successful call.
@@ -50,14 +50,14 @@
 - A response whose `error` member is not an object MUST be rejected.
 - A response whose `error` object lacks an integer `code` or a string
   `message` MUST be rejected.
-- `jrpc89_read_frame` MUST accept a frame of up to `cap-1` payload bytes, MUST
+- `jrpc89_fd_read_frame` MUST accept a frame of up to `cap-1` payload bytes, MUST
   return `JRPC89_ETOOLONG` for a frame that exceeds the buffer and drain
   through the next newline so the following call starts on a frame boundary,
   MUST return `JRPC89_EOF` for EOF before any byte, and MUST return
   `JRPC89_ETRUNC` for EOF inside a frame.
-- `jrpc89_read_frame` MUST set `*out_len` to zero and `buf[0]` to `'\0'` on
+- `jrpc89_fd_read_frame` MUST set `*out_len` to zero and `buf[0]` to `'\0'` on
   every non-OK return (except `JRPC89_EINVAL`, which touches nothing).
-- `jrpc89_write_frame` MUST refuse input containing a raw `'\n'` or a
+- `jrpc89_fd_write_frame` MUST refuse input containing a raw `'\n'` or a
   zero-length frame with `JRPC89_EINVAL`, writing nothing.
 - The CLI MUST reject a `params` argument that is not valid JSON by reporting
   an error and exiting nonzero, rather than silently omitting params.
@@ -75,3 +75,5 @@
   completed by looping.
 - The CLI MUST survive a write to a pipe whose read end is closed (no
   SIGPIPE termination) and report the failure with a nonzero exit.
+- The full unit, fault, and e2e suites MUST run clean under AddressSanitizer
+  and UndefinedBehaviorSanitizer via `just sanitize`.

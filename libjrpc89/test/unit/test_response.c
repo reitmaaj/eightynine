@@ -455,6 +455,105 @@ static void test_code_outside_int(void)
     j89_arena_destroy(&a);
 }
 
+static void test_id_boundaries(void)
+{
+    static const char *texts[] = {
+        "{\"jsonrpc\":\"2.0\",\"result\":1,\"id\":0}",
+        "{\"jsonrpc\":\"2.0\",\"result\":1,\"id\":-1}",
+        "{\"jsonrpc\":\"2.0\",\"result\":1,\"id\":9007199254740992}",
+        "{\"jsonrpc\":\"2.0\",\"result\":1,\"id\":-9007199254740992}",
+        "{\"jsonrpc\":\"2.0\",\"result\":1,\"id\":\"\"}"};
+    static const j89_int values[] = {0, -1, 9007199254740992.0,
+                                     -9007199254740992.0, 0};
+    static const int kinds[] = {JRPC89_ID_INT, JRPC89_ID_INT, JRPC89_ID_INT,
+                                JRPC89_ID_INT, JRPC89_ID_STRING};
+    size_t i;
+    for (i = 0; i < sizeof(texts) / sizeof(texts[0]); i = i + 1)
+    {
+        j89_arena a;
+        jrpc89_response out;
+        jrpc89_status st;
+        j89_arena_init(&a);
+        st = decode_text(texts[i], &a, &out);
+        if (st != JRPC89_OK)
+        {
+            fail("id boundary: status");
+        }
+        else
+        {
+            if (out.id.kind != (jrpc89_id_kind)kinds[i])
+            {
+                fail("id boundary: kind");
+            }
+            if (out.id.kind == JRPC89_ID_INT)
+            {
+                if (out.id.num != values[i])
+                {
+                    fprintf(stderr, "FAIL: id boundary value %.0f\n",
+                            out.id.num);
+                    failures = failures + 1;
+                }
+            }
+            else if (out.id.len != 0)
+            {
+                fail("id boundary: empty string length");
+            }
+        }
+        j89_arena_destroy(&a);
+    }
+}
+
+static void test_error_code_boundaries(void)
+{
+    static const char *texts[] = {
+        "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32768,"
+        "\"message\":\"m\"},\"id\":1}",
+        "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32000,"
+        "\"message\":\"m\"},\"id\":1}",
+        "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":32768,"
+        "\"message\":\"m\"},\"id\":1}"};
+    static const j89_int values[] = {-32768, -32000, 32768};
+    size_t i;
+    for (i = 0; i < sizeof(texts) / sizeof(texts[0]); i = i + 1)
+    {
+        j89_arena a;
+        jrpc89_response out;
+        jrpc89_status st;
+        j89_arena_init(&a);
+        st = decode_text(texts[i], &a, &out);
+        if (st != JRPC89_OK)
+        {
+            fail("code boundary: status");
+        }
+        else if (out.error.code != values[i])
+        {
+            fprintf(stderr, "FAIL: code boundary value %.0f\n", out.error.code);
+            failures = failures + 1;
+        }
+        j89_arena_destroy(&a);
+    }
+}
+
+static void test_extra_members_ignored(void)
+{
+    j89_arena a;
+    jrpc89_response out;
+    jrpc89_status st;
+    j89_arena_init(&a);
+    st = decode_text("{\"jsonrpc\":\"2.0\",\"result\":false,"
+                     "\"id\":1,\"meta\":{\"x\":1}}",
+                     &a, &out);
+    if (st != JRPC89_OK)
+    {
+        fail("extra members: status");
+    }
+    else if (out.result == J89_BAD)
+    {
+        fail("extra members: result");
+    }
+    j89_arena_destroy(&a);
+}
+
 int main(void)
 {
     test_result_int_id();
@@ -470,6 +569,9 @@ int main(void)
     test_null_arguments();
     test_dirty_arena();
     test_code_outside_int();
+    test_id_boundaries();
+    test_error_code_boundaries();
+    test_extra_members_ignored();
     if (failures != 0)
     {
         fprintf(stderr, "%d failure(s)\n", failures);

@@ -498,6 +498,77 @@ static void test_prefailed_arena(void)
     j89_arena_destroy(&a);
 }
 
+static void test_rpc_prefix_method(void)
+{
+    j89_arena a;
+    j89_len req;
+    j89_arena_init(&a);
+    req = build_simple(&a, "rpc.discover", 11, J89_BAD);
+    if (req == J89_BAD)
+    {
+        fail("rpc prefix method refused");
+    }
+    j89_arena_destroy(&a);
+}
+
+static void test_long_method(void)
+{
+    j89_arena a;
+    j89_len req;
+    char method[4001];
+    size_t i;
+    for (i = 0; i < 4000; i = i + 1)
+    {
+        method[i] = 'm';
+    }
+    method[4000] = '\0';
+    j89_arena_init(&a);
+    req = build_simple(&a, method, 4000, J89_BAD);
+    if (req == J89_BAD)
+    {
+        fail("long method refused");
+    }
+    j89_arena_destroy(&a);
+}
+
+static void test_empty_string_id(void)
+{
+    j89_arena a;
+    jrpc89_id id;
+    j89_len req;
+    jrpc89_status st;
+    j89_arena_init(&a);
+    id.kind = JRPC89_ID_STRING;
+    id.str = "";
+    id.len = 0;
+    st = jrpc89_request_new(&a, "foo", 3, J89_BAD, &id, &req);
+    if (st != JRPC89_OK)
+    {
+        fail("empty string id: status");
+    }
+    else
+    {
+        expect_render(&a, req,
+                      "{\"jsonrpc\":\"2.0\",\"method\":\"foo\",\"id\":\"\"}");
+    }
+    j89_arena_destroy(&a);
+}
+
+static void test_empty_array_params(void)
+{
+    j89_arena a;
+    j89_len params;
+    j89_len req;
+    j89_arena_init(&a);
+    params = j89_array_new(&a, 0);
+    req = build_simple(&a, "foo", 3, params);
+    if (req == J89_BAD)
+    {
+        fail("empty array params refused");
+    }
+    j89_arena_destroy(&a);
+}
+
 int main(void)
 {
     test_int_id();
@@ -518,6 +589,10 @@ int main(void)
     test_inexact_int_id();
     test_invalid_utf8_method();
     test_prefailed_arena();
+    test_rpc_prefix_method();
+    test_long_method();
+    test_empty_string_id();
+    test_empty_array_params();
     if (failures != 0)
     {
         fprintf(stderr, "%d failure(s)\n", failures);

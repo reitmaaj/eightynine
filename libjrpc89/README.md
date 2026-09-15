@@ -44,8 +44,8 @@ jrpc89_request_new        build a request/notification node
 jrpc89_response_decode    decode a parsed response into jrpc89_response
 jrpc89_id_equal           structural id equality
 jrpc89_error_code_reserved  reserved interval -32768..-32000
-jrpc89_write_frame        write one NDJSON frame
-jrpc89_read_frame         read one NDJSON frame
+jrpc89_fd_write_frame    write one NDJSON frame
+jrpc89_fd_read_frame     read one NDJSON frame
 ```
 
 Types: `jrpc89_status`, `jrpc89_id`, `jrpc89_response`, `jrpc89_error`.
@@ -80,6 +80,8 @@ just fault       # scripted syscall-seam framing tests only
 just e2e-suite   # parameterized exchange suite only
 just green       # generate compile DBs and run the seven-cell green matrix
 just check       # green gate (matrix + tidy + format)
+just sanitize    # ASan/UBSan build of the library and tests
+just ci          # test + check + sanitize
 just lint        # shellcheck + clang-format dry-run
 just format      # apply canonical formatting
 ```

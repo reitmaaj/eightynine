@@ -85,6 +85,29 @@ green:
 # clang-tidy semantic suite, and canonical format.
 check: green
 
+# ASan + UBSan build of the library and tests (clang runtime; not C89).
+sanitize: deps
+	mkdir -p build/asan
+	@for t in test/unit/test_*.c; do \
+	    [ -e "$t" ] || continue; \
+	    name=$(basename "$t" .c); \
+	    clang -std=c99 -fsanitize=address,undefined -fno-omit-frame-pointer -g \
+	        -Iinclude -I{{LIBJ89}}/include -I{{U89}}/include -I{{STR89INC}} -Itest/unit \
+	        -o "build/asan/$name" "$t" {{LIB}} {{LIBJ89LIB}} {{STR89LIB}} {{U89LIB}} -lm || exit 1; \
+	    ASAN_OPTIONS=detect_leaks=1 "build/asan/$name" || exit 1; \
+	done
+	@for t in test/fault/test_*.c; do \
+	    [ -e "$t" ] || continue; \
+	    name=$(basename "$t" .c); \
+	    clang -std=c99 -fsanitize=address,undefined -fno-omit-frame-pointer -g \
+	        -Iinclude -Isrc -I{{LIBJ89}}/include -I{{U89}}/include -I{{STR89INC}} -Itest/fault \
+	        -o "build/asan/$name" "$t" {{LIB_NO_POSIX}} {{LIBJ89LIB}} {{STR89LIB}} {{U89LIB}} -lm || exit 1; \
+	    ASAN_OPTIONS=detect_leaks=1 "build/asan/$name" || exit 1; \
+	done
+
+# Full local gate: tests, green conformance, and sanitizers.
+ci: test check sanitize
+
 lint:
 	@for f in test/*.sh test/*/*.sh scripts/*.sh; do \
 	    [ -e "$f" ] || continue; \
