@@ -121,7 +121,7 @@ static int jrpc89_print_result(j89_arena *a, j89_len resp)
 
 static int jrpc89_print_error(j89_arena *a, j89_len resp)
 {
-    int code;
+    j89_int code;
     int reserved;
     const char *cls;
     const char *msg;
@@ -133,7 +133,7 @@ static int jrpc89_print_error(j89_arena *a, j89_len resp)
         cls = "reserved";
     }
     msg = jrpc89_error_message(a, resp);
-    printf("error %d %s \"%s\"\n", code, cls, msg);
+    printf("error %.0f %s \"%s\"\n", code, cls, msg);
     return 0;
 }
 

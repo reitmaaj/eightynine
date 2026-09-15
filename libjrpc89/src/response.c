@@ -95,15 +95,46 @@ static int jrpc89_validate_error(j89_arena *a, j89_len resp)
     return 0;
 }
 
+/* Validate the id member of a response: it must be present and must be an
+ * integer, string, or null. Returns 0 when valid, nonzero otherwise. */
+static int jrpc89_validate_id(j89_arena *a, j89_len resp)
+{
+    j89_len id;
+    j89_kind k;
+    int has_id;
+    id = j89_object_find(a, resp, "id");
+    has_id = jrpc89_has_node(id);
+    if (!has_id)
+    {
+        jrpc89_set_error(a, "jrpc89: response has no id member");
+        return -1;
+    }
+    k = j89_kind_of(a, id);
+    if (k == J89_INTEGER)
+    {
+        return 0;
+    }
+    if (k == J89_STRING)
+    {
+        return 0;
+    }
+    if (k == J89_NULL)
+    {
+        return 0;
+    }
+    jrpc89_set_error(a, "jrpc89: response id is not integer, string, or null");
+    return -1;
+}
+
 int jrpc89_response_validate(j89_arena *a, j89_len resp)
 {
     j89_kind k;
     j89_len version;
     int have_result;
     int have_error;
-    int have_id;
     int is_obj;
     int version_ok;
+    int idok;
     k = j89_kind_of(a, resp);
     is_obj = (k == J89_OBJECT);
     if (!is_obj)
@@ -126,7 +157,6 @@ int jrpc89_response_validate(j89_arena *a, j89_len resp)
     }
     have_result = jrpc89_member_has(a, resp, "result");
     have_error = jrpc89_member_has(a, resp, "error");
-    have_id = jrpc89_member_has(a, resp, "id");
     if (have_error)
     {
         int eok;
@@ -153,12 +183,8 @@ int jrpc89_response_validate(j89_arena *a, j89_len resp)
             return -1;
         }
     }
-    if (!have_id)
-    {
-        jrpc89_set_error(a, "jrpc89: response has no id member");
-        return -1;
-    }
-    return 0;
+    idok = jrpc89_validate_id(a, resp);
+    return idok;
 }
 
 int jrpc89_is_error(j89_arena *a, j89_len resp)
@@ -196,33 +222,39 @@ static void jrpc89_set_id_string(j89_arena *a, j89_len node, jrpc89_id *out)
     out->kind = JRPC89_ID_STRING;
 }
 
-static void jrpc89_id_from_node(j89_arena *a, j89_len node, jrpc89_id *out)
+static int jrpc89_id_from_node(j89_arena *a, j89_len node, jrpc89_id *out)
 {
     j89_kind k;
     k = j89_kind_of(a, node);
     if (k == J89_INTEGER)
     {
         jrpc89_set_id_int(a, node, out);
-        return;
+        return 0;
     }
     if (k == J89_STRING)
     {
         jrpc89_set_id_string(a, node, out);
-        return;
+        return 0;
     }
-    out->kind = JRPC89_ID_NULL;
+    if (k == J89_NULL)
+    {
+        out->kind = JRPC89_ID_NULL;
+        return 0;
+    }
+    return -1;
 }
 
 int jrpc89_id_of_response(j89_arena *a, j89_len resp, jrpc89_id *out)
 {
     j89_len v;
     int has;
+    int r;
     v = j89_object_find(a, resp, "id");
     has = jrpc89_has_node(v);
     if (!has)
     {
         return -1;
     }
-    jrpc89_id_from_node(a, v, out);
-    return 0;
+    r = jrpc89_id_from_node(a, v, out);
+    return r;
 }

@@ -37,6 +37,17 @@ GIVEN a NULL method name
 WHEN jrpc89_request_new builds the request object
 THEN it refuses without dereferencing the pointer and produces no usable object.
 
+SCENARIO: propagate a libj89 builder failure
+GIVEN a method containing invalid UTF-8
+WHEN jrpc89_request_new builds the request object
+THEN the arena is marked failed and no usable object is returned, rather than an
+apparently valid node from a failed construction.
+
+SCENARIO: refuse a pre-failed arena
+GIVEN an arena already marked failed by an earlier builder failure
+WHEN jrpc89_request_new builds the request object
+THEN it refuses immediately and produces no usable object.
+
 ## Response parsing
 
 SCENARIO: parse a successful response
@@ -94,6 +105,11 @@ GIVEN a response object with result but no id member
 WHEN jrpc89_response_validate runs
 THEN it rejects it.
 
+SCENARIO: reject an illegal response id kind
+GIVEN a response whose id is a boolean, float, array, or object
+WHEN jrpc89_response_validate runs
+THEN it rejects it rather than silently treating the id as null.
+
 SCENARIO: reject a mismatched response id
 GIVEN a response whose id differs from the request id
 WHEN jrpc89_id_matches compares them
@@ -107,14 +123,19 @@ THEN the CLI reports a mismatch and exits nonzero instead of printing a result.
 ## Error codes
 
 SCENARIO: classify a reserved server code
-GIVEN an error code in -32000..-32099
+GIVEN an error code in -32768..-32000
 WHEN jrpc89_error_is_reserved classifies it
 THEN it reports reserved.
 
 SCENARIO: classify an application code
-GIVEN an error code outside the reserved ranges
+GIVEN an error code outside -32768..-32000
 WHEN jrpc89_error_is_reserved classifies it
 THEN it reports application-defined.
+
+SCENARIO: preserve an error code outside the C int range
+GIVEN an error code within libj89's exact integer range but outside INT_MIN..INT_MAX
+WHEN jrpc89_error_code extracts it
+THEN the exact j89_int value is returned rather than a narrowed int.
 
 ## Framing
 

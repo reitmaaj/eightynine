@@ -3,33 +3,13 @@
 
 #include "jrpc89_internal.h"
 
-int jrpc89_error_is_reserved(int code)
+int jrpc89_error_is_reserved(j89_int code)
 {
     int r;
     r = 0;
-    if (code == JRPC89_PARSE_ERROR)
+    if (code >= -32768.0)
     {
-        r = 1;
-    }
-    if (code == JRPC89_INVALID_REQUEST)
-    {
-        r = 1;
-    }
-    if (code == JRPC89_METHOD_NOT_FOUND)
-    {
-        r = 1;
-    }
-    if (code == JRPC89_INVALID_PARAMS)
-    {
-        r = 1;
-    }
-    if (code == JRPC89_INTERNAL_ERROR)
-    {
-        r = 1;
-    }
-    if (code >= JRPC89_SERVER_ERROR_MIN)
-    {
-        if (code <= JRPC89_SERVER_ERROR_MAX)
+        if (code <= -32000.0)
         {
             r = 1;
         }
@@ -44,12 +24,11 @@ j89_len jrpc89_error_object(j89_arena *a, j89_len resp)
     return v;
 }
 
-int jrpc89_error_code(j89_arena *a, j89_len resp)
+j89_int jrpc89_error_code(j89_arena *a, j89_len resp)
 {
     j89_len err;
     j89_len code;
-    j89_int raw;
-    int v;
+    j89_int v;
     int has_err;
     int has_code;
     err = jrpc89_error_object(a, resp);
@@ -64,8 +43,7 @@ int jrpc89_error_code(j89_arena *a, j89_len resp)
     {
         return 0;
     }
-    raw = j89_int_value(a, code);
-    v = (int)raw;
+    v = j89_int_value(a, code);
     return v;
 }
 

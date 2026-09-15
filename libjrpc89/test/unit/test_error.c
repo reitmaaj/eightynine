@@ -59,11 +59,43 @@ static void test_is_reserved(void)
     }
 }
 
+static void test_reserved_gaps(void)
+{
+    if (jrpc89_error_is_reserved(-32769))
+    {
+        fail("code -32769 should not be reserved");
+    }
+    if (!jrpc89_error_is_reserved(-32768))
+    {
+        fail("code -32768 should be reserved");
+    }
+    if (!jrpc89_error_is_reserved(-32500))
+    {
+        fail("gap -32500 should be reserved");
+    }
+    if (!jrpc89_error_is_reserved(-32100))
+    {
+        fail("gap -32100 should be reserved");
+    }
+    if (!jrpc89_error_is_reserved(-32099))
+    {
+        fail("code -32099 should be reserved");
+    }
+    if (!jrpc89_error_is_reserved(-32000))
+    {
+        fail("code -32000 should be reserved");
+    }
+    if (jrpc89_error_is_reserved(-31999))
+    {
+        fail("code -31999 should not be reserved");
+    }
+}
+
 static void test_accessors(void)
 {
     j89_arena a;
     j89_len resp;
-    int code;
+    j89_int code;
     const char *msg;
     j89_len msglen;
     j89_arena_init(&a);
@@ -79,7 +111,7 @@ static void test_accessors(void)
         code = jrpc89_error_code(&a, resp);
         if (code != -32001)
         {
-            fprintf(stderr, "FAIL: code got %d\n", code);
+            fprintf(stderr, "FAIL: code got %.0f\n", code);
             failures = failures + 1;
         }
         msg = jrpc89_error_message(&a, resp);
@@ -124,11 +156,60 @@ static void test_absent_error(void)
     j89_arena_destroy(&a);
 }
 
+static void test_code_outside_int(void)
+{
+    j89_arena a;
+    j89_len resp;
+    j89_int code;
+    j89_arena_init(&a);
+    resp = parse("{\"jsonrpc\":\"2.0\",\"error\":{\"code\":2147483648,"
+                 "\"message\":\"big\"},\"id\":7}",
+                 &a);
+    if (!jrpc89_has_node(resp))
+    {
+        fail("outside int: parse");
+    }
+    else
+    {
+        code = jrpc89_error_code(&a, resp);
+        if (code != 2147483648.0)
+        {
+            fprintf(stderr, "FAIL: outside int code got %.0f\n", code);
+            failures = failures + 1;
+        }
+        if (jrpc89_error_is_reserved(code))
+        {
+            fail("outside int: positive code reserved");
+        }
+    }
+    j89_arena_destroy(&a);
+    j89_arena_init(&a);
+    resp = parse("{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-2147483649,"
+                 "\"message\":\"big\"},\"id\":7}",
+                 &a);
+    if (!jrpc89_has_node(resp))
+    {
+        fail("outside int: negative parse");
+    }
+    else
+    {
+        code = jrpc89_error_code(&a, resp);
+        if (code != -2147483649.0)
+        {
+            fprintf(stderr, "FAIL: negative outside int got %.0f\n", code);
+            failures = failures + 1;
+        }
+    }
+    j89_arena_destroy(&a);
+}
+
 int main(void)
 {
     test_is_reserved();
+    test_reserved_gaps();
     test_accessors();
     test_absent_error();
+    test_code_outside_int();
     if (failures != 0)
     {
         fprintf(stderr, "%d failure(s)\n", failures);

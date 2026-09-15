@@ -126,6 +126,68 @@ static void test_rejections(void)
                    "\"message\":5},\"id\":1}");
 }
 
+static void test_illegal_id_kinds(void)
+{
+    expect_invalid("id boolean true",
+                   "{\"jsonrpc\":\"2.0\",\"result\":1,\"id\":true}");
+    expect_invalid("id boolean false",
+                   "{\"jsonrpc\":\"2.0\",\"result\":1,\"id\":false}");
+    expect_invalid("id float", "{\"jsonrpc\":\"2.0\",\"result\":1,\"id\":1.5}");
+    expect_invalid("id array", "{\"jsonrpc\":\"2.0\",\"result\":1,\"id\":[]}");
+    expect_invalid("id object", "{\"jsonrpc\":\"2.0\",\"result\":1,\"id\":{}}");
+}
+
+static void test_valid_null_id(void)
+{
+    j89_arena a;
+    j89_len resp;
+    jrpc89_id out;
+    int r;
+    j89_arena_init(&a);
+    resp = parse("{\"jsonrpc\":\"2.0\",\"result\":1,\"id\":null}", &a);
+    if (!jrpc89_has_node(resp))
+    {
+        fail("null id: parse");
+    }
+    else
+    {
+        r = jrpc89_response_validate(&a, resp);
+        if (r != 0)
+        {
+            fail("null id: validate");
+        }
+        r = jrpc89_id_of_response(&a, resp, &out);
+        if (r != 0 || out.kind != JRPC89_ID_NULL)
+        {
+            fail("null id: extract");
+        }
+    }
+    j89_arena_destroy(&a);
+}
+
+static void test_illegal_id_extract(void)
+{
+    j89_arena a;
+    j89_len resp;
+    jrpc89_id out;
+    int r;
+    j89_arena_init(&a);
+    resp = parse("{\"jsonrpc\":\"2.0\",\"result\":1,\"id\":true}", &a);
+    if (!jrpc89_has_node(resp))
+    {
+        fail("illegal id extract: parse");
+    }
+    else
+    {
+        r = jrpc89_id_of_response(&a, resp, &out);
+        if (r == 0)
+        {
+            fail("illegal id extract: accepted boolean id");
+        }
+    }
+    j89_arena_destroy(&a);
+}
+
 static void test_id_of_response(void)
 {
     j89_arena a;
@@ -190,6 +252,9 @@ int main(void)
     test_valid_result();
     test_valid_error();
     test_rejections();
+    test_illegal_id_kinds();
+    test_valid_null_id();
+    test_illegal_id_extract();
     test_id_of_response();
     test_id_matches();
     if (failures != 0)

@@ -13,8 +13,9 @@ clang-tidy C23, and canonical formatting.
 - `jsonrpc: "2.0"` on every message.
 - String, integer, and null `id`s echoed back; notifications omit `id`.
 - Standard error codes `-32700`, `-32600`, `-32601`, `-32602`, `-32603`,
-  and the `-32000..-32099` server range; reserved-vs-application
-  classification; error-object access.
+  and the full reserved range `-32768..-32000`; reserved-vs-application
+  classification; error-object access. Error codes are exact `j89_int`
+  values, so codes outside the C `int` range are preserved.
 - Response validation: an `id` must be present and match the request id;
   exactly one of `result` or `error` must be present; an `error` member must
   be an object carrying an integer `code` and a string `message`.
@@ -36,14 +37,12 @@ newline-delimited JSON (NDJSON): one message per line. The CLI demo reads
 into an 8192-byte buffer, so a response frame may be up to 8191 bytes; a
 larger frame is reported as too long.
 
-## Known limitation: error code range
+## Known limitation: none
 
-An error `code` is validated as a JSON integer but is **not range-checked
-against `int`**. A code within libj89's `±2^53` exact-integer range yet
-outside `INT_MIN..INT_MAX` is accepted as valid and then truncated when it
-is cast to `int` for classification and printing (`src/error.c`,
-`jrpc89_error_code`). Callers should keep error codes within the `int`
-range.
+Error `code` values are validated as JSON integers and preserved as exact
+`j89_int` values; classification covers the complete reserved interval
+`-32768..-32000`. Request construction propagates every libj89 builder
+failure and never returns a node from a failed construction.
 
 ## Build and test
 

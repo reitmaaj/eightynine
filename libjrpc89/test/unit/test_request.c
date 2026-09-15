@@ -202,6 +202,47 @@ static void test_null_method(void)
     j89_arena_destroy(&a);
 }
 
+static void test_invalid_utf8_method(void)
+{
+    j89_arena a;
+    jrpc89_id id;
+    j89_len req;
+    j89_arena_init(&a);
+    id.kind = JRPC89_ID_INT;
+    id.num = 1;
+    req = jrpc89_request_new(&a, "\xff", J89_BAD, &id);
+    if (jrpc89_has_node(req))
+    {
+        fail("invalid utf-8 method returned a node");
+    }
+    if (!j89_failed(&a))
+    {
+        fail("invalid utf-8 method did not fail the arena");
+    }
+    j89_arena_destroy(&a);
+}
+
+static void test_prefailed_arena(void)
+{
+    j89_arena a;
+    jrpc89_id id;
+    j89_len req;
+    j89_arena_init(&a);
+    j89_string_new(&a, "\xff", 1);
+    if (!j89_failed(&a))
+    {
+        fail("prefailed: setup did not fail the arena");
+    }
+    id.kind = JRPC89_ID_INT;
+    id.num = 1;
+    req = jrpc89_request_new(&a, "foo", J89_BAD, &id);
+    if (jrpc89_has_node(req))
+    {
+        fail("prefailed arena returned a node");
+    }
+    j89_arena_destroy(&a);
+}
+
 int main(void)
 {
     test_int_id();
@@ -211,6 +252,8 @@ int main(void)
     test_params();
     test_empty_method();
     test_null_method();
+    test_invalid_utf8_method();
+    test_prefailed_arena();
     if (failures != 0)
     {
         fprintf(stderr, "%d failure(s)\n", failures);

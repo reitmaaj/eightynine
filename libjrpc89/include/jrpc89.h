@@ -99,16 +99,16 @@ enum
     JRPC89_SERVER_ERROR_MAX = -32000
 };
 
-/* True for codes in the reserved ranges (-32000..-32099 and the standard
- * codes); false for application-defined codes. */
-int jrpc89_error_is_reserved(int code);
+/* True for codes in the reserved range -32768..-32000, including the gaps
+ * between the named codes; false for application-defined codes. */
+int jrpc89_error_is_reserved(j89_int code);
 
 /* The error object node of a response, or J89_BAD when absent. */
 j89_len jrpc89_error_object(j89_arena *a, j89_len resp);
 
 /* Members of the error object. Returns are undefined when the response has
  * no error object. */
-int jrpc89_error_code(j89_arena *a, j89_len resp);
+j89_int jrpc89_error_code(j89_arena *a, j89_len resp);
 const char *jrpc89_error_message(j89_arena *a, j89_len resp);
 j89_len jrpc89_error_message_length(j89_arena *a, j89_len resp);
 j89_len jrpc89_error_data(j89_arena *a, j89_len resp);

@@ -13,8 +13,10 @@
   newline-delimited bytes over an fd.
 - The CLI demo connects to a Unix socket, sends a request, and prints the
   result or a structured error, exiting 0 on a successful call.
-- `jrpc89_error_is_reserved` classifies the `-32000..-32099` range and the
-  standard codes as reserved.
+- `jrpc89_error_is_reserved` classifies the `-32768..-32000` range (including
+  currently unassigned gaps) and the standard codes as reserved.
+- `jrpc89_error_code` returns the exact `j89_int` code, preserving values
+  outside the C `int` range that libj89 accepts.
 
 ## Unacceptable behaviors (must reject / refuse)
 
@@ -22,6 +24,14 @@
 - A response carrying both `result` and `error` MUST be rejected.
 - A response carrying neither `result` nor `error` MUST be rejected.
 - A response without an `id` member MUST be rejected.
+- A response whose `id` is a boolean, float, array, or object MUST be rejected;
+  such ids MUST NOT be silently coerced to a null id.
+- `jrpc89_request_new` MUST NOT return a usable object when any libj89 builder
+  operation failed (for example, invalid UTF-8 in the method): the arena is
+  marked failed and no node is returned.
+- `jrpc89_request_new` MUST refuse an arena that is already marked failed.
+- `jrpc89_error_is_reserved` MUST classify every code in `-32768..-32000` as
+  reserved, including gaps such as `-32100` and `-32500`.
 - A response whose `id` does not match the request id MUST be reported as a
   mismatch.
 - The CLI demo MUST reject a response whose `id` does not match the request
