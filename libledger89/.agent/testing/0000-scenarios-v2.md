@@ -181,6 +181,8 @@ SCENARIO AB01 adapter boundaries
   WHEN they replay, replace suffixes, and detect stale revisions or pruned
        positions
   THEN the ledger exposes exactly the required primitives
+  AND a Raft adapter reads an 8-byte term prefix with read_at(0, 8) and the
+       payload with read_at(8, size - 8) without leaking the envelope
 
 SCENARIO G01 golden fixtures
   GIVEN frozen byte fixtures

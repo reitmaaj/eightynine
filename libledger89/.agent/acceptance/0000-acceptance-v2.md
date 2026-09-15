@@ -40,6 +40,9 @@ Traceability: each criterion maps to scenarios in
 17. `read_at` verifies the whole-record checksum before reporting success for
     a non-empty copy, performs no allocation after open, and never mutates
     `revision`, `first`, `stable_end`, or `end`. (R05)
+18. The Raft adapter suite reads term prefixes with `read_at(0, 8)` and
+    payloads with `read_at(8, size - 8)`, maps a `raft89_proposev` batch to
+    one `appendv_at` + `sync`, and preserves terms above 2^32. (AB01)
 
 ## Must reject / fail safely
 

@@ -18,11 +18,21 @@ configured with a Raft plugin; an adapter composes the two.
 The ledger stores opaque bytes. The adapter encodes each Raft entry as:
 
 ```text
-u64 term (little-endian) ‖ command bytes
+u64 term (little-endian: lo word, then hi word) ‖ command bytes
 ```
 
-`log_term` reads the first 8 bytes; `log_size` returns `size - 8`;
-`log_read` returns the command bytes.
+The term prefix is read with the exact-range operation and the payload with
+the offset that follows it:
+
+```text
+log_term(i)  -> ledger89_read_at(i, 0, 8)          // decode 8 bytes
+log_size(i)  -> ledger89_read(i, NULL, 0, &size)   // size - 8
+log_read(i)  -> ledger89_read_at(i, 8, size)       // payload only
+```
+
+`read_at` verifies the complete record checksum, so a metadata-only term read
+still detects corruption anywhere in the record while copying only the
+envelope prefix. The term prefix never leaks into the application payload.
 
 ## 2. Store callbacks
 
@@ -30,9 +40,9 @@ u64 term (little-endian) ‖ command bytes
 | --- | --- |
 | `hard_state` | adapter-owned atomic file (not the ledger) |
 | `log_last` | `end - 1` (0 when `end == 1`) |
-| `log_term` | `ledger89_read(end - 1)` + envelope decode |
-| `log_size` | `ledger89_read` size minus envelope |
-| `log_read` | `ledger89_read` payload slice |
+| `log_term` | `ledger89_read_at(end - 1, 0, 8)` + envelope decode |
+| `log_size` | `ledger89_read` size minus 8 |
+| `log_read` | `ledger89_read_at(index, 8, size)` |
 
 ## 3. Actions
 
@@ -65,13 +75,21 @@ return. After restart, Raft re-reads hard state and log metadata and
 recomputes volatile commit/applied state; the ledger's stable frontier bounds
 which log entries can exist.
 
-## 7. Fixture
+## 7. Adapter suite
 
-`test/adapters/raft_adapter_main.c` is a compiling adapter fixture built by
+`test/adapters/raft_adapter_main.c` is the permanent adapter suite built by
 `just adapters-raft` against the sibling `libraft89` tree (SKIPPED when the
 sibling is absent). It maps `RAFT89_ACT_HARD_STATE`, `LOG_APPEND`,
-`LOG_TRUNCATE`, and `APPLY` onto a ledger, proposes a command on a
-single-node cluster, and verifies that the committed entry is stored with a
-term envelope and a durable stable frontier. The WAL-style,
-replicated-log-style, and checkpoint consumers in `test/adapters/test_*.c`
-cover the remaining boundary behavior.
+`LOG_TRUNCATE`, and `APPLY` onto a ledger and verifies:
+
+- the term prefix is read with only an 8-byte destination;
+- `log_size` and `log_read` exclude the envelope;
+- empty and 4 KiB payloads round-trip;
+- a `raft89_proposev` batch maps to one `appendv_at` + `sync` with index
+  identity between Raft entries and ledger records;
+- terms above 2^32 round-trip through the envelope without host-word
+  truncation;
+- index conversion preserves both words.
+
+The WAL-style, replicated-log-style, and checkpoint consumers in
+`test/adapters/test_*.c` cover the remaining boundary behavior.
